@@ -1,5 +1,4 @@
-# Distributed_Chord_Infrastructure
-# Chord DHT + MCP — Project Plan
+# Distributed_Chord_Infrastructure : Chord DHT + MCP — Project Plan
 
 ## Motivation / Problem Statement
 
@@ -214,3 +213,6 @@ ChordDHT/
 | Admin MCP   | Yes (7000 + 9090) | Any User or node       | List files, list finger table; Prometheus metrics |
 
 All request paths emit metrics and use consistent structured logging; Prometheus is hosted at Admin and scrapes (or receives) metrics from nodes and optionally User.
+
+## 10. References
+Chord Paper link: https://pdos.csail.mit.edu/papers/ton:chord/paper-ton.pdf
