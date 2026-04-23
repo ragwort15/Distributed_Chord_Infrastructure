@@ -9,6 +9,7 @@ from simulator.virtual_node import VirtualNode, NodeProfile, NodeState
 from simulator.stubs import StubServiceLayer, StubPlacementAgent
 from simulator.demo import DemoScenario, run_demo
 from simulator.fault_injection import FaultInjectionTester, FaultEvent
+from simulator.metrics import MetricsCollector, RunMetrics, PlacementMetric
 
 __all__ = [
     "VirtualNode",
@@ -20,4 +21,7 @@ __all__ = [
     "run_demo",
     "FaultInjectionTester",
     "FaultEvent",
+    "MetricsCollector",
+    "RunMetrics",
+    "PlacementMetric",
 ]

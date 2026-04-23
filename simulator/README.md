@@ -38,6 +38,14 @@ Fault injection and recovery testing.
 - Recovery measurement and logging
 - Integration with placement agent for re-routing
 
+### MetricsCollector & StrategyBenchmark
+Performance metrics collection and comparison.
+- PlacementMetric: tracks placement decisions and timing
+- ExecutionMetric: tracks job execution time and resource usage
+- RecoveryMetric: tracks failure recovery performance
+- StrategyBenchmark: compares different placement strategies
+- Per-run and aggregated summaries with statistical analysis
+
 ## Usage
 
 ### Running the Demo
@@ -65,6 +73,22 @@ Tests include:
 - Cascading failures (multiple nodes)
 - Recovery time measurement
 - Task re-routing to healthy nodes
+
+### Running Performance Benchmarks
+
+```bash
+# Default: 5 nodes, 20 jobs, 1 run per strategy
+python3 run_benchmark.py
+
+# Custom configuration
+python3 run_benchmark.py --nodes 10 --jobs 50 --runs 3
+```
+
+Compares three placement strategies (random, round_robin, least_loaded):
+- Placement success rate
+- Average execution time
+- Recovery metrics (if faults occur)
+- Resource utilization
 
 ### Programmatic Usage
 
