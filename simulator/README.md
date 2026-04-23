@@ -24,7 +24,26 @@ Baseline strategies for task placement (for evaluation comparison).
 - **least_loaded**: Pick node with lowest CPU utilization
 - Stub replication and recovery strategies
 
+### DemoScenario
+End-to-end workflow demonstrating:
+- Multi-node setup with resource profiles
+- Job submission and placement decisions
+- Execution simulation
+- Results collection and reporting
+
 ## Usage
+
+### Running the Demo
+
+```bash
+# Default: 5 nodes, 10 jobs
+python3 run_demo.py
+
+# Custom configuration
+python3 run_demo.py --nodes 10 --jobs 50
+```
+
+### Programmatic Usage
 
 ```python
 from simulator import VirtualNode, NodeProfile, StubServiceLayer, StubPlacementAgent

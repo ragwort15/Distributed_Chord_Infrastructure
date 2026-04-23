@@ -7,6 +7,7 @@ Integrates with Chord ring and provides stubs for Service Layer and AI Agents.
 
 from simulator.virtual_node import VirtualNode, NodeProfile, NodeState
 from simulator.stubs import StubServiceLayer, StubPlacementAgent
+from simulator.demo import DemoScenario, run_demo
 
 __all__ = [
     "VirtualNode",
@@ -14,4 +15,6 @@ __all__ = [
     "NodeState",
     "StubServiceLayer",
     "StubPlacementAgent",
+    "DemoScenario",
+    "run_demo",
 ]
