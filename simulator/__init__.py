@@ -8,6 +8,7 @@ Integrates with Chord ring and provides stubs for Service Layer and AI Agents.
 from simulator.virtual_node import VirtualNode, NodeProfile, NodeState
 from simulator.stubs import StubServiceLayer, StubPlacementAgent
 from simulator.demo import DemoScenario, run_demo
+from simulator.fault_injection import FaultInjectionTester, FaultEvent
 
 __all__ = [
     "VirtualNode",
@@ -17,4 +18,6 @@ __all__ = [
     "StubPlacementAgent",
     "DemoScenario",
     "run_demo",
+    "FaultInjectionTester",
+    "FaultEvent",
 ]

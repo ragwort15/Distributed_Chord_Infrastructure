@@ -31,6 +31,13 @@ End-to-end workflow demonstrating:
 - Execution simulation
 - Results collection and reporting
 
+### FaultInjectionTester
+Fault injection and recovery testing.
+- Single node failure injection
+- Cascading failure scenarios
+- Recovery measurement and logging
+- Integration with placement agent for re-routing
+
 ## Usage
 
 ### Running the Demo
@@ -42,6 +49,22 @@ python3 run_demo.py
 # Custom configuration
 python3 run_demo.py --nodes 10 --jobs 50
 ```
+
+### Running Fault Injection Tests
+
+```bash
+# Default: 5 nodes
+python3 run_fault_tests.py
+
+# Custom node count
+python3 run_fault_tests.py --nodes 10
+```
+
+Tests include:
+- Single node failure and recovery
+- Cascading failures (multiple nodes)
+- Recovery time measurement
+- Task re-routing to healthy nodes
 
 ### Programmatic Usage
 
