@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chord DHT — Live Dashboard</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:     #0d1117;
+  --panel:  #161b22;
+  --panel2: #1c2128;
+  --border: #30363d;
+  --green:  #3fb950;
+  --red:    #f85149;
+  --blue:   #58a6ff;
+  --amber:  #d29922;
+  --purple: #bc8cff;
+  --text:   #e6edf3;
+  --muted:  #8b949e;
+  --ring-bg:#21262d;
+  --mono:   'JetBrains Mono','Fira Code','Courier New',monospace;
+}
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  font-size: 13px; height: 100vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; border-bottom: 1px solid var(--border);
+  background: var(--panel); flex-shrink: 0; gap: 12px;
+}
+.logo { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.node-badge {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  background: var(--bg); border: 1px solid var(--border);
+  padding: 3px 10px; border-radius: 20px; flex-shrink: 0;
+}
+.node-badge .hi { color: var(--blue); font-weight: 600; }
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green); display: inline-block;
+  animation: blink 2s infinite; margin-right: 4px;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── Layout ── */
+main { display: grid; grid-template-columns: 1fr 330px; flex: 1; min-height: 0; }
+
+/* ── Ring panel (left) ── */
+.ring-panel {
+  display: flex; flex-direction: column; padding: 14px; gap: 10px; overflow: hidden;
+}
+.toolbar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
+.toolbar label { display: flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
+.toolbar input[type=checkbox] { accent-color: var(--blue); }
+.ring-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+#ring-svg { max-width: 100%; max-height: 100%; width: 100%; height: auto; }
+
+.legend { display: flex; gap: 14px; justify-content: center; flex-shrink: 0; }
+.leg { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.leg-dot { width: 9px; height: 9px; border-radius: 50%; }
+
+.hop-bar {
+  text-align: center; font-family: var(--mono); font-size: 12px; color: var(--amber);
+  padding: 7px 12px; background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.25);
+  border-radius: 6px; flex-shrink: 0; transition: opacity .3s;
+}
+.hop-bar.hidden { opacity: 0; pointer-events: none; }
+
+/* ── Sidebar (right) ── */
+aside { border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.s-sec { border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.s-sec.grow { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.s-sec h2 {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); padding: 9px 14px 7px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 6px;
+}
+.s-count { font-weight: 400; color: #30363d; text-transform: none; letter-spacing: 0; font-size: 11px; }
+
+/* ── Submit form ── */
+.form-body { padding: 10px 14px; display: flex; flex-direction: column; gap: 7px; }
+.form-row { display: flex; gap: 6px; }
+select, input[type=text], input[type=number] {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 8px; border-radius: 5px; font-size: 12px; font-family: inherit; outline: none;
+}
+select:focus, input:focus { border-color: var(--blue); }
+select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex: 1; font-family: var(--mono); }
+.btn {
+  padding: 5px 13px; border-radius: 5px; border: none;
+  font-size: 12px; font-weight: 500; cursor: pointer; transition: opacity .15s;
+}
+.btn:hover { opacity: .8; } .btn:active { opacity: .5; }
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-danger  { background: var(--red);  color: #fff; }
+.btn-ghost   { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+#submit-feedback { font-size: 11px; font-family: var(--mono); color: var(--muted); min-height: 16px; }
+
+/* ── Job list ── */
+.scroll { overflow-y: auto; flex: 1; }
+.job-item {
+  display: flex; align-items: center; gap: 7px; padding: 6px 14px;
+  border-bottom: 1px solid rgba(48,54,61,.45); font-size: 11px;
+}
+.job-item:last-child { border-bottom: none; }
+.jdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.s-pending  .jdot { background: var(--amber); }
+.s-claimed  .jdot { background: var(--blue); }
+.s-running  .jdot { background: var(--blue); animation: blink .8s infinite; }
+.s-done     .jdot { background: var(--green); }
+.s-failed   .jdot { background: var(--red); }
+.jtype { font-weight: 500; flex-shrink: 0; }
+.jid   { font-family: var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.jnode { font-family: var(--mono); color: var(--purple); flex-shrink: 0; font-size: 10px; }
+.jstat { color: var(--muted); flex-shrink: 0; font-size: 10px; }
+
+/* ── Agent log ── */
+.log-item {
+  padding: 5px 14px; border-bottom: 1px solid rgba(48,54,61,.3);
+  font-family: var(--mono); font-size: 10px; line-height: 1.6;
+}
+.la { color: var(--blue); }
+.sl { color: var(--green); }
+.sh { color: var(--amber); }
+.sm { color: var(--muted); }
+.lr { color: var(--muted); font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Empty state ── */
+.empty { padding: 20px 14px; text-align: center; color: var(--muted); font-size: 11px; }
+
+/* ── Node controls bar ── */
+.node-controls { padding: 9px 14px; display: flex; gap: 6px; align-items: center; }
+.node-controls select { flex: 1; }
+
+/* ── Add-node modal ── */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.overlay.hidden { display: none; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 22px; max-width: 420px; width: 100%; }
+.modal h3 { font-size: 14px; margin-bottom: 10px; }
+.modal p { color: var(--muted); font-size: 12px; line-height: 1.6; margin-bottom: 8px; }
+.cmd { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 10px; font-family: var(--mono); font-size: 11px; color: var(--green); word-break: break-all; user-select: all; margin: 8px 0; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    Chord DHT — Live Dashboard
+  </div>
+  <div style="flex:1"></div>
+  <div class="node-badge">
+    <span class="status-dot"></span>
+    Node&nbsp;<span class="hi" id="b-id">—</span>
+    &nbsp;·&nbsp;<span id="b-addr">—</span>
+    &nbsp;·&nbsp;<span id="b-size">— nodes</span>
+  </div>
+</header>
+
+<main>
+  <!-- ══════════ LEFT: Ring ══════════ -->
+  <div class="ring-panel">
+    <div class="toolbar">
+      <label><input type="checkbox" id="tog-fingers"> Show finger tables</label>
+      <label><input type="checkbox" id="tog-ids" checked> Node IDs</label>
+      <div style="flex:1"></div>
+      <button class="btn btn-ghost" id="btn-add">＋ Add Node</button>
+      <select id="rm-sel" style="flex:unset;width:auto;max-width:150px">
+        <option value="">Remove node…</option>
+      </select>
+      <button class="btn btn-danger" id="btn-rm">Remove</button>
+    </div>
+
+    <div class="ring-wrap">
+      <svg id="ring-svg" viewBox="0 0 700 700" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr-succ" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+            <polygon points="0 0,7 3,0 6" fill="#3fb950" opacity=".7"/>
+          </marker>
+          <marker id="arr-hop" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+            <polygon points="0 0,7 3,0 6" fill="#d29922"/>
+          </marker>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="3" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+      </svg>
+    </div>
+
+    <div class="legend">
+      <div class="leg"><div class="leg-dot" style="background:#3fb950"></div>Healthy</div>
+      <div class="leg"><div class="leg-dot" style="background:#58a6ff"></div>This node</div>
+      <div class="leg"><div class="leg-dot" style="background:#d29922"></div>Routing hop</div>
+      <div class="leg"><div class="leg-dot" style="background:#f85149"></div>Failed</div>
+      <div class="leg"><div class="leg-dot" style="background:#bc8cff"></div>Finger</div>
+    </div>
+
+    <div class="hop-bar hidden" id="hop-bar">
+      Route: <span id="hop-path">—</span>
+      &nbsp;·&nbsp;<strong id="hop-cnt">0</strong> hop(s)
+    </div>
+  </div>
+
+  <!-- ══════════ RIGHT: Sidebar ══════════ -->
+  <aside>
+    <!-- Submit -->
+    <div class="s-sec">
+      <h2>Submit Job</h2>
+      <form class="form-body" id="job-form" autocomplete="off">
+        <div class="form-row">
+          <select id="jtype">
+            <option value="echo">echo</option>
+            <option value="sleep">sleep</option>
+            <option value="compute">compute</option>
+          </select>
+          <input type="number" id="jreplicas" value="1" min="1" max="8" title="Replicas">
+        </div>
+        <div class="form-row">
+          <input type="text" id="jpayload" value='{"message":"hello"}'>
+        </div>
+        <div class="form-row">
+          <button type="submit" class="btn btn-primary" id="btn-submit" style="flex:1">Submit Job</button>
+        </div>
+        <div id="submit-feedback"></div>
+      </form>
+    </div>
+
+    <!-- Job queue -->
+    <div class="s-sec grow" style="max-height:48%">
+      <h2>Job Queue <span class="s-count" id="j-count"></span></h2>
+      <div class="scroll" id="job-list"><div class="empty">No jobs yet</div></div>
+    </div>
+
+    <!-- Agent log -->
+    <div class="s-sec grow">
+      <h2>Agent Decisions</h2>
+      <div class="scroll" id="log-list"><div class="empty">No decisions yet</div></div>
+    </div>
+  </aside>
+</main>
+
+<!-- Add-node modal -->
+<div class="overlay hidden" id="add-modal">
+  <div class="modal">
+    <h3>Add a Node to the Ring</h3>
+    <p>Run this in a new terminal to join a worker node to the ring:</p>
+    <div class="cmd" id="add-cmd">…</div>
+    <p>The ring rebalances within ~4 s (two stabilization cycles).</p>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="btn-close-modal">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// Constants & state
+// ═══════════════════════════════════════════════════════════════
+const CX=350, CY=350, R=240, NR=20, SZ=256, NS=SVGElement.prototype.namespaceURI||'http://www.w3.org/2000/svg';
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+let ring    = { nodes: [], this_node: null };
+let showFin = false;
+let showIds = true;
+let animating = false;
+
+// ═══════════════════════════════════════════════════════════════
+// Geometry
+// ═══════════════════════════════════════════════════════════════
+const angle  = id => (id / SZ) * 2 * Math.PI - Math.PI / 2;
+const npos   = id => ({ x: CX + R * Math.cos(angle(id)), y: CY + R * Math.sin(angle(id)) });
+const ff     = n  => n.toFixed(2);
+
+function arcD(a, b) {
+  if (a === b) return null;
+  const pa = npos(a), pb = npos(b);
+  const cw  = ((b - a) % SZ + SZ) % SZ;
+  const lg  = cw > SZ / 2 ? 1 : 0;
+  return `M ${ff(pa.x)} ${ff(pa.y)} A ${R} ${R} 0 ${lg} 1 ${ff(pb.x)} ${ff(pb.y)}`;
+}
+
+function lineD(a, b) {
+  const pa = npos(a), pb = npos(b);
+  return `M ${ff(pa.x)} ${ff(pa.y)} L ${ff(pb.x)} ${ff(pb.y)}`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Chord routing simulation  (mirrors chord/node.py)
+// ═══════════════════════════════════════════════════════════════
+function inRange(x, a, b, incB=false) {
+  x = ((x%SZ)+SZ)%SZ; a = ((a%SZ)+SZ)%SZ; b = ((b%SZ)+SZ)%SZ;
+  if (a===b) return true;
+  if (a<b) return incB ? a<x&&x<=b : a<x&&x<b;
+  return incB ? x>a||x<=b : x>a||x<b;
+}
+
+function simRoute(fromId, toId) {
+  const map = {};
+  for (const n of ring.nodes) map[n.node_id] = n;
+  const hops = [fromId];
+  let cur = fromId;
+  for (let i = 0; i < 24; i++) {
+    if (cur === toId) break;
+    const node = map[cur]; if (!node) break;
+    const succ = node.successor?.id;
+    if (succ === toId || inRange(toId, cur, succ, true)) {
+      if (hops[hops.length-1] !== succ) hops.push(succ);
+      break;
+    }
+    let next = null;
+    const fins = (node.fingers||[]).slice().reverse();
+    for (const f of fins) {
+      if (f.node_id!=null && f.node_id!==cur && inRange(f.node_id, cur, toId)) { next=f.node_id; break; }
+    }
+    if (!next || next===cur) { if (hops[hops.length-1]!==succ) hops.push(succ); break; }
+    if (hops[hops.length-1]!==next) hops.push(next);
+    cur = next;
+  }
+  return hops;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SVG helpers
+// ═══════════════════════════════════════════════════════════════
+function el(tag, attrs={}) {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+function txt(x, y, s, attrs={}) {
+  const t = el('text', { x: ff(x), y: ff(y), 'text-anchor':'middle', 'dominant-baseline':'middle', ...attrs });
+  t.textContent = s;
+  return t;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Ring rendering
+// ═══════════════════════════════════════════════════════════════
+function nodeColor(id) { return id === ring.this_node ? '#58a6ff' : '#3fb950'; }
+
+function renderRing() {
+  const svg = document.getElementById('ring-svg');
+  const defs = svg.querySelector('defs');
+  while (svg.lastChild !== defs) svg.removeChild(svg.lastChild);
+
+  const nodes = ring.nodes;
+
+  // Background ring circle
+  svg.appendChild(el('circle', { cx:CX, cy:CY, r:R, fill:'none', stroke:'#21262d', 'stroke-width':2 }));
+
+  // Tick marks + ID labels for 0, 32, 64 …
+  for (let id = 0; id < SZ; id += SZ/8) {
+    const a = angle(id);
+    const ix = CX+(R-7)*Math.cos(a), iy = CY+(R-7)*Math.sin(a);
+    const ox = CX+ R   *Math.cos(a), oy = CY+ R   *Math.sin(a);
+    svg.appendChild(el('line',{ x1:ff(ix),y1:ff(iy),x2:ff(ox),y2:ff(oy), stroke:'#30363d','stroke-width':1.5 }));
+    const lx = CX+(R+15)*Math.cos(a), ly = CY+(R+15)*Math.sin(a);
+    svg.appendChild(txt(lx, ly, id, { fill:'#30363d','font-size':9,'font-family':'monospace' }));
+  }
+
+  if (!nodes.length) {
+    svg.appendChild(txt(CX, CY, 'Connecting…', { fill:'#8b949e','font-size':14 }));
+    return;
+  }
+
+  // ── Finger table lines ──
+  if (showFin) {
+    const g = el('g', { opacity:.22 });
+    for (const n of nodes) {
+      for (const f of (n.fingers||[])) {
+        if (f.node_id==null||f.node_id===n.node_id) continue;
+        g.appendChild(el('path',{ d:lineD(n.node_id,f.node_id), fill:'none', stroke:'#bc8cff','stroke-width':1,'stroke-dasharray':'4,3' }));
+      }
+    }
+    svg.appendChild(g);
+  }
+
+  // ── Successor arcs ──
+  const sg = el('g');
+  for (const n of nodes) {
+    const sid = n.successor?.id;
+    if (sid==null||sid===n.node_id) continue;
+    const d = arcD(n.node_id, sid);
+    if (!d) continue;
+    sg.appendChild(el('path',{ d, fill:'none', stroke:nodeColor(n.node_id),'stroke-width':2, opacity:.55,'marker-end':'url(#arr-succ)' }));
+  }
+  svg.appendChild(sg);
+
+  // ── Hop animation layer (empty until job submit) ──
+  svg.appendChild(el('g',{ id:'hop-g' }));
+
+  // ── Node circles + labels ──
+  const ng = el('g');
+  for (const n of nodes) {
+    const p = npos(n.node_id);
+    const c = nodeColor(n.node_id);
+    const isThis = n.node_id === ring.this_node;
+
+    // Outer glow ring for current node
+    if (isThis) {
+      ng.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR+5, fill:'none', stroke:'#58a6ff','stroke-width':1.5, opacity:.3 }));
+    }
+
+    // Node circle
+    ng.appendChild(el('circle',{
+      cx:ff(p.x), cy:ff(p.y), r:NR,
+      fill:c, 'fill-opacity':.15,
+      stroke:c, 'stroke-width': isThis ? 2.5 : 2,
+      id:`nc-${n.node_id}`,
+      style:'cursor:pointer'
+    }));
+
+    // ID label
+    if (showIds) ng.appendChild(txt(p.x, p.y, n.node_id, { fill:c,'font-size':11,'font-family':'monospace','font-weight':600 }));
+
+    // Queue-depth badge
+    const qd = n.metrics?.queue_depth ?? 0;
+    if (qd > 0) {
+      const bx = ff(p.x + NR*0.72), by = ff(p.y - NR*0.72);
+      ng.appendChild(el('circle',{ cx:bx,cy:by, r:8, fill:'#d29922','fill-opacity':.92 }));
+      ng.appendChild(txt(parseFloat(bx), parseFloat(by), qd, { fill:'#0d1117','font-size':8.5,'font-weight':700,'font-family':'monospace' }));
+    }
+  }
+  svg.appendChild(ng);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Routing animation
+// ═══════════════════════════════════════════════════════════════
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+function setNodeHighlight(id, on) {
+  const e = document.getElementById(`nc-${id}`); if (!e) return;
+  const c = nodeColor(id);
+  const isThis = id === ring.this_node;
+  if (on) {
+    e.setAttribute('fill','#d29922'); e.setAttribute('fill-opacity','.45');
+    e.setAttribute('stroke','#d29922'); e.setAttribute('stroke-width', 3);
+  } else {
+    e.setAttribute('fill',c); e.setAttribute('fill-opacity','.15');
+    e.setAttribute('stroke',c); e.setAttribute('stroke-width', isThis?2.5:2);
+  }
+}
+
+async function animateRoute(fromId, toId) {
+  if (animating) return;
+  animating = true;
+
+  const hops = simRoute(fromId, toId);
+  const g    = document.getElementById('hop-g');
+  if (g) g.innerHTML = '';
+
+  for (let i = 0; i < hops.length; i++) {
+    setNodeHighlight(hops[i], true);
+    if (i > 0 && g) {
+      const pa = npos(hops[i-1]), pb = npos(hops[i]);
+      g.appendChild(el('line',{
+        x1:ff(pa.x), y1:ff(pa.y), x2:ff(pb.x), y2:ff(pb.y),
+        stroke:'#d29922','stroke-width':2.5,'stroke-dasharray':'7,4',
+        'marker-end':'url(#arr-hop)', opacity:.9
+      }));
+    }
+    await sleep(520);
+  }
+
+  // Show hop bar
+  const bar = document.getElementById('hop-bar');
+  document.getElementById('hop-path').textContent = hops.join(' → ');
+  document.getElementById('hop-cnt').textContent   = hops.length - 1;
+  bar.classList.remove('hidden');
+
+  await sleep(3500);
+
+  if (g) g.innerHTML = '';
+  hops.forEach(id => setNodeHighlight(id, false));
+  bar.classList.add('hidden');
+  animating = false;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render job list
+// ═══════════════════════════════════════════════════════════════
+function renderJobs(jobs) {
+  const el2 = document.getElementById('job-list');
+  document.getElementById('j-count').textContent = jobs.length ? `(${jobs.length})` : '';
+  if (!jobs.length) { el2.innerHTML='<div class="empty">No jobs yet</div>'; return; }
+  el2.innerHTML = jobs.map(j => {
+    const sid  = (j.job_id||'?').slice(0,8);
+    const port = j.claimed_by ? (':'+j.claimed_by.split(':').pop()) : '';
+    return `<div class="job-item s-${j.status}">
+      <div class="jdot"></div>
+      <span class="jtype">${j.type||'?'}</span>
+      <span class="jid" title="${j.job_id}">${sid}…</span>
+      <span class="jnode">${port}</span>
+      <span class="jstat">${j.status}</span>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render agent log
+// ═══════════════════════════════════════════════════════════════
+function renderLogs(entries) {
+  const el2 = document.getElementById('log-list');
+  if (!entries.length) { el2.innerHTML='<div class="empty">No decisions yet</div>'; return; }
+  el2.innerHTML = [...entries].reverse().map(e => {
+    const strat = e.strategy||'';
+    const cls   = strat==='llm' ? 'sl' : strat.startsWith('heuristic') ? 'sh' : 'sm';
+    const rea   = e.decision?.reasoning || '';
+    const t     = new Date(e.ts*1000).toLocaleTimeString();
+    return `<div class="log-item">
+      <span class="la">${e.agent}</span><span class="sm"> · ${e.tool} · </span><span class="${cls}">${strat}</span><span class="sm"> · ${e.latency_ms}ms · ${t}</span>
+      ${rea ? `<div class="lr" title="${rea}">${rea}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Header + remove-node dropdown
+// ═══════════════════════════════════════════════════════════════
+function updateHeader() {
+  const n = ring.this_node;
+  document.getElementById('b-id').textContent   = n ?? '—';
+  document.getElementById('b-size').textContent = `${ring.nodes.length} node${ring.nodes.length!==1?'s':''}`;
+  const self = ring.nodes.find(nd => nd.node_id === n);
+  if (self) document.getElementById('b-addr').textContent = self.address;
+
+  const sel = document.getElementById('rm-sel');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Remove node…</option>';
+  for (const nd of ring.nodes) {
+    const opt = document.createElement('option');
+    opt.value = nd.address;
+    opt.textContent = `Node ${nd.node_id} (${nd.address})${nd.node_id===n?' ★':''}`;
+    sel.appendChild(opt);
+  }
+  if (prev) sel.value = prev;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// API polling
+// ═══════════════════════════════════════════════════════════════
+async function pollRing() {
+  try {
+    const r = await fetch('/api/ring', {cache:'no-store'});
+    ring = await r.json();
+    renderRing(); updateHeader();
+  } catch {}
+}
+async function pollJobs() {
+  try {
+    const r = await fetch('/api/jobs', {cache:'no-store'});
+    renderJobs((await r.json()).jobs||[]);
+  } catch {}
+}
+async function pollLogs() {
+  try {
+    const r = await fetch('/api/logs', {cache:'no-store'});
+    renderLogs((await r.json()).entries||[]);
+  } catch {}
+}
+
+setInterval(pollRing, 2000);
+setInterval(pollJobs, 2500);
+setInterval(pollLogs, 3000);
+pollRing(); pollJobs(); pollLogs();
+
+// ═══════════════════════════════════════════════════════════════
+// Job submission
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('job-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('btn-submit');
+  const fb  = document.getElementById('submit-feedback');
+  const type     = document.getElementById('jtype').value;
+  const replicas = parseInt(document.getElementById('jreplicas').value)||1;
+  let payload = {};
+  try { payload = JSON.parse(document.getElementById('jpayload').value||'{}'); } catch {}
+
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  fb.textContent = ''; fb.style.color = 'var(--muted)';
+
+  try {
+    const res  = await fetch('/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type,payload,replicas}) });
+    const data = await res.json();
+    if (data.ok) {
+      fb.style.color = 'var(--green)';
+      fb.textContent = `✓ ${data.job_id?.slice(0,8)}… → node ${data.stored_at_node}`;
+      if (ring.this_node != null && data.stored_at_node != null) {
+        animateRoute(ring.this_node, data.stored_at_node);
+      }
+      setTimeout(pollJobs, 400);
+    } else {
+      fb.style.color = 'var(--red)';
+      fb.textContent = `✗ ${data.error||'unknown error'}`;
+    }
+  } catch (err) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = `✗ ${err.message}`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Submit Job';
+  }
+});
+
+// Payload defaults per job type
+const payloadDefaults = { echo:'{"message":"hello"}', sleep:'{"seconds":2}', compute:'{"n":10000}' };
+document.getElementById('jtype').addEventListener('change', function() {
+  document.getElementById('jpayload').value = payloadDefaults[this.value]||'{}';
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Toggles
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('tog-fingers').addEventListener('change', function(){ showFin=this.checked; renderRing(); });
+document.getElementById('tog-ids').addEventListener('change',     function(){ showIds=this.checked; renderRing(); });
+
+// ═══════════════════════════════════════════════════════════════
+// Add-node modal
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btn-add').addEventListener('click', () => {
+  const self = ring.nodes.find(n=>n.node_id===ring.this_node);
+  const joinAddr = self?.address || '127.0.0.1:5001';
+  const ports = ring.nodes.map(n=>parseInt(n.address?.split(':').pop(),10)).filter(Boolean);
+  const nextPort = ports.length ? Math.max(...ports)+1 : 5002;
+  document.getElementById('add-cmd').textContent =
+    `python run_node.py --host 127.0.0.1 --port ${nextPort} --join ${joinAddr} --worker`;
+  document.getElementById('add-modal').classList.remove('hidden');
+});
+document.getElementById('btn-close-modal').addEventListener('click', ()=>document.getElementById('add-modal').classList.add('hidden'));
+document.getElementById('add-modal').addEventListener('click', e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.add('hidden'); });
+
+// ═══════════════════════════════════════════════════════════════
+// Remove node (proxied through this node to avoid CORS)
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btn-rm').addEventListener('click', async () => {
+  const addr = document.getElementById('rm-sel').value;
+  if (!addr) return;
+  const nd = ring.nodes.find(n=>n.address===addr);
+  if (!confirm(`Remove node ${nd?.node_id} (${addr}) from the ring?\n\nThis triggers a graceful leave and shuts the node process down.`)) return;
+  try {
+    await fetch(`/api/nodes/${encodeURIComponent(addr)}`, { method:'DELETE' });
+  } catch {}
+  setTimeout(()=>{ pollRing(); pollJobs(); }, 2500);
+});
+</script>
+</body>
+</html>
