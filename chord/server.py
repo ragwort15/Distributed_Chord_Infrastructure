@@ -255,6 +255,15 @@ def create_app(node: ChordNode) -> Flask:
             ) + 1,
         })
 
+    @app.get("/api/nodes/count")
+    def api_nodes_count():
+        """Quick endpoint returning just the number of known unique nodes."""
+        seen = {node.node_id}
+        for f in node.fingers:
+            if f.node_id is not None:
+                seen.add(f.node_id)
+        return jsonify({"count": len(seen), "this_node": node.node_id})
+
     # ------------------------------------------------------------------
     # Dashboard (served from chord/static/index.html)
     # ------------------------------------------------------------------
