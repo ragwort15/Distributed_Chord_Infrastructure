@@ -105,6 +105,11 @@ class WorkerThread(threading.Thread):
                     node.data_store[key] = entry
             node.jobs_completed += 1
             logger.info(f"[Worker {node.node_id}] Completed {key}")
+            try:
+                from chord.metrics_registry import JOBS_TOTAL
+                JOBS_TOTAL.labels(node_id=str(node.node_id), status="done").inc()
+            except Exception:
+                pass
         except Exception as e:
             with node._lock:
                 entry = node.data_store.get(key)
@@ -115,6 +120,11 @@ class WorkerThread(threading.Thread):
                     node.data_store[key] = entry
             node.jobs_failed += 1
             logger.warning(f"[Worker {node.node_id}] Failed {key}: {e}")
+            try:
+                from chord.metrics_registry import JOBS_TOTAL
+                JOBS_TOTAL.labels(node_id=str(node.node_id), status="failed").inc()
+            except Exception:
+                pass
 
 
 def _execute(job: dict):
