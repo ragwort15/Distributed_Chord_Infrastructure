@@ -134,6 +134,32 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
 /* ── Empty state ── */
 .empty { padding: 20px 14px; text-align: center; color: var(--muted); font-size: 11px; }
 
+/* ── Sidebar tab bar ── */
+.s-tabs-bar { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.s-tab-btn {
+  flex: 1; background: none; border: none; color: var(--muted); font-size: 11px; font-weight: 500;
+  padding: 8px 4px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color .15s;
+}
+.s-tab-btn:hover { color: var(--text); }
+.s-tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+.s-panel { display: none; flex: 1; }
+.s-panel.active { display: block; }
+
+/* ── File request items ── */
+.req-item {
+  padding: 7px 14px; border-bottom: 1px solid rgba(48,54,61,.4); font-size: 11px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.req-item:last-child { border-bottom: none; }
+.req-top { display: flex; align-items: center; gap: 6px; }
+.req-icon { font-size: 13px; flex-shrink: 0; }
+.req-name { font-family: var(--mono); font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.req-node { color: var(--purple); font-family: var(--mono); font-size: 10px; flex-shrink: 0; }
+.req-bot  { display: flex; gap: 8px; color: var(--muted); font-size: 10px; font-family: var(--mono); }
+.req-hops { color: var(--amber); }
+.req-key  { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ── Node controls bar ── */
 .node-controls { padding: 9px 14px; display: flex; gap: 6px; align-items: center; }
 .node-controls select { flex: 1; }
@@ -303,16 +329,16 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
       </form>
     </div>
 
-    <!-- Job queue -->
-    <div class="s-sec grow" style="max-height:48%">
-      <h2>Job Queue <span class="s-count" id="j-count"></span></h2>
-      <div class="scroll" id="job-list"><div class="empty">No jobs yet</div></div>
-    </div>
-
-    <!-- Agent log -->
-    <div class="s-sec grow">
-      <h2>Agent Decisions</h2>
-      <div class="scroll" id="log-list"><div class="empty">No decisions yet</div></div>
+    <!-- Tabbed panel: Requests | Jobs | Agent Log -->
+    <div class="s-sec grow" style="display:flex;flex-direction:column;min-height:0">
+      <div class="s-tabs-bar">
+        <button class="s-tab-btn active" data-panel="req">File Requests</button>
+        <button class="s-tab-btn"        data-panel="jobs">Jobs <span id="j-count" class="s-count"></span></button>
+        <button class="s-tab-btn"        data-panel="logs">Agent Log</button>
+      </div>
+      <div class="scroll s-panel active" id="panel-req"><div class="empty">Waiting for requests…</div></div>
+      <div class="scroll s-panel"        id="panel-jobs"><div class="empty">No jobs yet</div></div>
+      <div class="scroll s-panel"        id="panel-logs"><div class="empty">No decisions yet</div></div>
     </div>
   </aside>
 </main>
@@ -627,10 +653,47 @@ async function animateRoute(fromId, toId) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// File-type emoji helper
+// ═══════════════════════════════════════════════════════════════
+const FILE_ICONS = {
+  pdf:'📄', csv:'📊', bin:'⚙️', yaml:'⚙️', gz:'🗜️', zip:'🗜️',
+  pptx:'📊', png:'🖼️', jpg:'🖼️', mp4:'🎬', tar:'🗜️', md:'📝',
+  sql:'🗄️', json:'📋', txt:'📝', sh:'⚡', parquet:'📊',
+};
+function fileIcon(name) {
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+  return FILE_ICONS[ext] || '📁';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render file request list
+// ═══════════════════════════════════════════════════════════════
+function renderRequests(reqs) {
+  const el2 = document.getElementById('panel-req');
+  if (!reqs.length) { el2.innerHTML='<div class="empty">Waiting for requests…</div>'; return; }
+  el2.innerHTML = reqs.map(r => {
+    const c   = nodeColorMap[r.served_by_node] || 'var(--purple)';
+    const t   = new Date(r.ts*1000).toLocaleTimeString();
+    return `<div class="req-item">
+      <div class="req-top">
+        <span class="req-icon">${fileIcon(r.filename)}</span>
+        <span class="req-name" title="${r.filename}">${r.filename}</span>
+        <span class="req-node" style="color:${c}">→ Node ${r.served_by_node}</span>
+      </div>
+      <div class="req-bot">
+        <span class="req-hops">⇢ ${r.hops} hop${r.hops!==1?'s':''}</span>
+        <span class="req-key">key=${r.key_id}</span>
+        <span style="margin-left:auto">${t}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Render job list
 // ═══════════════════════════════════════════════════════════════
 function renderJobs(jobs) {
-  const el2 = document.getElementById('job-list');
+  const el2 = document.getElementById('panel-jobs');
   document.getElementById('j-count').textContent = jobs.length ? `(${jobs.length})` : '';
   if (!jobs.length) { el2.innerHTML='<div class="empty">No jobs yet</div>'; return; }
   el2.innerHTML = jobs.map(j => {
@@ -650,7 +713,7 @@ function renderJobs(jobs) {
 // Render agent log
 // ═══════════════════════════════════════════════════════════════
 function renderLogs(entries) {
-  const el2 = document.getElementById('log-list');
+  const el2 = document.getElementById('panel-logs');
   if (!entries.length) { el2.innerHTML='<div class="empty">No decisions yet</div>'; return; }
   el2.innerHTML = [...entries].reverse().map(e => {
     const strat = e.strategy||'';
@@ -719,10 +782,40 @@ async function pollLogs() {
   } catch {}
 }
 
-setInterval(pollRing, 2000);
-setInterval(pollJobs, 2500);
-setInterval(pollLogs, 3000);
-pollRing(); pollJobs(); pollLogs();
+let _lastReqTs = 0;
+async function pollRequests() {
+  try {
+    const r    = await fetch('/api/requests', {cache:'no-store'});
+    const data = await r.json();
+    const reqs = data.requests || [];
+    renderRequests(reqs);
+    // Animate ring routing for any new request since last poll
+    if (reqs.length && reqs[0].ts > _lastReqTs) {
+      _lastReqTs = reqs[0].ts;
+      const req  = reqs[0];
+      if (req.routed_from != null && req.served_by_node != null
+          && req.routed_from !== req.served_by_node) {
+        animateRoute(req.routed_from, req.served_by_node);
+      }
+    }
+  } catch {}
+}
+
+setInterval(pollRing,     2000);
+setInterval(pollJobs,     2500);
+setInterval(pollLogs,     3000);
+setInterval(pollRequests, 2000);
+pollRing(); pollJobs(); pollLogs(); pollRequests();
+
+// ── Sidebar tab switching ──
+document.querySelectorAll('.s-tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.s-tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.s-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(`panel-${btn.dataset.panel}`).classList.add('active');
+  });
+});
 
 // ═══════════════════════════════════════════════════════════════
 // Job submission
