@@ -196,8 +196,8 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
     </div>
 
     <div class="legend">
-      <div class="leg"><div class="leg-dot" style="background:#3fb950"></div>Healthy</div>
-      <div class="leg"><div class="leg-dot" style="background:#58a6ff"></div>This node</div>
+      <div class="leg"><div class="leg-dot" style="background:var(--border);border:2px solid #888;border-radius:50%;width:11px;height:11px;margin-right:-2px"></div><div class="leg-dot" style="background:#3fb950"></div><div class="leg-dot" style="background:#58a6ff"></div><div class="leg-dot" style="background:#ffa657"></div><div class="leg-dot" style="background:#bc8cff"></div>&nbsp;Nodes (unique colour)</div>
+      <div class="leg"><div class="leg-dot" style="background:transparent;border:2px solid #aaa;border-radius:50%;width:11px;height:11px"></div>★ This node (glow)</div>
       <div class="leg"><div class="leg-dot" style="background:#d29922"></div>Routing hop</div>
       <div class="leg"><div class="leg-dot" style="background:#f85149"></div>Failed</div>
       <div class="leg"><div class="leg-dot" style="background:#bc8cff"></div>Finger</div>
@@ -266,6 +266,24 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
 // ═══════════════════════════════════════════════════════════════
 const CX=350, CY=350, R=240, NR=20, SZ=256;
 const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Distinct palette — each node gets its own colour, cycling if > 12 nodes
+const NODE_PALETTE = [
+  '#3fb950','#58a6ff','#ffa657','#bc8cff',
+  '#f78166','#79c0ff','#56d364','#ff9f9f',
+  '#d2a8ff','#7ee787','#ffd700','#4fc3f7',
+];
+let nodeColorMap = {};
+
+function buildColorMap(nodes) {
+  const sorted = [...nodes].sort((a, b) => a.node_id - b.node_id);
+  nodeColorMap = {};
+  sorted.forEach((n, i) => {
+    nodeColorMap[n.node_id] = NODE_PALETTE[i % NODE_PALETTE.length];
+  });
+}
+
+function nodeColor(id) { return nodeColorMap[id] || '#3fb950'; }
 
 let ring    = { nodes: [], this_node: null };
 let showFin = false;
@@ -344,8 +362,6 @@ function txt(x, y, s, attrs={}) {
 // ═══════════════════════════════════════════════════════════════
 // Ring rendering
 // ═══════════════════════════════════════════════════════════════
-function nodeColor(id) { return id === ring.this_node ? '#58a6ff' : '#3fb950'; }
-
 function renderRing() {
   try {
   const svg = document.getElementById('ring-svg');
@@ -354,6 +370,7 @@ function renderRing() {
   while (svg.lastChild && svg.lastChild !== defs) svg.removeChild(svg.lastChild);
 
   const nodes = ring.nodes;
+  buildColorMap(nodes);
 
   // Background ring circle
   svg.appendChild(el('circle', { cx:CX, cy:CY, r:R, fill:'none', stroke:'#21262d', 'stroke-width':2 }));
@@ -406,9 +423,10 @@ function renderRing() {
     const c = nodeColor(n.node_id);
     const isThis = n.node_id === ring.this_node;
 
-    // Outer glow ring for current node
+    // Outer glow ring for current node (uses same palette colour, just larger + faint)
     if (isThis) {
-      ng.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR+5, fill:'none', stroke:'#58a6ff','stroke-width':1.5, opacity:.3 }));
+      ng.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR+7, fill:'none', stroke:c,'stroke-width':2, opacity:.35 }));
+      ng.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR+13, fill:'none', stroke:c,'stroke-width':1, opacity:.15 }));
     }
 
     // Node circle
