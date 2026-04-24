@@ -58,8 +58,8 @@ main { display: grid; grid-template-columns: 1fr 330px; flex: 1; min-height: 0; 
 .toolbar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
 .toolbar label { display: flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
 .toolbar input[type=checkbox] { accent-color: var(--blue); }
-.ring-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
-#ring-svg { max-width: 100%; max-height: 100%; width: 100%; height: auto; }
+.ring-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+#ring-svg { width: 100%; height: 100%; max-width: 680px; max-height: 680px; aspect-ratio: 1 / 1; }
 
 .legend { display: flex; gap: 14px; justify-content: center; flex-shrink: 0; }
 .leg { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
@@ -264,7 +264,7 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
 // ═══════════════════════════════════════════════════════════════
 // Constants & state
 // ═══════════════════════════════════════════════════════════════
-const CX=350, CY=350, R=240, NR=20, SZ=256, NS=SVGElement.prototype.namespaceURI||'http://www.w3.org/2000/svg';
+const CX=350, CY=350, R=240, NR=20, SZ=256;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 let ring    = { nodes: [], this_node: null };
@@ -347,9 +347,11 @@ function txt(x, y, s, attrs={}) {
 function nodeColor(id) { return id === ring.this_node ? '#58a6ff' : '#3fb950'; }
 
 function renderRing() {
+  try {
   const svg = document.getElementById('ring-svg');
+  if (!svg) { console.error('SVG element not found'); return; }
   const defs = svg.querySelector('defs');
-  while (svg.lastChild !== defs) svg.removeChild(svg.lastChild);
+  while (svg.lastChild && svg.lastChild !== defs) svg.removeChild(svg.lastChild);
 
   const nodes = ring.nodes;
 
@@ -430,6 +432,7 @@ function renderRing() {
     }
   }
   svg.appendChild(ng);
+  } catch(e) { console.error('renderRing error:', e); }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -550,18 +553,20 @@ function updateHeader() {
 // ═══════════════════════════════════════════════════════════════
 async function pollRing() {
   try {
-    const [ringResp, statusResp] = await Promise.all([
-      fetch('/api/ring',   {cache:'no-store'}),
-      fetch('/api/status', {cache:'no-store'}),
-    ]);
+    const ringResp = await fetch('/api/ring', {cache:'no-store'});
     ring = await ringResp.json();
-    const status = await statusResp.json();
-    // Enrich badge with live queue depth from /api/status
-    const qd = status.queue_depth ?? 0;
-    const qdEl = document.getElementById('b-qd');
-    if (qdEl) qdEl.textContent = qd > 0 ? ` · queue: ${qd}` : '';
-    renderRing(); updateHeader();
-  } catch {}
+    renderRing();
+    updateHeader();
+    // Queue depth badge (best-effort)
+    try {
+      const statusResp = await fetch('/api/status', {cache:'no-store'});
+      const status = await statusResp.json();
+      const qdEl = document.getElementById('b-qd');
+      if (qdEl) qdEl.textContent = (status.queue_depth > 0) ? ` · queue: ${status.queue_depth}` : '';
+    } catch {}
+  } catch(e) {
+    console.error('pollRing failed:', e);
+  }
 }
 async function pollJobs() {
   try {
