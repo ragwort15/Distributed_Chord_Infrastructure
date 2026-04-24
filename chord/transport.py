@@ -101,3 +101,11 @@ class HttpTransport:
             timeout=RPC_TIMEOUT,
         )
         r.raise_for_status()
+
+    def get_metrics(self, address: str) -> dict:
+        r = requests.get(
+            f"http://{address}/metrics",
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return r.json()
