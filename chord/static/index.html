@@ -160,7 +160,7 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
     <span class="status-dot"></span>
     Node&nbsp;<span class="hi" id="b-id">—</span>
     &nbsp;·&nbsp;<span id="b-addr">—</span>
-    &nbsp;·&nbsp;<span id="b-size">— nodes</span>
+    &nbsp;·&nbsp;<span id="b-size">— nodes</span><span id="b-qd" style="color:var(--amber)"></span>
   </div>
 </header>
 
@@ -550,8 +550,16 @@ function updateHeader() {
 // ═══════════════════════════════════════════════════════════════
 async function pollRing() {
   try {
-    const r = await fetch('/api/ring', {cache:'no-store'});
-    ring = await r.json();
+    const [ringResp, statusResp] = await Promise.all([
+      fetch('/api/ring',   {cache:'no-store'}),
+      fetch('/api/status', {cache:'no-store'}),
+    ]);
+    ring = await ringResp.json();
+    const status = await statusResp.json();
+    // Enrich badge with live queue depth from /api/status
+    const qd = status.queue_depth ?? 0;
+    const qdEl = document.getElementById('b-qd');
+    if (qdEl) qdEl.textContent = qd > 0 ? ` · queue: ${qd}` : '';
     renderRing(); updateHeader();
   } catch {}
 }
