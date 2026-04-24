@@ -417,42 +417,24 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
     <!-- ── Grafana / Observability view ── -->
     <div class="view-content hidden" id="view-grafana">
       <div class="grafana-wrap">
-        <div class="grafana-row">
-          <div class="grafana-frame" style="flex:2">
-            <iframe id="gf-throughput"
-              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=1&refresh=5s&theme=dark"
-              title="Request Throughput"></iframe>
-          </div>
-          <div class="grafana-frame">
-            <iframe id="gf-hops"
-              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=8&refresh=5s&theme=dark"
-              title="Hop Distribution"></iframe>
-          </div>
+        <!-- Full Grafana dashboard in one iframe (kiosk=tv skips nav/auth) -->
+        <div class="grafana-frame" style="flex:1">
+          <iframe
+            id="gf-main"
+            src="http://localhost:3000/d/chord-dht-01?orgId=1&kiosk=tv&theme=dark&refresh=5s"
+            title="Chord DHT Grafana Dashboard"
+            allowfullscreen>
+          </iframe>
         </div>
-        <div class="grafana-row">
-          <div class="grafana-frame">
-            <iframe id="gf-load"
-              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=9&refresh=5s&theme=dark"
-              title="Queue Depth"></iframe>
-          </div>
-          <div class="grafana-frame">
-            <iframe id="gf-latency"
-              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=10&refresh=5s&theme=dark"
-              title="Request Latency"></iframe>
-          </div>
-          <div class="grafana-frame">
-            <iframe id="gf-keys"
-              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=11&refresh=5s&theme=dark"
-              title="Data Keys"></iframe>
-          </div>
-        </div>
-        <div class="grafana-row" style="flex:unset;height:80px;gap:10px">
-          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=2&refresh=5s&theme=dark" title="Avg Hops"></iframe></div>
-          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=3&refresh=5s&theme=dark" title="Ring Size"></iframe></div>
-          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=4&refresh=5s&theme=dark" title="Total Requests"></iframe></div>
-          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=5&refresh=5s&theme=dark" title="Jobs Done"></iframe></div>
-          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=6&refresh=5s&theme=dark" title="Jobs Failed"></iframe></div>
-          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=7&refresh=5s&theme=dark" title="Stabilizations"></iframe></div>
+        <!-- Fallback strip -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;padding:6px 2px">
+          <span style="font-size:11px;color:var(--muted)">
+            Prometheus scraping all nodes every 5 s · 12 panels · auto-refresh
+          </span>
+          <a href="http://localhost:3000/d/chord-dht-01?theme=dark" target="_blank"
+             style="font-size:11px;color:var(--blue);text-decoration:none">
+            Open full Grafana →
+          </a>
         </div>
       </div>
     </div><!-- end #view-grafana -->

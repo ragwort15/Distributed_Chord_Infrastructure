@@ -152,7 +152,12 @@ class ChordNode:
             try:
                 succ = self.successor
                 if succ["id"] == self.node_id:
-                    return  # single-node ring
+                    # Successor points to self but we have a predecessor —
+                    # bootstrap by using predecessor as successor so stabilize
+                    # can discover the real ring topology on the next cycle.
+                    if self.predecessor and self.predecessor["id"] != self.node_id:
+                        self.successor = self.predecessor
+                    return
 
                 # Ask successor for its predecessor
                 x = self._transport.get_predecessor(succ["address"])
