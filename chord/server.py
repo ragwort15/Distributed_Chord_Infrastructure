@@ -232,6 +232,23 @@ def create_app(node: ChordNode) -> Flask:
     def metrics():
         return jsonify(node.metrics())
 
+    @app.get("/api/status")
+    def api_status():
+        """Ring health summary — used by monitoring and the dashboard header."""
+        m = node.metrics()
+        return jsonify({
+            "node_id": node.node_id,
+            "address": node.address,
+            "successor": node.successor,
+            "predecessor": node.predecessor,
+            "queue_depth": m["queue_depth"],
+            "jobs_completed": m["jobs_completed"],
+            "jobs_failed": m["jobs_failed"],
+            "ring_size_estimate": sum(
+                1 for f in node.fingers if f.node_id is not None and f.node_id != node.node_id
+            ) + 1,
+        })
+
     # ------------------------------------------------------------------
     # Dashboard (served from chord/static/index.html)
     # ------------------------------------------------------------------
