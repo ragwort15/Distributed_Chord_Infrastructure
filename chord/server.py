@@ -209,6 +209,19 @@ def create_app(node: ChordNode) -> Flask:
             "replicas": replica_results,
         }), 201
 
+    @app.get("/jobs")
+    def list_jobs():
+        """List all jobs known to this node — filterable by ?status=pending|running|done|failed."""
+        status_filter = request.args.get("status")
+        with node._lock:
+            jobs = [
+                v for k, v in node.data_store.items()
+                if k.startswith("job:") and isinstance(v, dict)
+                and (status_filter is None or v.get("status") == status_filter)
+            ]
+        jobs.sort(key=lambda j: j.get("created_at", 0), reverse=True)
+        return jsonify({"jobs": jobs, "count": len(jobs), "node_id": node.node_id})
+
     @app.get("/jobs/<job_id>")
     def get_job(job_id):
         """Retrieve a job by ID from whichever node holds it."""
