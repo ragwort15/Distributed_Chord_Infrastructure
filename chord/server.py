@@ -15,6 +15,11 @@ from chord.node import ChordNode, sha1_id
 from chord.transport import HttpTransport
 from chord.job import make_job, job_key, ACTIVE_STATUSES, PENDING
 from chord.dummy_client import file_type
+from chord.metrics_registry import (
+    FILE_REQUESTS, FILE_REQUEST_HOPS, FILE_REQUEST_DURATION,
+    QUEUE_DEPTH, RING_SIZE, DATA_KEYS, STABILIZE_RUNS,
+    FINGER_FIX_RUNS, PREDECESSOR_FAILURES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -433,16 +438,17 @@ def create_app(node: ChordNode) -> Flask:
         if not filename:
             return jsonify({"error": "filename is required"}), 400
 
+        t0          = time.time()
+        ftype       = file_type(filename)
         key_id      = sha1_id(filename)
         responsible = node.find_successor(key_id)
-        hops        = 1  # at least one routing step
+        hops        = 1
+        nid_str     = str(node.node_id)
 
         if responsible["id"] == node.node_id:
-            # We are responsible — serve locally
             content = _ensure_file(node, filename)
             served_addr = node.address
         else:
-            # Route to the responsible node
             hops = 2
             served_addr = responsible["address"]
             try:
@@ -456,10 +462,15 @@ def create_app(node: ChordNode) -> Flask:
                 logger.warning(f"[Server] File routing failed for '{filename}': {e}")
                 content = {}
 
+        # ── Prometheus instrumentation ──
+        FILE_REQUESTS.labels(node_id=nid_str, file_type=ftype).inc()
+        FILE_REQUEST_HOPS.labels(node_id=nid_str).observe(hops)
+        FILE_REQUEST_DURATION.labels(node_id=nid_str).observe(time.time() - t0)
+
         entry = {
             "ts":             time.time(),
             "filename":       filename,
-            "file_type":      file_type(filename),
+            "file_type":      ftype,
             "client":         client,
             "key_id":         key_id,
             "routed_from":    node.node_id,
@@ -503,6 +514,23 @@ def create_app(node: ChordNode) -> Flask:
         """Last 30 file requests — polled by the dashboard."""
         with _request_lock:
             return jsonify({"requests": list(reversed(_request_log[-30:]))})
+
+    # ------------------------------------------------------------------
+    # Prometheus metrics endpoint
+    # ------------------------------------------------------------------
+
+    @app.get("/prom_metrics")
+    def prom_metrics():
+        """Prometheus text-format scrape endpoint."""
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        nid_str = str(node.node_id)
+        m       = node.metrics()
+        QUEUE_DEPTH.labels(node_id=nid_str).set(m["queue_depth"])
+        DATA_KEYS.labels(node_id=nid_str).set(len(node.data_store))
+        # Ring size: count unique non-self fingers + self
+        unique = {f.node_id for f in node.fingers if f.node_id is not None}
+        RING_SIZE.labels(node_id=nid_str).set(len(unique))
+        return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
     # ------------------------------------------------------------------
     # Metrics snapshot — time-series data for analytics charts
@@ -845,11 +873,17 @@ class MaintenanceThread(threading.Thread):
 
     def run(self):
         logger.info(f"[Maintenance] Started for node {self.node.node_id}")
+        nid = str(self.node.node_id)
         while not self._stop_event.is_set():
             try:
+                prev_pred = self.node.predecessor
                 self.node.stabilize()
+                STABILIZE_RUNS.labels(node_id=nid).inc()
                 self.node.fix_fingers()
+                FINGER_FIX_RUNS.labels(node_id=nid).inc()
                 self.node.check_predecessor()
+                if prev_pred and self.node.predecessor is None:
+                    PREDECESSOR_FAILURES.labels(node_id=nid).inc()
             except Exception as e:
                 logger.warning(f"[Maintenance] Error: {e}")
             self._stop_event.wait(self.interval)
