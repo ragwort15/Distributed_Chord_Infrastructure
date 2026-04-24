@@ -5,6 +5,7 @@ All node-to-node calls go through this class, keeping the core
 ChordNode logic completely decoupled from networking.
 """
 
+import time
 import requests
 import logging
 
@@ -12,26 +13,50 @@ logger = logging.getLogger(__name__)
 
 # Timeout for all inter-node HTTP calls (seconds)
 RPC_TIMEOUT = 3
+# Retries for transient failures (network blip, node briefly busy)
+RPC_RETRIES = 1
+RPC_RETRY_DELAY = 0.3
+
+
+def _get(url, **kwargs):
+    for attempt in range(RPC_RETRIES + 1):
+        try:
+            return requests.get(url, **kwargs)
+        except requests.RequestException:
+            if attempt == RPC_RETRIES:
+                raise
+            time.sleep(RPC_RETRY_DELAY)
+
+
+def _post(url, **kwargs):
+    for attempt in range(RPC_RETRIES + 1):
+        try:
+            return requests.post(url, **kwargs)
+        except requests.RequestException:
+            if attempt == RPC_RETRIES:
+                raise
+            time.sleep(RPC_RETRY_DELAY)
 
 
 class HttpTransport:
     """
-    Wraps every inter-node RPC as a simple HTTP call.
+    Wraps every inter-node RPC as a simple HTTP call with one retry
+    on transient network failures.
     """
 
     # Core Chord RPCs
 
     def find_successor(self, address: str, key_id: int) -> dict:
-        r = requests.get(
+        r = _get(
             f"http://{address}/chord/find_successor",
             params={"id": key_id},
             timeout=RPC_TIMEOUT,
         )
         r.raise_for_status()
-        return r.json()   # {"id": int, "address": str}
+        return r.json()
 
     def get_predecessor(self, address: str) -> dict | None:
-        r = requests.get(
+        r = _get(
             f"http://{address}/chord/predecessor",
             timeout=RPC_TIMEOUT,
         )
@@ -40,7 +65,7 @@ class HttpTransport:
         return data if data.get("id") is not None else None
 
     def notify(self, address: str, candidate: dict):
-        r = requests.post(
+        r = _post(
             f"http://{address}/chord/notify",
             json=candidate,
             timeout=RPC_TIMEOUT,
@@ -48,7 +73,7 @@ class HttpTransport:
         r.raise_for_status()
 
     def ping(self, address: str) -> bool:
-        r = requests.get(
+        r = _get(
             f"http://{address}/chord/ping",
             timeout=RPC_TIMEOUT,
         )
@@ -58,7 +83,7 @@ class HttpTransport:
     # Leave / pointer update RPCs
 
     def update_predecessor(self, address: str, new_pred: dict):
-        r = requests.post(
+        r = _post(
             f"http://{address}/chord/update_predecessor",
             json=new_pred,
             timeout=RPC_TIMEOUT,
@@ -66,7 +91,7 @@ class HttpTransport:
         r.raise_for_status()
 
     def update_successor(self, address: str, new_succ: dict):
-        r = requests.post(
+        r = _post(
             f"http://{address}/chord/update_successor",
             json=new_succ,
             timeout=RPC_TIMEOUT,
@@ -76,7 +101,7 @@ class HttpTransport:
     # Data transfer RPCs
 
     def put(self, address: str, key: str, value: dict) -> bool:
-        r = requests.post(
+        r = _post(
             f"http://{address}/data/{key}",
             json=value,
             timeout=RPC_TIMEOUT,
@@ -85,7 +110,7 @@ class HttpTransport:
         return True
 
     def get(self, address: str, key: str) -> dict | None:
-        r = requests.get(
+        r = _get(
             f"http://{address}/data/{key}",
             timeout=RPC_TIMEOUT,
         )
@@ -95,7 +120,7 @@ class HttpTransport:
         return r.json()
 
     def bulk_put(self, address: str, items: dict):
-        r = requests.post(
+        r = _post(
             f"http://{address}/chord/bulk_put",
             json=items,
             timeout=RPC_TIMEOUT,
@@ -103,7 +128,7 @@ class HttpTransport:
         r.raise_for_status()
 
     def get_metrics(self, address: str) -> dict:
-        r = requests.get(
+        r = _get(
             f"http://{address}/metrics",
             timeout=RPC_TIMEOUT,
         )
