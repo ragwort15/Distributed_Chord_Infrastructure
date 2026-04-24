@@ -4,6 +4,7 @@ Flask HTTP server exposing all Chord RPC endpoints and the public data/job API.
 
 import os
 import json
+import random
 import threading
 import time
 import logging
@@ -13,10 +14,16 @@ from flask import Flask, request, jsonify, send_from_directory
 from chord.node import ChordNode, sha1_id
 from chord.transport import HttpTransport
 from chord.job import make_job, job_key, ACTIVE_STATUSES, PENDING
+from chord.dummy_client import file_type
 
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+
+# In-memory request log — last 100 entries, shared across all threads
+_request_log: list[dict] = []
+_request_lock = threading.Lock()
 
 
 def create_app(node: ChordNode) -> Flask:
@@ -408,7 +415,140 @@ def create_app(node: ChordNode) -> Flask:
         threading.Thread(target=_do, daemon=True).start()
         return jsonify({"ok": True})
 
+    # ------------------------------------------------------------------
+    # File request routing — demonstrates DHT as a distributed file store
+    # ------------------------------------------------------------------
+
+    @app.post("/request")
+    def handle_request():
+        """
+        Receive a file request (from DummyClient or any HTTP client).
+        Hash the filename → find the responsible Chord node → route there.
+        The responsible node stores/serves dummy file content.
+        """
+        body     = request.get_json(force=True) or {}
+        filename = (body.get("filename") or "").strip()
+        client   = body.get("client", "unknown")
+
+        if not filename:
+            return jsonify({"error": "filename is required"}), 400
+
+        key_id      = sha1_id(filename)
+        responsible = node.find_successor(key_id)
+        hops        = 1  # at least one routing step
+
+        if responsible["id"] == node.node_id:
+            # We are responsible — serve locally
+            content = _ensure_file(node, filename)
+            served_addr = node.address
+        else:
+            # Route to the responsible node
+            hops = 2
+            served_addr = responsible["address"]
+            try:
+                r = _requests.post(
+                    f"http://{served_addr}/files/{filename}",
+                    json={"client": client},
+                    timeout=4,
+                )
+                content = r.json()
+            except Exception as e:
+                logger.warning(f"[Server] File routing failed for '{filename}': {e}")
+                content = {}
+
+        entry = {
+            "ts":             time.time(),
+            "filename":       filename,
+            "file_type":      file_type(filename),
+            "client":         client,
+            "key_id":         key_id,
+            "routed_from":    node.node_id,
+            "served_by_node": responsible["id"],
+            "served_by_addr": served_addr,
+            "hops":           hops,
+        }
+        with _request_lock:
+            _request_log.append(entry)
+            if len(_request_log) > 100:
+                _request_log.pop(0)
+
+        return jsonify({
+            "ok":             True,
+            "filename":       filename,
+            "key_id":         key_id,
+            "served_by_node": responsible["id"],
+            "served_by_addr": served_addr,
+            "hops":           hops,
+            "content":        content,
+        })
+
+    @app.post("/files/<path:filename>")
+    def file_put(filename):
+        """Called by a routing node to store/serve a file on this node."""
+        content = _ensure_file(node, filename)
+        content["serve_count"] = content.get("serve_count", 0) + 1
+        content["last_served"] = time.time()
+        node.put(f"file:{filename}", content)
+        return jsonify(content)
+
+    @app.get("/files/<path:filename>")
+    def file_get(filename):
+        content = node.get(f"file:{filename}")
+        if content is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(content)
+
+    @app.get("/api/requests")
+    def api_requests():
+        """Last 30 file requests — polled by the dashboard."""
+        with _request_lock:
+            return jsonify({"requests": list(reversed(_request_log[-30:]))})
+
     return app
+
+
+# ---------------------------------------------------------------------------
+# File store helper
+# ---------------------------------------------------------------------------
+
+_FILE_SIZES = {
+    "pdf": (50_000, 5_000_000), "csv": (1_000, 500_000),
+    "bin": (500_000, 100_000_000), "yaml": (200, 10_000),
+    "gz":  (10_000, 200_000_000), "zip": (5_000, 500_000_000),
+    "pptx":(100_000, 20_000_000), "png": (10_000, 10_000_000),
+    "jpg": (50_000, 8_000_000),   "mp4": (1_000_000, 2_000_000_000),
+    "tar": (10_000, 500_000_000), "md":  (500, 50_000),
+    "sql": (1_000, 10_000_000),   "json":(200, 5_000_000),
+    "txt": (500, 1_000_000),      "sh":  (100, 50_000),
+    "parquet":(50_000, 500_000_000),
+}
+
+def _fmt_size(b: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if b < 1024:
+            return f"{b:.1f} {unit}"
+        b /= 1024
+    return f"{b:.1f} TB"
+
+def _ensure_file(node: ChordNode, filename: str) -> dict:
+    """Return the file entry from the local store, creating it if absent."""
+    key     = f"file:{filename}"
+    content = node.get(key)
+    if content is None:
+        ext   = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        lo, hi = _FILE_SIZES.get(ext, (1_000, 10_000_000))
+        size  = random.randint(lo, hi)
+        content = {
+            "filename":    filename,
+            "file_type":   file_type(filename),
+            "size_bytes":  size,
+            "size_human":  _fmt_size(size),
+            "created_at":  time.time(),
+            "serve_count": 0,
+            "stored_at":   node.node_id,
+        }
+        node.put(key, content)
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +779,10 @@ def start_node(host: str, port: int, known_address: str = None,
                node_id: int = None, maintenance_interval: float = 2.0,
                enable_worker: bool = False, worker_interval: float = 1.0,
                worker_threads: int = 4, agent_key: str = None,
-               agent_loop_interval: float = 5.0):
+               agent_loop_interval: float = 5.0,
+               enable_dummy_client: bool = False,
+               dummy_interval_min: float = 20.0,
+               dummy_interval_max: float = 30.0):
     import os
     log_level = os.environ.get("LOG_LEVEL", "INFO")
     import logging as _logging
@@ -682,6 +825,16 @@ def start_node(host: str, port: int, known_address: str = None,
     # Failure watcher
     watcher = FailureWatcherThread(node, agent, interval=maintenance_interval)
     watcher.start()
+
+    # Dummy client (optional)
+    if enable_dummy_client:
+        from chord.dummy_client import DummyClient
+        dc = DummyClient(address, dummy_interval_min, dummy_interval_max)
+        dc.start()
+        logger.info(
+            f"DummyClient started — requests every "
+            f"{dummy_interval_min}–{dummy_interval_max}s"
+        )
 
     logger.info(f"Starting Chord node {node.node_id} on {address}")
     app.run(host=host, port=port, threaded=True)

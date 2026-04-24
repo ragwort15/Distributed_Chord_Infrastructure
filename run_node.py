@@ -47,6 +47,14 @@ def main():
     parser.add_argument("--agent-loop-interval", type=float, default=5.0,
                         help="Agent decision-loop polling interval in seconds (default: 5.0)")
 
+    # Dummy client
+    parser.add_argument("--dummy-client", action="store_true",
+                        help="Start a dummy client that sends file requests every 20-30s")
+    parser.add_argument("--dummy-interval-min", type=float, default=20.0,
+                        help="Minimum seconds between dummy requests (default: 20)")
+    parser.add_argument("--dummy-interval-max", type=float, default=30.0,
+                        help="Maximum seconds between dummy requests (default: 30)")
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -65,6 +73,9 @@ def main():
         worker_threads=args.workers,
         agent_key=args.agent_key,
         agent_loop_interval=args.agent_loop_interval,
+        enable_dummy_client=args.dummy_client,
+        dummy_interval_min=args.dummy_interval_min,
+        dummy_interval_max=args.dummy_interval_max,
     )
 
 
