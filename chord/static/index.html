@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chord DHT — Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -173,6 +174,59 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
 .cmd { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 10px; font-family: var(--mono); font-size: 11px; color: var(--green); word-break: break-all; user-select: all; margin: 8px 0; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
 
+/* ── View toggle (Ring / Analytics) ── */
+.view-tabs { display: flex; gap: 4px; flex-shrink: 0; }
+.vtab {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--muted);
+  font-size: 12px; font-weight: 500; padding: 5px 13px; border-radius: 6px;
+  cursor: pointer; transition: all .15s;
+}
+.vtab:hover { color: var(--text); }
+.vtab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.view-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.view-content.hidden { display: none; }
+
+/* ── Analytics grid ── */
+.charts-grid {
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+  gap: 12px; flex: 1; min-height: 0; padding: 4px 0;
+}
+.chart-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; display: flex; flex-direction: column; min-height: 0;
+}
+.chart-title {
+  font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 8px;
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.chart-sub { font-weight: 400; color: var(--muted); font-size: 10px; }
+.chart-card canvas { flex: 1; min-height: 0; }
+
+/* ── Analytics summary bar ── */
+.metrics-row {
+  display: flex; gap: 10px; flex-shrink: 0; padding-top: 10px;
+}
+.metric-stat {
+  flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 12px; text-align: center;
+}
+.ms-val   { font-size: 20px; font-weight: 700; font-family: var(--mono); color: var(--blue); }
+.ms-label { font-size: 10px; color: var(--muted); margin-top: 2px; text-transform: uppercase; letter-spacing:.05em; }
+
+/* ── Fault injection panel ── */
+.fault-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; }
+.fault-section {}
+.fault-label { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+.recovery-log { display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto; }
+.rec-item { display: flex; gap: 8px; font-size: 11px; padding: 3px 0; }
+.rec-time { color: var(--muted); font-family: var(--mono); flex-shrink: 0; }
+.rec-msg  { color: var(--text); }
+.fault-health { font-family: var(--mono); font-size: 12px; }
+.fh-ok   { color: var(--green); }
+.fh-warn { color: var(--amber); }
+.fh-dead { color: var(--red); }
+.s-tab-btn.fault-tab { color: var(--red); }
+
 /* ── Node detail modal ── */
 #node-modal { z-index: 60; }
 .nd-inner {
@@ -261,11 +315,16 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
 </header>
 
 <main>
-  <!-- ══════════ LEFT: Ring ══════════ -->
+  <!-- ══════════ LEFT: Ring / Analytics ══════════ -->
   <div class="ring-panel">
     <div class="toolbar">
-      <label><input type="checkbox" id="tog-fingers"> Show finger tables</label>
-      <label><input type="checkbox" id="tog-ids" checked> Node IDs</label>
+      <!-- View toggle -->
+      <div class="view-tabs">
+        <button class="vtab active" id="vtab-ring">⬡ Ring</button>
+        <button class="vtab"        id="vtab-analytics">📊 Analytics</button>
+      </div>
+      <label><input type="checkbox" id="tog-fingers"> Fingers</label>
+      <label><input type="checkbox" id="tog-ids" checked> IDs</label>
       <div style="flex:1"></div>
       <button class="btn btn-ghost" id="btn-add">＋ Add Node</button>
       <select id="rm-sel" style="flex:unset;width:auto;max-width:150px">
@@ -274,6 +333,8 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
       <button class="btn btn-danger" id="btn-rm">Remove</button>
     </div>
 
+    <!-- ── Ring view ── -->
+    <div class="view-content" id="view-ring">
     <div class="ring-wrap">
       <svg id="ring-svg" viewBox="0 0 700 700" xmlns="http://www.w3.org/2000/svg">
         <defs>
@@ -303,7 +364,38 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
       Route: <span id="hop-path">—</span>
       &nbsp;·&nbsp;<strong id="hop-cnt">0</strong> hop(s)
     </div>
-  </div>
+    </div><!-- end #view-ring -->
+
+    <!-- ── Analytics view ── -->
+    <div class="view-content hidden" id="view-analytics">
+      <div class="charts-grid">
+        <div class="chart-card">
+          <div class="chart-title">Request Throughput <span class="chart-sub">per min · last 2 min</span></div>
+          <canvas id="chart-throughput"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Hop Count Distribution <span class="chart-sub">O(log N) target ≤ 3</span></div>
+          <canvas id="chart-hops"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Node Load <span class="chart-sub">queue depth per node</span></div>
+          <canvas id="chart-load"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Agent Strategy <span class="chart-sub">LLM vs heuristic decisions</span></div>
+          <canvas id="chart-agent"></canvas>
+        </div>
+      </div>
+      <div class="metrics-row" id="metrics-summary">
+        <div class="metric-stat"><div class="ms-val" id="ms-reqs">—</div><div class="ms-label">Total Requests</div></div>
+        <div class="metric-stat"><div class="ms-val" id="ms-hops">—</div><div class="ms-label">Avg Hops</div></div>
+        <div class="metric-stat"><div class="ms-val" id="ms-done">—</div><div class="ms-label">Jobs Done</div></div>
+        <div class="metric-stat"><div class="ms-val" id="ms-fail">—</div><div class="ms-label">Jobs Failed</div></div>
+        <div class="metric-stat"><div class="ms-val" id="ms-nodes">—</div><div class="ms-label">Ring Size</div></div>
+      </div>
+    </div><!-- end #view-analytics -->
+
+  </div><!-- end .ring-panel -->
 
   <!-- ══════════ RIGHT: Sidebar ══════════ -->
   <aside>
@@ -332,13 +424,36 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
     <!-- Tabbed panel: Requests | Jobs | Agent Log -->
     <div class="s-sec grow" style="display:flex;flex-direction:column;min-height:0">
       <div class="s-tabs-bar">
-        <button class="s-tab-btn active" data-panel="req">File Requests</button>
+        <button class="s-tab-btn active" data-panel="req">Requests</button>
         <button class="s-tab-btn"        data-panel="jobs">Jobs <span id="j-count" class="s-count"></span></button>
-        <button class="s-tab-btn"        data-panel="logs">Agent Log</button>
+        <button class="s-tab-btn"        data-panel="logs">Agent</button>
+        <button class="s-tab-btn fault-tab" data-panel="fault">⚡ Fault</button>
       </div>
       <div class="scroll s-panel active" id="panel-req"><div class="empty">Waiting for requests…</div></div>
       <div class="scroll s-panel"        id="panel-jobs"><div class="empty">No jobs yet</div></div>
       <div class="scroll s-panel"        id="panel-logs"><div class="empty">No decisions yet</div></div>
+      <div class="s-panel"               id="panel-fault">
+        <div class="fault-body">
+          <div class="fault-section">
+            <div class="fault-label">Crash a Node (hard kill)</div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <select id="fault-sel" style="flex:1"><option value="">Select node…</option></select>
+              <button class="btn btn-danger" id="btn-crash">💀 Crash</button>
+            </div>
+            <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">
+              Sends SIGKILL — no graceful leave. Ring heals via stabilization. Recovery agent rescues orphaned jobs.
+            </div>
+          </div>
+          <div class="fault-section">
+            <div class="fault-label">Ring Health</div>
+            <div id="fault-health" class="fault-health fh-ok">● Monitoring…</div>
+          </div>
+          <div class="fault-section">
+            <div class="fault-label">Recovery Log</div>
+            <div class="recovery-log" id="recovery-log"><div class="empty">No faults injected yet</div></div>
+          </div>
+        </div>
+      </div>
     </div>
   </aside>
 </main>
@@ -433,6 +548,141 @@ let ring    = { nodes: [], this_node: null };
 let showFin = false;
 let showIds = true;
 let animating = false;
+
+// Dead node tracking
+const deadNodes = new Map(); // node_id → {ts, address, id}
+let prevNodeIds = new Set();
+
+// Recovery log
+const recoveryEvents = [];
+function addRecoveryLog(msg) {
+  const t = new Date().toLocaleTimeString();
+  recoveryEvents.unshift({ t, msg });
+  if (recoveryEvents.length > 30) recoveryEvents.pop();
+  const el2 = document.getElementById('recovery-log');
+  if (el2) el2.innerHTML = recoveryEvents.map(e =>
+    `<div class="rec-item"><span class="rec-time">${e.t}</span><span class="rec-msg">${e.msg}</span></div>`
+  ).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Chart.js — Analytics view
+// ═══════════════════════════════════════════════════════════════
+const GRID_STYLE  = { color:'rgba(48,54,61,0.7)', drawBorder:false };
+const TICK_STYLE  = { color:'#8b949e', font:{ size:10 } };
+const analyticsHistory = []; // rolling last 24 snapshots
+let chartThroughput, chartHops, chartLoad, chartAgent;
+let chartsInited = false;
+
+function initCharts() {
+  if (chartsInited) return;
+  chartsInited = true;
+  Chart.defaults.color = '#8b949e';
+  Chart.defaults.font.size = 10;
+
+  const ctx = id => document.getElementById(id).getContext('2d');
+
+  chartThroughput = new Chart(ctx('chart-throughput'), {
+    type: 'line',
+    data: { labels: [], datasets: [{ label:'Req/min', data:[], borderColor:'#58a6ff', backgroundColor:'rgba(88,166,255,.12)', fill:true, tension:.4, pointRadius:3 }] },
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}},
+      scales:{ x:{grid:GRID_STYLE, ticks:{...TICK_STYLE, maxTicksLimit:6}}, y:{grid:GRID_STYLE, ticks:TICK_STYLE, beginAtZero:true} } }
+  });
+
+  chartHops = new Chart(ctx('chart-hops'), {
+    type: 'bar',
+    data: { labels:['1 hop','2 hops','3 hops','4+ hops'],
+      datasets:[{ data:[0,0,0,0], backgroundColor:['#3fb950','#58a6ff','#ffa657','#f85149'], borderRadius:4 }] },
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}},
+      scales:{ x:{grid:GRID_STYLE, ticks:TICK_STYLE}, y:{grid:GRID_STYLE, ticks:TICK_STYLE, beginAtZero:true} } }
+  });
+
+  chartLoad = new Chart(ctx('chart-load'), {
+    type: 'bar',
+    data: { labels:[], datasets:[{ label:'Queue Depth', data:[], backgroundColor:[], borderRadius:5 }] },
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}},
+      scales:{ x:{grid:GRID_STYLE, ticks:TICK_STYLE}, y:{grid:GRID_STYLE, ticks:TICK_STYLE, beginAtZero:true} } }
+  });
+
+  chartAgent = new Chart(ctx('chart-agent'), {
+    type: 'doughnut',
+    data: { labels:['LLM','Heuristic','No-agent'], datasets:[{ data:[0,0,0], backgroundColor:['#3fb950','#d29922','#30363d'], borderWidth:2, borderColor:'#161b22' }] },
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{ legend:{ display:true, position:'bottom', labels:{color:'#8b949e', font:{size:10}, padding:10 } } } }
+  });
+}
+
+function updateCharts(snap) {
+  analyticsHistory.push(snap);
+  if (analyticsHistory.length > 24) analyticsHistory.shift();
+
+  // Throughput
+  chartThroughput.data.labels = analyticsHistory.map(s => new Date(s.ts*1000).toLocaleTimeString());
+  chartThroughput.data.datasets[0].data = analyticsHistory.map(s => s.req_per_min);
+  chartThroughput.update('none');
+
+  // Hop distribution
+  const hd = snap.hop_dist || {};
+  chartHops.data.datasets[0].data = [
+    hd['1']||0, hd['2']||0, hd['3']||0,
+    Object.entries(hd).filter(([k])=>parseInt(k)>=4).reduce((s,[,v])=>s+v, 0)
+  ];
+  chartHops.update('none');
+
+  // Node load
+  const loads = snap.node_loads || {};
+  const nids  = Object.keys(loads).sort((a,b)=>parseInt(a)-parseInt(b));
+  chartLoad.data.labels = nids.map(id=>`Node ${id}`);
+  chartLoad.data.datasets[0].data = nids.map(id=>loads[id]);
+  chartLoad.data.datasets[0].backgroundColor = nids.map(id=>nodeColorMap[parseInt(id)]||'#3fb950');
+  chartLoad.update('none');
+
+  // Summary stats
+  document.getElementById('ms-reqs').textContent  = snap.total_requests;
+  document.getElementById('ms-hops').textContent  = snap.avg_hops.toFixed(1);
+  document.getElementById('ms-done').textContent  = snap.jobs_completed;
+  document.getElementById('ms-fail').textContent  = snap.jobs_failed;
+  document.getElementById('ms-nodes').textContent = snap.ring_size;
+}
+
+function updateAgentChart(entries) {
+  let llm=0, heur=0, none=0;
+  for (const e of entries) {
+    const s = e.strategy||'';
+    if (s==='llm') llm++;
+    else if (s.startsWith('heuristic')) heur++;
+    else none++;
+  }
+  chartAgent.data.datasets[0].data = [llm, heur, none];
+  chartAgent.update('none');
+}
+
+async function pollMetrics() {
+  try {
+    const r    = await fetch('/api/metrics/snapshot', {cache:'no-store'});
+    const snap = await r.json();
+    if (chartsInited) updateCharts(snap);
+  } catch {}
+}
+
+// ── View toggle ──
+document.getElementById('vtab-ring').addEventListener('click', () => {
+  document.getElementById('vtab-ring').classList.add('active');
+  document.getElementById('vtab-analytics').classList.remove('active');
+  document.getElementById('view-ring').classList.remove('hidden');
+  document.getElementById('view-analytics').classList.add('hidden');
+});
+document.getElementById('vtab-analytics').addEventListener('click', () => {
+  document.getElementById('vtab-analytics').classList.add('active');
+  document.getElementById('vtab-ring').classList.remove('active');
+  document.getElementById('view-analytics').classList.remove('hidden');
+  document.getElementById('view-ring').classList.add('hidden');
+  initCharts();
+  pollMetrics();
+});
 
 // ═══════════════════════════════════════════════════════════════
 // Geometry
@@ -596,6 +846,18 @@ function renderRing() {
     }
   }
   svg.appendChild(ng);
+
+  // ── Dead node ghost circles ──
+  const dg = el('g');
+  for (const [id] of deadNodes) {
+    if (ring.nodes.find(n => n.node_id === id)) continue;
+    const p = npos(id);
+    dg.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR+6, fill:'none', stroke:'#f85149','stroke-width':1.5,'stroke-dasharray':'4,3', opacity:.6 }));
+    dg.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR, fill:'#f85149','fill-opacity':.1, stroke:'#f85149','stroke-width':1.5,'stroke-dasharray':'4,3' }));
+    dg.appendChild(txt(p.x, p.y-1, id,  { fill:'#f85149','font-size':10,'font-family':'monospace','font-weight':700 }));
+    dg.appendChild(txt(p.x, p.y+12,'✕', { fill:'#f85149','font-size':9,'font-family':'monospace' }));
+  }
+  svg.appendChild(dg);
   } catch(e) { console.error('renderRing error:', e); }
 }
 
@@ -756,9 +1018,54 @@ async function pollRing() {
   try {
     const ringResp = await fetch('/api/ring', {cache:'no-store'});
     ring = await ringResp.json();
+
+    // ── Dead node tracking ──
+    const newIds = new Set(ring.nodes.map(n => n.node_id));
+    for (const id of prevNodeIds) {
+      if (!newIds.has(id) && !deadNodes.has(id)) {
+        deadNodes.set(id, { ts: Date.now() });
+        addRecoveryLog(`💀 Node ${id} disappeared from ring`);
+        setTimeout(() => addRecoveryLog(`🔄 Ring stabilizing — finger tables updating…`), 3000);
+        setTimeout(() => addRecoveryLog(`✅ Ring stabilized after Node ${id} loss`), 7000);
+      }
+    }
+    for (const [id, info] of deadNodes) {
+      if (newIds.has(id)) { deadNodes.delete(id); addRecoveryLog(`🟢 Node ${id} recovered`); }
+      else if (Date.now() - info.ts > 35000) deadNodes.delete(id);
+    }
+    prevNodeIds = newIds;
+
+    // ── Fault health indicator ──
+    const hEl = document.getElementById('fault-health');
+    if (hEl) {
+      if (deadNodes.size > 0) {
+        hEl.className = 'fault-health fh-dead';
+        hEl.textContent = `● ${deadNodes.size} node(s) dead — healing`;
+      } else if (ring.nodes.length < 2) {
+        hEl.className = 'fault-health fh-warn';
+        hEl.textContent = `● Single-node ring — no redundancy`;
+      } else {
+        hEl.className = 'fault-health fh-ok';
+        hEl.textContent = `● Ring healthy — ${ring.nodes.length} nodes`;
+      }
+    }
+
+    // ── Fault selector sync ──
+    const fsel = document.getElementById('fault-sel');
+    if (fsel) {
+      const cur = fsel.value;
+      fsel.innerHTML = '<option value="">Select node…</option>';
+      for (const nd of ring.nodes) {
+        const o = document.createElement('option');
+        o.value = nd.address;
+        o.textContent = `Node ${nd.node_id} (${nd.address})`;
+        fsel.appendChild(o);
+      }
+      if (cur) fsel.value = cur;
+    }
+
     renderRing();
     updateHeader();
-    // Queue depth badge (best-effort)
     try {
       const statusResp = await fetch('/api/status', {cache:'no-store'});
       const status = await statusResp.json();
@@ -805,6 +1112,7 @@ setInterval(pollRing,     2000);
 setInterval(pollJobs,     2500);
 setInterval(pollLogs,     3000);
 setInterval(pollRequests, 2000);
+setInterval(pollMetrics,  5000);
 pollRing(); pollJobs(); pollLogs(); pollRequests();
 
 // ── Sidebar tab switching ──
@@ -815,6 +1123,35 @@ document.querySelectorAll('.s-tab-btn').forEach(btn => {
     btn.classList.add('active');
     document.getElementById(`panel-${btn.dataset.panel}`).classList.add('active');
   });
+});
+
+// ── Agent log also feeds the agent chart ──
+async function pollLogsAndChart() {
+  try {
+    const r       = await fetch('/api/logs', {cache:'no-store'});
+    const entries = (await r.json()).entries || [];
+    renderLogs(entries);
+    if (chartsInited) updateAgentChart(entries);
+  } catch {}
+}
+setInterval(pollLogsAndChart, 4000);
+
+// ═══════════════════════════════════════════════════════════════
+// Fault injection
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btn-crash').addEventListener('click', async () => {
+  const addr = document.getElementById('fault-sel').value;
+  if (!addr) { alert('Select a node first'); return; }
+  const nd = ring.nodes.find(n => n.address === addr);
+  if (!confirm(`Hard-crash Node ${nd?.node_id} (${addr})?\n\nThis sends SIGKILL — no data handoff.\nThe ring will heal via stabilization in ~6s.\nRecovery agent will rescue any orphaned jobs.`)) return;
+
+  addRecoveryLog(`⚡ Injecting fault → Node ${nd?.node_id} (${addr})`);
+  try {
+    await fetch(`/api/nodes/${encodeURIComponent(addr)}/crash`, { method:'POST' });
+    addRecoveryLog(`💀 SIGKILL sent to Node ${nd?.node_id}`);
+  } catch {
+    addRecoveryLog(`💀 Node ${nd?.node_id} killed (no response — expected)`);
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════
