@@ -12,10 +12,14 @@ from chord.job import PENDING, CLAIMED, RUNNING, DONE, FAILED, job_key
 logger = logging.getLogger(__name__)
 
 
+JOB_TIMEOUT = 120  # seconds before a RUNNING job is declared stuck and failed
+
+
 class WorkerThread(threading.Thread):
     """
     Daemon thread that polls the node's local data_store for PENDING jobs,
     atomically claims them, then executes them in a thread pool.
+    Also reaps jobs stuck in RUNNING state beyond JOB_TIMEOUT.
     """
 
     def __init__(self, node, interval: float = 1.0, max_workers: int = 4):
@@ -31,9 +35,27 @@ class WorkerThread(threading.Thread):
         while not self._stop_event.is_set():
             try:
                 self._scan_and_claim()
+                self._reap_timed_out_jobs()
             except Exception as e:
                 logger.warning(f"[Worker {self.node.node_id}] Scan error: {e}")
             self._stop_event.wait(self.interval)
+
+    def _reap_timed_out_jobs(self):
+        """Mark RUNNING jobs that exceeded JOB_TIMEOUT as FAILED."""
+        now = time.time()
+        with self.node._lock:
+            for k, v in self.node.data_store.items():
+                if not (k.startswith("job:") and isinstance(v, dict)):
+                    continue
+                if v.get("status") == RUNNING:
+                    started = v.get("started_at") or now
+                    if now - started > JOB_TIMEOUT:
+                        v["status"] = FAILED
+                        v["finished_at"] = now
+                        v["error"] = f"timed out after {JOB_TIMEOUT}s"
+                        self.node.data_store[k] = v
+                        self.node.jobs_failed += 1
+                        logger.warning(f"[Worker {self.node.node_id}] Job {k} timed out")
 
     def stop(self):
         self._stop_event.set()
