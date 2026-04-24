@@ -504,6 +504,93 @@ def create_app(node: ChordNode) -> Flask:
         with _request_lock:
             return jsonify({"requests": list(reversed(_request_log[-30:]))})
 
+    # ------------------------------------------------------------------
+    # Metrics snapshot — time-series data for analytics charts
+    # ------------------------------------------------------------------
+
+    @app.get("/api/metrics/snapshot")
+    def metrics_snapshot():
+        now = time.time()
+        with _request_lock:
+            all_reqs = list(_request_log)
+
+        recent_60s = [r for r in all_reqs if now - r["ts"] < 60]
+        recent_30  = all_reqs[-30:] if all_reqs else []
+
+        hop_dist: dict[str, int] = {}
+        for r in all_reqs:
+            h = str(r.get("hops", 1))
+            hop_dist[h] = hop_dist.get(h, 0) + 1
+
+        hops_list = [r.get("hops", 1) for r in recent_30]
+        avg_hops  = sum(hops_list) / len(hops_list) if hops_list else 0
+
+        # Collect per-node metrics via ring walk
+        node_loads: dict[str, int] = {}
+        jobs_completed = 0
+        jobs_failed    = 0
+        seen: set[int] = set()
+        to_visit = [node.address]
+        visited:  set[str] = set()
+
+        while to_visit:
+            addr = to_visit.pop(0)
+            if addr in visited:
+                continue
+            visited.add(addr)
+            try:
+                if addr == node.address:
+                    m = node.metrics()
+                else:
+                    r = _requests.get(f"http://{addr}/metrics", timeout=0.8)
+                    m = r.json()
+                nid = m["node_id"]
+                if nid not in seen:
+                    seen.add(nid)
+                    node_loads[str(nid)] = m.get("queue_depth", 0)
+                    jobs_completed += m.get("jobs_completed", 0)
+                    jobs_failed    += m.get("jobs_failed", 0)
+                    for f in node.fingers:
+                        if f.node_id not in seen and f.node_address and f.node_address not in visited:
+                            to_visit.append(f.node_address)
+                            break
+            except Exception:
+                pass
+
+        return jsonify({
+            "ts":             now,
+            "req_per_min":    len(recent_60s),
+            "avg_hops":       round(avg_hops, 2),
+            "hop_dist":       hop_dist,
+            "node_loads":     node_loads,
+            "total_requests": len(all_reqs),
+            "jobs_completed": jobs_completed,
+            "jobs_failed":    jobs_failed,
+            "ring_size":      len(seen),
+        })
+
+    # ------------------------------------------------------------------
+    # Fault injection — hard kill (no graceful handoff)
+    # ------------------------------------------------------------------
+
+    @app.post("/admin/crash")
+    def admin_crash():
+        """Immediately kill this process — simulates a sudden node failure."""
+        threading.Thread(
+            target=lambda: (time.sleep(0.15), os._exit(1)),
+            daemon=True
+        ).start()
+        return jsonify({"ok": True})
+
+    @app.post("/api/nodes/<path:address>/crash")
+    def api_crash_node(address):
+        """Proxy crash command to another node (avoids CORS from browser)."""
+        try:
+            _requests.post(f"http://{address}/admin/crash", timeout=2)
+        except Exception:
+            pass  # Node dies before it can reply — expected
+        return jsonify({"ok": True})
+
     return app
 
 
