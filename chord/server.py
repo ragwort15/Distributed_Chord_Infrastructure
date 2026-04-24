@@ -146,6 +146,12 @@ def create_app(node: ChordNode) -> Flask:
         payload = body.get("payload", {})
         requested_replicas = int(body.get("replicas", 1))
 
+        valid_types = {"echo", "sleep", "compute"}
+        if job_type not in valid_types:
+            return jsonify({"error": f"Unknown job type '{job_type}'. Valid: {sorted(valid_types)}"}), 400
+        if requested_replicas < 1 or requested_replicas > 10:
+            return jsonify({"error": "replicas must be between 1 and 10"}), 400
+
         agent = app.config.get("agent")
         transport = node._transport
 
