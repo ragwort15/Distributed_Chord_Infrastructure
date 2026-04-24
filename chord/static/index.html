@@ -174,6 +174,24 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
 .cmd { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 10px; font-family: var(--mono); font-size: 11px; color: var(--green); word-break: break-all; user-select: all; margin: 8px 0; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
 
+/* ── Grafana embed view ── */
+.grafana-wrap {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 4px 0;
+}
+.grafana-row { display: flex; gap: 10px; flex: 1; min-height: 0; }
+.grafana-frame {
+  flex: 1; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel); overflow: hidden; min-height: 0;
+}
+.grafana-frame iframe { width: 100%; height: 100%; border: none; display: block; }
+.grafana-placeholder {
+  flex: 1; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; min-height: 200px;
+}
+.grafana-placeholder a { color: var(--blue); font-size: 13px; }
+.grafana-placeholder p { color: var(--muted); font-size: 11px; }
+
 /* ── View toggle (Ring / Analytics) ── */
 .view-tabs { display: flex; gap: 4px; flex-shrink: 0; }
 .vtab {
@@ -322,6 +340,7 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
       <div class="view-tabs">
         <button class="vtab active" id="vtab-ring">⬡ Ring</button>
         <button class="vtab"        id="vtab-analytics">📊 Analytics</button>
+        <button class="vtab"        id="vtab-grafana">🔭 Observability</button>
       </div>
       <label><input type="checkbox" id="tog-fingers"> Fingers</label>
       <label><input type="checkbox" id="tog-ids" checked> IDs</label>
@@ -394,6 +413,49 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
         <div class="metric-stat"><div class="ms-val" id="ms-nodes">—</div><div class="ms-label">Ring Size</div></div>
       </div>
     </div><!-- end #view-analytics -->
+
+    <!-- ── Grafana / Observability view ── -->
+    <div class="view-content hidden" id="view-grafana">
+      <div class="grafana-wrap">
+        <div class="grafana-row">
+          <div class="grafana-frame" style="flex:2">
+            <iframe id="gf-throughput"
+              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=1&refresh=5s&theme=dark"
+              title="Request Throughput"></iframe>
+          </div>
+          <div class="grafana-frame">
+            <iframe id="gf-hops"
+              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=8&refresh=5s&theme=dark"
+              title="Hop Distribution"></iframe>
+          </div>
+        </div>
+        <div class="grafana-row">
+          <div class="grafana-frame">
+            <iframe id="gf-load"
+              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=9&refresh=5s&theme=dark"
+              title="Queue Depth"></iframe>
+          </div>
+          <div class="grafana-frame">
+            <iframe id="gf-latency"
+              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=10&refresh=5s&theme=dark"
+              title="Request Latency"></iframe>
+          </div>
+          <div class="grafana-frame">
+            <iframe id="gf-keys"
+              src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=11&refresh=5s&theme=dark"
+              title="Data Keys"></iframe>
+          </div>
+        </div>
+        <div class="grafana-row" style="flex:unset;height:80px;gap:10px">
+          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=2&refresh=5s&theme=dark" title="Avg Hops"></iframe></div>
+          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=3&refresh=5s&theme=dark" title="Ring Size"></iframe></div>
+          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=4&refresh=5s&theme=dark" title="Total Requests"></iframe></div>
+          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=5&refresh=5s&theme=dark" title="Jobs Done"></iframe></div>
+          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=6&refresh=5s&theme=dark" title="Jobs Failed"></iframe></div>
+          <div class="grafana-frame"><iframe src="http://localhost:3000/d-solo/chord-dht-01?orgId=1&panelId=7&refresh=5s&theme=dark" title="Stabilizations"></iframe></div>
+        </div>
+      </div>
+    </div><!-- end #view-grafana -->
 
   </div><!-- end .ring-panel -->
 
@@ -669,20 +731,17 @@ async function pollMetrics() {
 }
 
 // ── View toggle ──
-document.getElementById('vtab-ring').addEventListener('click', () => {
-  document.getElementById('vtab-ring').classList.add('active');
-  document.getElementById('vtab-analytics').classList.remove('active');
-  document.getElementById('view-ring').classList.remove('hidden');
-  document.getElementById('view-analytics').classList.add('hidden');
-});
-document.getElementById('vtab-analytics').addEventListener('click', () => {
-  document.getElementById('vtab-analytics').classList.add('active');
-  document.getElementById('vtab-ring').classList.remove('active');
-  document.getElementById('view-analytics').classList.remove('hidden');
-  document.getElementById('view-ring').classList.add('hidden');
-  initCharts();
-  pollMetrics();
-});
+const VIEWS = ['ring', 'analytics', 'grafana'];
+function switchView(name) {
+  VIEWS.forEach(v => {
+    document.getElementById(`vtab-${v}`)?.classList.toggle('active', v === name);
+    document.getElementById(`view-${v}`)?.classList.toggle('hidden', v !== name);
+  });
+  if (name === 'analytics') { initCharts(); pollMetrics(); }
+}
+document.getElementById('vtab-ring').addEventListener('click',      () => switchView('ring'));
+document.getElementById('vtab-analytics').addEventListener('click', () => switchView('analytics'));
+document.getElementById('vtab-grafana').addEventListener('click',   () => switchView('grafana'));
 
 // ═══════════════════════════════════════════════════════════════
 // Geometry
