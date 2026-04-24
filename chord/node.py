@@ -57,6 +57,10 @@ class ChordNode:
         self._lock = threading.RLock()
         self._transport = None  # injected after construction
 
+        # Job execution counters (updated by WorkerThread)
+        self.jobs_completed: int = 0
+        self.jobs_failed: int = 0
+
         # Point successor to self initially (single-node ring)
         self.fingers[0].node_id = self.node_id
         self.fingers[0].node_address = self.address
@@ -276,6 +280,23 @@ class ChordNode:
         with self._lock:
             self.data_store.update(items)
             logger.info(f"[Node {self.node_id}] Bulk received {len(items)} keys")
+
+    # Agent metrics
+
+    def metrics(self) -> dict:
+        """Lightweight snapshot used by the agent loop and /metrics endpoint."""
+        with self._lock:
+            queue_depth = sum(
+                1 for v in self.data_store.values()
+                if isinstance(v, dict) and v.get("status") in ("pending", "claimed", "running")
+            )
+            return {
+                "node_id": self.node_id,
+                "address": self.address,
+                "queue_depth": queue_depth,
+                "jobs_completed": self.jobs_completed,
+                "jobs_failed": self.jobs_failed,
+            }
 
     # Debug / introspection
 
