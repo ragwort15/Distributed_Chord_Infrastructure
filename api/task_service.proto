@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package distributedchord.tasks.v1;
+
+message NodeRef {
+  int32 id = 1;
+  string address = 2;
+}
+
+message TaskRecord {
+  string schema_version = 1;
+  string task_id = 2;
+  string job_id = 3;
+  string type = 4;
+  string payload_json = 5;
+  int32 priority = 6;
+  string status = 7;
+  string result_json = 8;
+  string error_json = 9;
+  string created_at = 10;
+  string updated_at = 11;
+  int64 version = 12;
+  bool deleted = 13;
+  NodeRef primary_node = 14;
+  repeated NodeRef replica_nodes = 15;
+  int32 replication_factor = 16;
+}
+
+message RegisterTaskRequest {
+  string task_id = 1;
+  string job_id = 2;
+  string type = 3;
+  string payload_json = 4;
+  int32 priority = 5;
+}
+
+message RegisterTaskResponse {
+  TaskRecord task = 1;
+  string task_key = 2;
+  string replication_state = 3;
+}
+
+message GetTaskRequest {
+  string task_id = 1;
+  bool allow_replica_read = 2;
+}
+
+message GetTaskResponse {
+  TaskRecord task = 1;
+}
+
+message DeregisterTaskRequest {
+  string task_id = 1;
+  bool hard_delete = 2;
+}
+
+message DeregisterTaskResponse {
+  string task_id = 1;
+  string task_key = 2;
+  bool hard_delete = 3;
+  string replication_state = 4;
+}
+
+message QueryTasksRequest {
+  string job_id = 1;
+  string status = 2;
+  bool include_deleted = 3;
+  int32 limit = 4;
+}
+
+message QueryTasksResponse {
+  repeated TaskRecord tasks = 1;
+}
+
+message LookupTaskOwnerRequest {
+  string task_id = 1;
+}
+
+message LookupTaskOwnerResponse {
+  string task_id = 1;
+  string task_key = 2;
+  NodeRef primary = 3;
+  repeated NodeRef replicas = 4;
+}
+
+message GetNodeInfoRequest {
+  string address = 1;
+}
+
+message GetNodeInfoResponse {
+  int32 node_id = 1;
+  string address = 2;
+  NodeRef successor = 3;
+  NodeRef predecessor = 4;
+  repeated string data_keys = 5;
+}
+
+message ReplicateTaskRequest {
+  string task_key = 1;
+  TaskRecord task = 2;
+}
+
+message ReplicateTaskResponse {
+  bool ok = 1;
+  string task_key = 2;
+}
+
+service TaskService {
+  rpc RegisterTask(RegisterTaskRequest) returns (RegisterTaskResponse);
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+  rpc DeregisterTask(DeregisterTaskRequest) returns (DeregisterTaskResponse);
+  rpc QueryTasks(QueryTasksRequest) returns (QueryTasksResponse);
+  rpc LookupTaskOwner(LookupTaskOwnerRequest) returns (LookupTaskOwnerResponse);
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
+}
+
+service InternalReplicationService {
+  rpc ReplicateTask(ReplicateTaskRequest) returns (ReplicateTaskResponse);
+}
