@@ -26,6 +26,8 @@ def main():
                         help="Override node ID (default: SHA-1 hash of host:port)")
     parser.add_argument("--interval", type=float, default=2.0,
                         help="Stabilization interval in seconds (default: 2.0)")
+    parser.add_argument("--grpc-port", type=int, default=None,
+                        help="Optional gRPC TaskService bind port")
     parser.add_argument("--log", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Log level")
@@ -42,6 +44,7 @@ def main():
         known_address=args.join,
         node_id=args.id,
         maintenance_interval=args.interval,
+        grpc_port=args.grpc_port,
     )
 
 

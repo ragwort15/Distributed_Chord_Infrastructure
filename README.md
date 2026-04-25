@@ -1,6 +1,6 @@
 # Distributed Coordination Layer — Chord DHT
 
-A fully decentralized coordination layer for edge and IoT devices built on the **Chord Distributed Hash Table**. No central server, no cloud dependency. Nodes self-organize into a consistent hash ring, route jobs to responsible peers, and recover from failures automatically.
+A decentralized coordination layer for edge and IoT workloads built on the **Chord Distributed Hash Table**. Nodes self-organize into a consistent-hash ring, expose task APIs over **REST + gRPC**, and persist replicated task metadata without a central coordinator.
 
 **Course:** CMPE 273 — Distributed Systems  
 **Option:** A — Distributed Job Execution Platform
@@ -29,57 +29,53 @@ A fully decentralized coordination layer for edge and IoT devices built on the *
 Traditional job execution platforms rely on a central coordinator to route and schedule tasks. This project eliminates that single point of failure by using **Chord**, a peer-to-peer protocol where:
 
 - Every node is equal — no master, no leader
-- Jobs are stored and routed using **consistent hashing** (SHA-1)
-- Any node can accept a job and route it to the correct peer in **O(log N) hops**
-- When a node fails, the ring **self-heals** automatically
-- An AI agent layer optimizes job placement, replication, and failure recovery on top of the DHT
+- Task metadata is stored and routed using **consistent hashing** (SHA-1)
+- Any node can accept a task request and route it to the correct peer in **O(log N) hops**
+- Task objects follow a defined schema and are persisted in DHT key-value format (`task:{task_id}`)
+- Replication writes are performed to the **k-nearest successors** for resilience
+- The ring self-heals via stabilize/fix_fingers/check_predecessor background maintenance
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Chord DHT Ring                              │
-│                                                                 │
-│         Node 10 ──────────── Node 80                           │
-│        /    ↑                    ↓    \                         │
-│       /     │  finger table      │     \                        │
-│    Node 150 ◀───────────────────────── Node 80                 │
-│       \                                /                        │
-│        └──────────── Node 10 ─────────┘                        │
-└─────────────────────────────────────────────────────────────────┘
-         ↑                   ↑                    ↑
-   Chord Core         Job Storage           AI Agents
-   finger tables      task put/get/route    placement / recovery
-   join / leave       MCP interface         replication
-   stabilize          service registry      Prometheus metrics
-                               ↑
-                         Frontend
-                         ring visualizer
-                         demo + evaluation
+Client / Scheduler / Edge Control Plane
+                │
+                │ REST (`/tasks/...`) or gRPC (`TaskService`)
+                ▼
+        Any Chord Node (entry point)
+                │
+                │ hash(`task:{task_id}`) -> key_id
+                │ find_successor(key_id)
+                ▼
+         Responsible Primary Node
+                │
+                ├── store task metadata (primary)
+                └── replicate to k-1 successor nodes
+                      (`InternalReplicationService` / internal REST)
+
+      Chord Ring Maintenance (all nodes)
+      stabilize() • fix_fingers() • check_predecessor()
 ```
 
 ### Request flow — job submission
 
 ```
-Client submits job
+Client submits task
       │
       ▼
 Any Chord node (entry point)
-      │  SHA-1(job_id) → key_id
-      │  find_successor(key_id)
+      │  validate schema
+      │  build key: task:{task_id}
+      │  SHA-1(task_key) -> key_id
+      │  find_successor(key_id) on ring
       ▼
-Closest finger table entry
-      │  hop...
+Responsible node (primary)
+      │  persist task record
+      │  replicate to k-nearest successors
       ▼
-Responsible node
-      │  store job locally
-      ▼
-AI agent reads node states → decides execution target
-      │
-      ▼
-Job dispatched to selected edge node
+Ack with replication status (COMPLETE / DEGRADED)
 ```
 
 ---
@@ -89,35 +85,33 @@ Job dispatched to selected edge node
 ### 1. Chord Core
 The DHT backbone. Every other component builds on top of this.
 
-- **Consistent hashing** — SHA-1 maps any string key into a 2^160 ring
+- **Consistent hashing** — SHA-1 maps keys into ring identifiers (8-bit test ring by default)
 - **Finger table** — M shortcuts per node enabling O(log N) lookup
 - **Stabilization protocol** — background process keeps successor/predecessor pointers correct as nodes join and leave
 - **Failure detection** — heartbeat-based predecessor liveness check
 - **Graceful leave** — data handoff to successor before departure
 
-### 2. Job Storage & Service Layer
+### 2. Task Service & Storage Layer
 Sits on top of the Chord ring to provide application-level operations.
 
-- Task/job schema definition and DHT storage
-- Routed put/get/delete — any node can accept a request and route it correctly
-- Service registry — nodes register capabilities into the DHT
-- REST/MCP interface for other components
+- Task schema definition (`storage/schema.py`) and DHT persistence format
+- Register / deregister / get / query task APIs (`storage/task_service.py`)
+- Replication to `k` successors (`storage/replication.py`)
+- REST endpoints in `chord/server.py` and gRPC services in `api/grpc_server.py`
 
-### 3. AI Agent System
-Intelligent decision-making layer that reads live node state from the DHT.
+### 3. External Interfaces
+The system is consumable by schedulers, workers, or orchestration layers through two API styles.
 
-- **Task placement agent** — selects the optimal node based on load, latency, availability
-- **Adaptive replication agent** — decides replica count and placement per job priority
-- **Failure recovery agent** — chooses recovery strategy when a node dies mid-execution
-- Prometheus metrics + structured JSON logging
+- **REST API** — task registration/deregistration/lookup + ring/node query endpoints
+- **gRPC API** — typed `TaskService` and `InternalReplicationService` contracts
+- **Proto contract** — `api/task_service.proto`
+- **Detailed spec** — `docs/api_spec.md`
 
-### 4. Demo, Frontend & Evaluation
-- Live **Chord ring visualizer** — nodes on a circle, routing hops animated
-- Node join/leave animation showing ring rebalancing
-- Finger table overlay (toggleable)
-- Job submission dashboard
-- Local IoT/edge node simulator
-- Performance evaluation and final report
+### 4. Testing & Validation
+- Chord ring behavior tests (`tests/test_chord.py`)
+- Task service tests (`tests/test_task_service.py`)
+- Replication tests (`tests/test_replication.py`)
+- gRPC service mapping tests (`tests/test_grpc_service.py`)
 
 ---
 
@@ -126,26 +120,33 @@ Intelligent decision-making layer that reads live node state from the DHT.
 ```
 Distributed_Chord_Infrastructure/
 │
+├── api/                       # gRPC contracts + generated stubs + gRPC server
+│   ├── task_service.proto
+│   ├── task_service_pb2.py
+│   ├── task_service_pb2_grpc.py
+│   └── grpc_server.py
+│
 ├── chord/                     # Chord DHT core
 │   ├── __init__.py
 │   ├── node.py                # Ring logic: finger table, join, stabilize, leave
-│   ├── transport.py           # HTTP RPC layer for inter-node calls
-│   └── server.py              # Flask server: Chord endpoints + routed data API
+│   ├── transport.py           # HTTP transport and inter-node RPC helpers
+│   └── server.py              # Flask server: Chord endpoints + task REST APIs
 │
-├── storage/                   # Job storage & service layer
+├── storage/                   # Task schema, service layer, replication logic
 │   ├── __init__.py
-│   └── ...
+│   ├── schema.py
+│   ├── task_service.py
+│   └── replication.py
 │
-├── agents/                    # AI agents + observability
-│   ├── __init__.py
-│   └── ...
-│
-├── ui/                        # Ring visualizer frontend
-│   └── ...
+├── docs/
+│   └── api_spec.md            # REST + gRPC API details
 │
 ├── tests/                     # Unit + integration tests
 │   ├── __init__.py
-│   └── test_chord.py          # 47 tests for Chord core
+│   ├── test_chord.py
+│   ├── test_task_service.py
+│   ├── test_replication.py
+│   └── test_grpc_service.py
 │
 ├── run_node.py                # CLI entrypoint to start a Chord node
 ├── requirements.txt
@@ -160,10 +161,8 @@ Distributed_Chord_Infrastructure/
 |---|---|
 | Language | Python 3.12+ |
 | Chord transport | HTTP over TCP (Flask + requests) |
-| AI agents | Rule-based / LLM policy |
-| Metrics | Prometheus |
-| Logging | Structured JSON (structlog) |
-| Frontend | HTML + D3.js (ring visualizer) |
+| gRPC | grpcio + grpcio-tools |
+| API style | REST + gRPC |
 | Testing | pytest |
 
 ---
@@ -239,11 +238,14 @@ Node 150 →  successor: Node 10   │  predecessor: Node 80
 | `--join` | Address of existing node to join (`host:port`) | None (bootstrap) |
 | `--id` | Override node ID (useful for testing) | SHA-1 of `host:port` |
 | `--interval` | Stabilization interval in seconds | `2.0` |
+| `--grpc-port` | Enable gRPC TaskService on this port | Disabled |
 | `--log` | Log level: DEBUG / INFO / WARNING / ERROR | `INFO` |
 
 ---
 
 ## API Reference
+
+Detailed request/response payloads are documented in `docs/api_spec.md`.
 
 ### Chord Internal Endpoints (node-to-node RPC)
 
@@ -272,6 +274,32 @@ Node 150 →  successor: Node 10   │  predecessor: Node 80
 |---|---|---|
 | `POST` | `/put/<key>` | Hash the key, route to responsible node, store there |
 | `GET` | `/get/<key>` | Hash the key, route to responsible node, retrieve from there |
+
+### Task Service REST Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/tasks` | Register a task with schema validation + replication |
+| `GET` | `/tasks/<task_id>` | Retrieve task by ID (with replica fallback) |
+| `DELETE` | `/tasks/<task_id>?hard=true|false` | Soft deregister (tombstone) or hard delete |
+| `GET` | `/tasks?job_id=&status=&include_deleted=&limit=` | Query local tasks on node |
+| `GET` | `/ring/lookup/<task_id>` | Resolve primary owner + replica chain |
+| `GET` | `/nodes/self` | Return local node state |
+| `GET` | `/nodes/query?address=<host:port>` | Query remote node state |
+
+### Internal Task Replication REST Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/internal/tasks/replica/<task_key>` | Store replica on local node |
+| `GET` | `/internal/tasks/replica/<task_key>` | Retrieve replica from local node |
+| `DELETE` | `/internal/tasks/replica/<task_key>` | Delete replica from local node |
+
+### gRPC Services
+
+- `TaskService` (`RegisterTask`, `GetTask`, `DeregisterTask`, `QueryTasks`, `LookupTaskOwner`, `GetNodeInfo`)
+- `InternalReplicationService` (`ReplicateTask`)
+- Contract file: `api/task_service.proto`
 
 ---
 
@@ -308,20 +336,37 @@ curl "http://127.0.0.1:5001/chord/find_successor?id=100"
 curl "http://127.0.0.1:5001/chord/find_successor?id=200"
 ```
 
-### Store and retrieve a job (routed automatically)
+### Register, retrieve, and remove a task
 
 ```bash
-# Store a job — routes to the responsible node automatically
-curl -X POST http://127.0.0.1:5001/put/job:1 \
-  -H "Content-Type: application/json" \
-  -d '{"name": "process_sensor_data", "status": "pending", "priority": "high"}'
+# 1) Register a task (can hit any node)
+curl -X POST http://127.0.0.1:5001/tasks \
+      -H "Content-Type: application/json" \
+      -d '{
+            "task_id": "task-curl-1",
+            "job_id": "job-curl-1",
+            "type": "process.sensor",
+            "payload": {"sensor_id": "A12", "window": "5m"},
+            "priority": 5
+      }'
 
-# Expected: {"ok": true, "key": "job:1", "stored_at": 80}
+# Expected (shape):
+# {"ok": true, "data": {"task": {...}, "task_key": "task:task-curl-1", "storage": {...}}}
 
-# Retrieve from ANY node — routing handles it
-curl http://127.0.0.1:5003/get/job:1
+# 2) Retrieve the task from another node (replica fallback supported)
+curl http://127.0.0.1:5003/tasks/task-curl-1
 
-# Expected: {"name": "process_sensor_data", "status": "pending", "priority": "high"}
+# Expected (shape):
+# {"ok": true, "data": {"task": {"task_id": "task-curl-1", "job_id": "job-curl-1", ...}}}
+
+# 3) Query tasks by job_id/status on local node store
+curl "http://127.0.0.1:5002/tasks?job_id=job-curl-1&status=REGISTERED&limit=10"
+
+# 4) Soft-deregister the task (writes DELETED tombstone + replicates)
+curl -X DELETE "http://127.0.0.1:5001/tasks/task-curl-1?hard=false"
+
+# Optional hard delete:
+# curl -X DELETE "http://127.0.0.1:5001/tasks/task-curl-1?hard=true"
 ```
 
 ### Test failure detection
@@ -348,23 +393,24 @@ curl -X POST http://127.0.0.1:5001/chord/notify \
 ## Run Tests
 
 ```bash
-# Run all tests with verbose output
-pytest tests/test_chord.py -v
+# Run all tests
+pytest tests -v
 
-# Run a specific test class
-pytest tests/test_chord.py::TestFindSuccessorTwoNodes -v
+# Run only task-layer and grpc tests
+pytest tests/test_task_service.py tests/test_replication.py tests/test_grpc_service.py -v
 
 # Run with coverage (if pytest-cov installed)
-pytest tests/test_chord.py --cov=chord --cov-report=term-missing
+pytest tests --cov=chord --cov=storage --cov=api --cov-report=term-missing
 ```
 
 Expected output:
 ```
 tests/test_chord.py::TestHashing::test_sha1_id_returns_int         PASSED
-tests/test_chord.py::TestHashing::test_sha1_id_in_range            PASSED
-tests/test_chord.py::TestInRange::test_wraparound_inside           PASSED
+tests/test_task_service.py::test_register_and_get_task_local_store PASSED
+tests/test_replication.py::test_successor_chain_and_replication... PASSED
+tests/test_grpc_service.py::test_grpc_register_and_get_task        PASSED
 ...
-======= 47 passed in 0.25s =======
+======= 58 passed =======
 ```
 
 ### Test coverage by area
@@ -412,14 +458,55 @@ tests/test_chord.py::TestInRange::test_wraparound_inside           PASSED
 }
 ```
 
-### Routed job storage
+### Task registration (`POST /tasks`)
 ```json
-{"ok": true, "key": "job:1", "stored_at": 80}
+{
+      "ok": true,
+      "data": {
+            "task": {
+                  "task_id": "task-curl-1",
+                  "job_id": "job-curl-1",
+                  "type": "process.sensor",
+                  "status": "REGISTERED"
+            },
+            "task_key": "task:task-curl-1",
+            "storage": {
+                  "replication_state": "COMPLETE"
+            }
+      }
+}
 ```
 
-### Job retrieval
+### Task retrieval (`GET /tasks/task-curl-1`)
 ```json
-{"name": "process_sensor_data", "status": "pending", "priority": "high"}
+{
+      "ok": true,
+      "data": {
+            "task": {
+                  "task_id": "task-curl-1",
+                  "job_id": "job-curl-1",
+                  "type": "process.sensor",
+                  "status": "REGISTERED"
+            }
+      }
+}
+```
+
+### Task soft-deregister (`DELETE /tasks/task-curl-1?hard=false`)
+```json
+{
+      "ok": true,
+      "data": {
+            "task": {
+                  "task_id": "task-curl-1",
+                  "status": "DELETED"
+            },
+            "hard_delete": false,
+            "storage": {
+                  "replication_state": "COMPLETE"
+            }
+      }
+}
 ```
 
 ---
