@@ -20,6 +20,12 @@ from chord.metrics_registry import (
     QUEUE_DEPTH, RING_SIZE, DATA_KEYS, STABILIZE_RUNS,
     FINGER_FIX_RUNS, PREDECESSOR_FAILURES,
 )
+from storage.task_service import (
+    TaskConflictError,
+    TaskNotFoundError,
+    TaskService,
+    TaskValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,7 @@ _request_lock = threading.Lock()
 def create_app(node: ChordNode) -> Flask:
     app = Flask(__name__)
     app.config["node"] = node
+    task_service = TaskService(node=node, transport=node._transport)
 
     # ------------------------------------------------------------------
     # Chord internal RPC endpoints
@@ -619,6 +626,102 @@ def create_app(node: ChordNode) -> Flask:
             pass  # Node dies before it can reply — expected
         return jsonify({"ok": True})
 
+    # Task service API
+
+    @app.post("/tasks")
+    def register_task():
+        payload = request.get_json() or {}
+        try:
+            result = task_service.register_task(payload)
+            return jsonify({"ok": True, "data": result}), 201
+        except TaskValidationError as e:
+            return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
+        except TaskConflictError as e:
+            return jsonify({"ok": False, "error": {"code": "TASK_CONFLICT", "message": str(e)}}), 409
+
+    @app.get("/tasks/<task_id>")
+    def get_task(task_id):
+        allow_replica_read = request.args.get("allow_replica_read", "true").lower() != "false"
+        try:
+            task = task_service.get_task(task_id, allow_replica_read=allow_replica_read)
+            if task is None:
+                return jsonify({"ok": False, "error": {"code": "TASK_NOT_FOUND", "message": f"task not found: {task_id}"}}), 404
+            return jsonify({"ok": True, "data": {"task": task}})
+        except TaskValidationError as e:
+            return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
+
+    @app.delete("/tasks/<task_id>")
+    def deregister_task(task_id):
+        hard_delete = request.args.get("hard", "false").lower() == "true"
+        try:
+            result = task_service.deregister_task(task_id, hard_delete=hard_delete)
+            return jsonify({"ok": True, "data": result})
+        except TaskNotFoundError as e:
+            return jsonify({"ok": False, "error": {"code": "TASK_NOT_FOUND", "message": str(e)}}), 404
+        except TaskValidationError as e:
+            return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
+
+    @app.get("/tasks")
+    def query_tasks():
+        job_id = request.args.get("job_id")
+        status = request.args.get("status")
+        include_deleted = request.args.get("include_deleted", "false").lower() == "true"
+        limit = int(request.args.get("limit", "100"))
+
+        tasks = task_service.query_local_tasks(
+            job_id=job_id,
+            status=status,
+            include_deleted=include_deleted,
+            limit=limit,
+        )
+        return jsonify({"ok": True, "data": {"tasks": tasks, "count": len(tasks)}})
+
+    @app.get("/ring/lookup/<task_id>")
+    def lookup_task(task_id):
+        try:
+            result = task_service.lookup_owner(task_id)
+            return jsonify({"ok": True, "data": result})
+        except TaskValidationError as e:
+            return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
+
+    @app.get("/nodes/self")
+    def node_self():
+        return jsonify({"ok": True, "data": task_service.get_node_state()})
+
+    @app.get("/nodes/query")
+    def node_query():
+        address = request.args.get("address")
+        if not address:
+            return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": "missing query param: address"}}), 422
+        try:
+            state = task_service.get_node_state(address=address)
+            return jsonify({"ok": True, "data": state})
+        except Exception as e:
+            return jsonify({"ok": False, "error": {"code": "UPSTREAM_ERROR", "message": str(e)}}), 502
+
+    # Internal replication API
+
+    @app.post("/internal/tasks/replica/<path:task_key>")
+    def put_task_replica(task_key):
+        payload = request.get_json() or {}
+        try:
+            result = task_service.store_replica_local(task_key, payload)
+            return jsonify({"ok": True, "data": result})
+        except TaskValidationError as e:
+            return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
+
+    @app.get("/internal/tasks/replica/<path:task_key>")
+    def get_task_replica(task_key):
+        task = task_service.get_replica_local(task_key)
+        if task is None:
+            return jsonify({"ok": False, "error": {"code": "TASK_NOT_FOUND", "message": f"task not found: {task_key}"}}), 404
+        return jsonify({"ok": True, "task": task})
+
+    @app.delete("/internal/tasks/replica/<path:task_key>")
+    def delete_task_replica(task_key):
+        deleted = task_service.delete_replica_local(task_key)
+        return jsonify({"ok": True, "deleted": deleted, "task_key": task_key})
+
     return app
 
 
@@ -903,7 +1006,8 @@ def start_node(host: str, port: int, known_address: str = None,
                agent_loop_interval: float = 5.0,
                enable_dummy_client: bool = False,
                dummy_interval_min: float = 20.0,
-               dummy_interval_max: float = 30.0):
+               dummy_interval_max: float = 30.0,
+               grpc_port: int | None = None):
     import os
     log_level = os.environ.get("LOG_LEVEL", "INFO")
     import logging as _logging
@@ -911,7 +1015,6 @@ def start_node(host: str, port: int, known_address: str = None,
         level=getattr(_logging, log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-
     address = f"{host}:{port}"
     transport = HttpTransport()
 
@@ -957,5 +1060,15 @@ def start_node(host: str, port: int, known_address: str = None,
             f"{dummy_interval_min}–{dummy_interval_max}s"
         )
 
+    grpc_server = None
+    if grpc_port is not None:
+        from api.grpc_server import start_grpc_server
+        grpc_server = start_grpc_server(node=node, transport=transport, grpc_port=grpc_port)
+
     logger.info(f"Starting Chord node {node.node_id} on {address}")
-    app.run(host=host, port=port, threaded=True)
+    try:
+        app.run(host=host, port=port, threaded=True)
+    finally:
+        maint.stop()
+        if grpc_server is not None:
+            grpc_server.stop(grace=1)

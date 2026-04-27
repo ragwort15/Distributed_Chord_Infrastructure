@@ -119,6 +119,15 @@ class HttpTransport:
         r.raise_for_status()
         return r.json()
 
+    def delete(self, address: str, key: str) -> bool:
+        r = requests.delete(
+            f"http://{address}/data/{key}",
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return bool(data.get("ok"))
+
     def bulk_put(self, address: str, items: dict):
         r = _post(
             f"http://{address}/chord/bulk_put",
@@ -134,3 +143,39 @@ class HttpTransport:
         )
         r.raise_for_status()
         return r.json()
+
+    def get_state(self, address: str) -> dict:
+        r = _get(
+            f"http://{address}/chord/state",
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def put_task_replica(self, address: str, task_key: str, task_record: dict) -> bool:
+        r = _post(
+            f"http://{address}/internal/tasks/replica/{task_key}",
+            json=task_record,
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return True
+
+    def get_task_replica(self, address: str, task_key: str) -> dict | None:
+        r = _get(
+            f"http://{address}/internal/tasks/replica/{task_key}",
+            timeout=RPC_TIMEOUT,
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json()
+        return data.get("task")
+
+    def delete_task_replica(self, address: str, task_key: str) -> bool:
+        r = requests.delete(
+            f"http://{address}/internal/tasks/replica/{task_key}",
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return True
