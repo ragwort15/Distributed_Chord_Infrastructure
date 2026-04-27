@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "chord-nodes"
+    metrics_path: "/prom_metrics"
+    static_configs:
+      - targets:
+          # host.docker.internal resolves to your Mac's localhost from inside Docker
+          - "host.docker.internal:5001"
+          - "host.docker.internal:5002"
+          - "host.docker.internal:5003"
+        labels:
+          env: "local"

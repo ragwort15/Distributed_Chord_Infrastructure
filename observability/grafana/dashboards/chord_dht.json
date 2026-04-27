@@ -1,0 +1,275 @@
+{
+  "title": "Chord DHT — Live Observability",
+  "uid": "chord-dht-01",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-5m", "to": "now" },
+  "timezone": "browser",
+  "tags": ["chord", "dht", "distributed"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Throughput per Node",
+      "description": "File requests per second routed by each node. Shows load distribution across the ring.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "reqps"
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum(rate(chord_file_requests_total[1m])) by (node_id)",
+          "legendFormat": "Node {{node_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Avg Hop Count",
+      "description": "Average Chord routing hops per request. O(log N) guarantee: with 3 nodes expect ≤ 2 hops.",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [
+            { "color": "green", "value": 0 },
+            { "color": "yellow", "value": 3 },
+            { "color": "red",    "value": 5 }
+          ]},
+          "decimals": 2,
+          "unit": "short"
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background" },
+      "targets": [
+        {
+          "expr": "sum(rate(chord_file_request_hops_sum[2m])) / sum(rate(chord_file_request_hops_count[2m]))",
+          "legendFormat": "Avg Hops",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Ring Size",
+      "description": "Estimated number of live nodes in the Chord ring.",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [
+            { "color": "red",    "value": 0 },
+            { "color": "yellow", "value": 1 },
+            { "color": "green",  "value": 2 }
+          ]},
+          "unit": "short"
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        {
+          "expr": "max(chord_ring_size)",
+          "legendFormat": "Nodes",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Total Requests",
+      "description": "Cumulative file requests across the entire ring.",
+      "type": "stat",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "#58a6ff", "mode": "fixed" },
+          "unit": "short"
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        {
+          "expr": "sum(chord_file_requests_total)",
+          "legendFormat": "Total",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Jobs Completed",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 4, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "green", "mode": "fixed" },
+          "unit": "short"
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        { "expr": "sum(chord_jobs_total{status='done'})", "legendFormat": "Done", "refId": "A" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Jobs Failed",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 4, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "unit": "short"
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [
+        { "expr": "sum(chord_jobs_total{status='failed'})", "legendFormat": "Failed", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Stabilizations / sec",
+      "type": "stat",
+      "gridPos": { "x": 20, "y": 4, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "#d29922", "mode": "fixed" },
+          "unit": "ops",
+          "decimals": 2
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "targets": [
+        { "expr": "sum(rate(chord_stabilize_runs_total[1m]))", "legendFormat": "stab/s", "refId": "A" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Hop Count Distribution (O(log N) proof)",
+      "description": "Distribution of routing hops. With N nodes the Chord guarantee is O(log N) ≈ log₂(N) hops maximum.",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short"
+        }
+      },
+      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] }, "displayMode": "gradient" },
+      "targets": [
+        { "expr": "sum(rate(chord_file_request_hops_bucket{le='1'}[5m]))", "legendFormat": "1 hop",  "refId": "A" },
+        { "expr": "sum(rate(chord_file_request_hops_bucket{le='2'}[5m])) - sum(rate(chord_file_request_hops_bucket{le='1'}[5m]))", "legendFormat": "2 hops", "refId": "B" },
+        { "expr": "sum(rate(chord_file_request_hops_bucket{le='3'}[5m])) - sum(rate(chord_file_request_hops_bucket{le='2'}[5m]))", "legendFormat": "3 hops", "refId": "C" },
+        { "expr": "sum(rate(chord_file_request_hops_bucket{le='+Inf'}[5m])) - sum(rate(chord_file_request_hops_bucket{le='3'}[5m]))", "legendFormat": "4+ hops", "refId": "D" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Queue Depth per Node",
+      "description": "Active jobs in each node's local store. Flat = good load balance (AI placement working).",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15 },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "chord_queue_depth", "legendFormat": "Node {{node_id}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Request Latency (p50 / p95 / p99)",
+      "description": "End-to-end file request latency percentiles. p95 spike after fault injection shows recovery overhead.",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2 },
+          "unit": "s"
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(chord_file_request_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(chord_file_request_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum(rate(chord_file_request_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Data Keys per Node",
+      "description": "Number of keys stored locally on each node. Even distribution = consistent hashing working correctly.",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "expr": "chord_data_keys_total", "legendFormat": "Node {{node_id}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Predecessor Failures Detected",
+      "description": "Times a node detected its predecessor died. Spikes correspond to fault injection events.",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "#f85149", "mode": "fixed" },
+          "custom": { "lineWidth": 2 },
+          "unit": "short"
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "expr": "sum(rate(chord_predecessor_failures_total[1m])) by (node_id)", "legendFormat": "Node {{node_id}}", "refId": "A" }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "hide": 2
+      }
+    ]
+  }
+}
