@@ -13,6 +13,7 @@ This satisfies the "agent decision loop: continuously polls node state" requirem
 import threading
 import time
 import logging
+from typing import List, Dict
 
 from chord.agent import OrchestratorAgent, _log_decision
 
@@ -80,7 +81,7 @@ class AgentLoop(threading.Thread):
                 except Exception as e:
                     logger.debug(f"[AgentLoop] Placement advice skipped: {e}")
 
-    def _collect_ring_metrics(self) -> list[dict]:
+    def _collect_ring_metrics(self) -> List[Dict]:
         """Walk finger table and collect /metrics from reachable nodes."""
         transport = self.node._transport
         seen = set()
@@ -106,7 +107,7 @@ class AgentLoop(threading.Thread):
 
         return result
 
-    def _local_pending_jobs(self) -> list[dict]:
+    def _local_pending_jobs(self) -> List[Dict]:
         with self.node._lock:
             return [
                 v for k, v in self.node.data_store.items()

@@ -11,6 +11,7 @@ import hashlib
 import threading
 import time
 import logging
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class ChordNode:
         self.address = address
         self.node_id = node_id if node_id is not None else sha1_id(address)
         self.predecessor: dict = None
-        self.fingers: list[FingerEntry] = self._init_fingers()
+        self.fingers: List[FingerEntry] = self._init_fingers()
         self.data_store: dict = {}
         self._lock = threading.RLock()
         self._transport = None  # injected after construction
@@ -271,7 +272,7 @@ class ChordNode:
             logger.debug(f"[Node {self.node_id}] Stored key={key}")
             return True
 
-    def get(self, key: str) -> dict | None:
+    def get(self, key: str) -> Optional[dict]:
         """Retrieve a key from local store."""
         with self._lock:
             return self.data_store.get(key)

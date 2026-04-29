@@ -17,6 +17,7 @@ import logging
 import threading
 from pathlib import Path
 
+from typing import List, Dict
 from chord.node import sha1_id
 
 logger = logging.getLogger(__name__)
@@ -196,7 +197,7 @@ class PlacementAgent:
     def __init__(self, client=None):
         self._client = client
 
-    def select(self, job: dict, node_metrics: list[dict]) -> dict:
+    def select(self, job: Dict, node_metrics: List[Dict]) -> Dict:
         """
         Returns {"node_id": int, "reasoning": str}.
         """
@@ -231,7 +232,7 @@ class PlacementAgent:
         )
         return result
 
-    def _prompt(self, job: dict, metrics: list[dict]) -> str:
+    def _prompt(self, job: Dict, metrics: List[Dict]) -> str:
         rows = "\n".join(
             f"  node_id={m['node_id']} address={m['address']} "
             f"queue_depth={m['queue_depth']} completed={m['jobs_completed']} "
@@ -244,7 +245,7 @@ class PlacementAgent:
             "Call select_placement_node with your choice."
         )
 
-    def _heuristic(self, metrics: list[dict]) -> dict:
+    def _heuristic(self, metrics: List[Dict]) -> Dict:
         best = min(metrics, key=lambda m: (m["queue_depth"], m["jobs_failed"]))
         return {
             "node_id": best["node_id"],
@@ -270,8 +271,8 @@ class ReplicationAgent:
     def __init__(self, client=None):
         self._client = client
 
-    def plan(self, job: dict, node_metrics: list[dict],
-             requested_replicas: int = 1) -> dict:
+    def plan(self, job: Dict, node_metrics: List[Dict],
+             requested_replicas: int = 1) -> Dict:
         """
         Returns {
             "primary_node_id": int,
@@ -312,7 +313,7 @@ class ReplicationAgent:
         )
         return result
 
-    def _prompt(self, job: dict, metrics: list[dict], requested: int) -> str:
+    def _prompt(self, job: Dict, metrics: List[Dict], requested: int) -> str:
         rows = "\n".join(
             f"  node_id={m['node_id']} queue_depth={m['queue_depth']} "
             f"failed={m['jobs_failed']}"
@@ -326,7 +327,7 @@ class ReplicationAgent:
             "and node health. Call decide_replication_plan."
         )
 
-    def _heuristic(self, job: dict, metrics: list[dict], requested: int) -> dict:
+    def _heuristic(self, job: Dict, metrics: List[Dict], requested: int) -> Dict:
         # Bump replication for high-priority types if we have the nodes
         effective = requested
         if job.get("type") in self._HIGH_PRIORITY and len(metrics) >= 2:
@@ -362,8 +363,8 @@ class RecoveryAgent:
     def __init__(self, client=None):
         self._client = client
 
-    def recover(self, failed_node_id: int, orphaned_jobs: list[dict],
-                surviving_nodes: list[dict]) -> dict:
+    def recover(self, failed_node_id: int, orphaned_jobs: List[Dict],
+                surviving_nodes: List[Dict]) -> Dict:
         """
         Returns {"assignments": {job_id: node_id, ...}, "reasoning": str}.
         """
@@ -404,8 +405,8 @@ class RecoveryAgent:
         )
         return result
 
-    def _prompt(self, failed_id: int, jobs: list[dict],
-                survivors: list[dict]) -> str:
+    def _prompt(self, failed_id: int, jobs: List[Dict],
+                survivors: List[Dict]) -> str:
         job_rows = "\n".join(
             f"  job_id={j['job_id']} type={j['type']} status={j['status']}"
             for j in jobs
@@ -423,7 +424,7 @@ class RecoveryAgent:
             "Chord successor. Call plan_failure_recovery."
         )
 
-    def _heuristic(self, jobs: list[dict], survivors: list[dict]) -> dict:
+    def _heuristic(self, jobs: List[Dict], survivors: List[Dict]) -> Dict:
         sorted_nodes = sorted(survivors, key=lambda m: (m["queue_depth"], m["jobs_failed"]))
         assignments = {}
         for i, job in enumerate(jobs):

@@ -27,7 +27,9 @@ def _json_loads(value: str):
     return json.loads(value)
 
 
-def _node_ref_from_dict(node_ref: dict | None):
+from typing import Optional
+
+def _node_ref_from_dict(node_ref: Optional[dict]):
     if not node_ref:
         return None
     return task_service_pb2.NodeRef(

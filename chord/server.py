@@ -10,6 +10,7 @@ import time
 import logging
 import pathlib
 import requests as _requests
+from typing import List, Dict, Set, Optional
 from flask import Flask, request, jsonify, send_from_directory
 from chord.node import ChordNode, sha1_id
 from chord.transport import HttpTransport
@@ -33,7 +34,7 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
 # In-memory request log — last 100 entries, shared across all threads
-_request_log: list[dict] = []
+_request_log: List[Dict] = []
 _request_lock = threading.Lock()
 
 
@@ -552,7 +553,7 @@ def create_app(node: ChordNode) -> Flask:
         recent_60s = [r for r in all_reqs if now - r["ts"] < 60]
         recent_30  = all_reqs[-30:] if all_reqs else []
 
-        hop_dist: dict[str, int] = {}
+        hop_dist: Dict[str, int] = {}
         for r in all_reqs:
             h = str(r.get("hops", 1))
             hop_dist[h] = hop_dist.get(h, 0) + 1
@@ -561,12 +562,12 @@ def create_app(node: ChordNode) -> Flask:
         avg_hops  = sum(hops_list) / len(hops_list) if hops_list else 0
 
         # Collect per-node metrics via ring walk
-        node_loads: dict[str, int] = {}
+        node_loads: Dict[str, int] = {}
         jobs_completed = 0
         jobs_failed    = 0
-        seen: set[int] = set()
+        seen: Set[int] = set()
         to_visit = [node.address]
-        visited:  set[str] = set()
+        visited:  Set[str] = set()
 
         while to_visit:
             addr = to_visit.pop(0)
@@ -1007,7 +1008,7 @@ def start_node(host: str, port: int, known_address: str = None,
                enable_dummy_client: bool = False,
                dummy_interval_min: float = 20.0,
                dummy_interval_max: float = 30.0,
-               grpc_port: int | None = None):
+               grpc_port: Optional[int] = None):
     import os
     log_level = os.environ.get("LOG_LEVEL", "INFO")
     import logging as _logging
