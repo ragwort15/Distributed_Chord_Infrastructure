@@ -1,1 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.env
+agent_decisions.jsonl
+*.log
 .DS_Store
