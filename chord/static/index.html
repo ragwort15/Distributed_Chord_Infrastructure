@@ -37,11 +37,25 @@ header {
 }
 .logo { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .node-badge {
-  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  font-family: var(--mono); font-size: 11px; color: var(--text);
   background: var(--bg); border: 1px solid var(--border);
-  padding: 3px 10px; border-radius: 20px; flex-shrink: 0;
+  padding: 6px 12px; border-radius: 20px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 10px;
+  transition: border-color .3s, background .3s;
+  cursor: pointer;
 }
+.node-badge:hover { opacity: 0.8; }
+.node-badge.health-ok { border-color: var(--green); background: rgba(63, 185, 80, .08); }
+.node-badge.health-warn { border-color: var(--amber); background: rgba(210, 153, 34, .08); }
+.node-badge.health-dead { border-color: var(--red); background: rgba(248, 81, 73, .08); }
 .node-badge .hi { color: var(--blue); font-weight: 600; }
+.health-ring { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.health-dots { display: flex; gap: 2px; align-items: center; }
+.health-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--border); transition: background .3s; }
+.health-dot.active-ok { background: var(--green); }
+.health-dot.active-warn { background: var(--amber); }
+.health-dot.active-dead { background: var(--red); }
+.health-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
 .status-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--green); display: inline-block;
@@ -246,7 +260,39 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
 .fh-dead { color: var(--red); }
 .s-tab-btn.fault-tab { color: var(--red); }
 
-/* ── Node detail modal ── */
+/* ── Ring status modal ── */
+.ring-status-modal {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 0; max-width: 500px; width: 100%; max-height: 70vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.ring-status-header {
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.ring-status-header h3 {
+  font-size: 14px; font-weight: 600; margin: 0; color: var(--text);
+  display: flex; align-items: center; gap: 8px;
+}
+.ring-status-header .hi { color: var(--blue); }
+.ring-status-body { overflow-y: auto; flex: 1; padding: 0; }
+.ring-node-item {
+  padding: 10px 14px; border-bottom: 1px solid rgba(48,54,61,.3); display: flex;
+  align-items: center; gap: 10px; font-size: 11px; transition: background .15s;
+}
+.ring-node-item:hover { background: var(--panel2); cursor: pointer; }
+.ring-node-item:last-child { border-bottom: none; }
+.ring-node-icon { width: 22px; height: 22px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 9px; font-weight: 600;
+  flex-shrink: 0; color: #fff;
+}
+.ring-node-icon.ok { background: var(--green); }
+.ring-node-icon.warn { background: var(--amber); }
+.ring-node-icon.dead { background: var(--red); }
+.ring-node-info { flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.ring-node-id { font-weight: 600; color: var(--text); }
+.ring-node-addr { color: var(--purple); font-size: 10px; font-family: var(--mono); }
+.ring-node-status { color: var(--muted); font-size: 10px; }
 #node-modal { z-index: 60; }
 .nd-inner {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
@@ -325,11 +371,16 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
     Chord DHT — Live Dashboard
   </div>
   <div style="flex:1"></div>
-  <div class="node-badge">
-    <span class="status-dot"></span>
-    Node&nbsp;<span class="hi" id="b-id">—</span>
-    &nbsp;·&nbsp;<span id="b-addr">—</span>
-    &nbsp;·&nbsp;<span id="b-size">— nodes</span><span id="b-qd" style="color:var(--amber)"></span>
+  <div class="node-badge" id="health-badge">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span class="status-dot"></span>
+      <span style="font-weight:600;">🔗 Ring Status</span>
+    </div>
+    <span style="color:var(--border);">·</span>
+    <div class="health-ring">
+      <div class="health-dots" id="health-dots"></div>
+      <span class="health-label" id="b-size">— nodes</span><span id="b-qd" style="color:var(--amber)"></span>
+    </div>
   </div>
 </header>
 
@@ -502,6 +553,19 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
     </div>
   </aside>
 </main>
+
+<!-- Ring status modal -->
+<div class="overlay hidden" id="ring-status-modal-overlay">
+  <div class="ring-status-modal">
+    <div class="ring-status-header">
+      <h3>🔗 Ring Status — <span class="hi" id="rs-node-count">—</span> nodes</h3>
+      <button class="btn btn-ghost" id="btn-close-ring-status" style="padding:4px 10px">✕</button>
+    </div>
+    <div class="ring-status-body" id="ring-status-body">
+      <div style="padding:20px;text-align:center;color:var(--muted);">Loading nodes…</div>
+    </div>
+  </div>
+</div>
 
 <!-- Node detail modal -->
 <div class="overlay hidden" id="node-modal">
@@ -1040,14 +1104,92 @@ function renderLogs(entries) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Header + remove-node dropdown
+// Ring status modal
 // ═══════════════════════════════════════════════════════════════
+function openRingStatus() {
+  const overlay = document.getElementById('ring-status-modal-overlay');
+  const body = document.getElementById('ring-status-body');
+  const count = document.getElementById('rs-node-count');
+  
+  count.textContent = ring.nodes.length;
+  
+  if (!ring.nodes.length) {
+    body.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);">No nodes in ring</div>';
+    overlay.classList.remove('hidden');
+    return;
+  }
+  
+  const currentNodeId = ring.this_node;
+  body.innerHTML = ring.nodes.map(nd => {
+    const isCurrentNode = nd.node_id === currentNodeId;
+    const statusCls = 'ok';
+    const statusText = isCurrentNode ? '★ Current Node' : 'Online';
+    return `
+      <div class="ring-node-item" title="Click to view details">
+        <div class="ring-node-icon ${statusCls}">${nd.node_id % 10}</div>
+        <div class="ring-node-info">
+          <div class="ring-node-id">Node ${nd.node_id} ${isCurrentNode ? '★' : ''}</div>
+          <div class="ring-node-addr">${nd.address}</div>
+        </div>
+        <div class="ring-node-status">${statusText}</div>
+      </div>
+    `;
+  }).join('');
+  
+  overlay.classList.remove('hidden');
+}
+
+document.getElementById('health-badge')?.addEventListener('click', openRingStatus);
+document.getElementById('btn-close-ring-status')?.addEventListener('click', () => {
+  document.getElementById('ring-status-modal-overlay').classList.add('hidden');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+let maxNodesEverSeen = 7; // Track max ring size for health calculations
+
 function updateHeader() {
-  const n = ring.this_node;
-  document.getElementById('b-id').textContent   = n ?? '—';
-  document.getElementById('b-size').textContent = `${ring.nodes.length} node${ring.nodes.length!==1?'s':''}`;
-  const self = ring.nodes.find(nd => nd.node_id === n);
-  if (self) document.getElementById('b-addr').textContent = self.address;
+  // Determine health status based on ring dynamics
+  const activeNodes = ring.nodes.length;
+  
+  // Track max nodes ever seen to establish "healthy" baseline
+  if (activeNodes > maxNodesEverSeen) {
+    maxNodesEverSeen = activeNodes;
+  }
+  
+  const expectedNodes = maxNodesEverSeen; // Use max as baseline
+  const healthPercent = activeNodes / expectedNodes;
+  let healthStatus = 'ok';
+  if (healthPercent < 1.0) healthStatus = healthPercent >= 0.6 ? 'warn' : 'dead';
+  
+  // Update badge styling
+  const badge = document.getElementById('health-badge');
+  badge.className = 'node-badge health-' + healthStatus;
+  
+  // Update node count display
+  document.getElementById('b-size').textContent = `${activeNodes}/${expectedNodes} nodes`;
+  
+  // Generate visual health indicator dots (cap at 12 for UI readability)
+  const dotsContainer = document.getElementById('health-dots');
+  dotsContainer.innerHTML = '';
+  const visualDots = Math.min(expectedNodes, 12);
+  for (let i = 0; i < visualDots; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'health-dot';
+    if (i < activeNodes) {
+      dot.classList.add('active-' + healthStatus);
+    }
+    dotsContainer.appendChild(dot);
+  }
+  
+  // Show "+X more" if exceeds visual capacity
+  if (expectedNodes > 12) {
+    const more = document.createElement('span');
+    more.style.fontSize = '9px';
+    more.style.color = 'var(--muted)';
+    more.textContent = ` +${expectedNodes - 12}`;
+    dotsContainer.appendChild(more);
+  }
 
   const sel = document.getElementById('rm-sel');
   const prev = sel.value;
