@@ -1151,29 +1151,30 @@ let maxNodesEverSeen = 7; // Track max ring size for health calculations
 function updateHeader() {
   // Determine health status based on ring dynamics
   const activeNodes = ring.nodes.length;
-  
+
   // Track max nodes ever seen to establish "healthy" baseline
   if (activeNodes > maxNodesEverSeen) {
     maxNodesEverSeen = activeNodes;
   }
-  
+
   const expectedNodes = maxNodesEverSeen; // Use max as baseline
   const healthPercent = activeNodes / expectedNodes;
   let healthStatus = 'ok';
   if (healthPercent < 1.0) healthStatus = healthPercent >= 0.6 ? 'warn' : 'dead';
-  
+
   // Update badge styling
   const badge = document.getElementById('health-badge');
   badge.className = 'node-badge health-' + healthStatus;
-  
-  // Update node count display
-  document.getElementById('b-size').textContent = `${activeNodes}/${expectedNodes} nodes`;
-  
-  // Generate visual health indicator dots (cap at 12 for UI readability)
+
+  // Show only the active node count; cap visible count at 10 and display "10+" when larger
+  const displayCount = activeNodes > 10 ? '10+' : `${activeNodes} node${activeNodes!==1?'s':''}`;
+  document.getElementById('b-size').textContent = displayCount;
+
+  // Generate visual health indicator dots (show up to 10 dots)
   const dotsContainer = document.getElementById('health-dots');
   dotsContainer.innerHTML = '';
-  const visualDots = Math.min(expectedNodes, 12);
-  for (let i = 0; i < visualDots; i++) {
+  const visualDotsCount = Math.min(activeNodes, 10);
+  for (let i = 0; i < visualDotsCount; i++) {
     const dot = document.createElement('div');
     dot.className = 'health-dot';
     if (i < activeNodes) {
@@ -1181,15 +1182,15 @@ function updateHeader() {
     }
     dotsContainer.appendChild(dot);
   }
-  
-  // Show "+X more" if exceeds visual capacity
-  if (expectedNodes > 12) {
-    const more = document.createElement('span');
-    more.style.fontSize = '9px';
-    more.style.color = 'var(--muted)';
-    more.textContent = ` +${expectedNodes - 12}`;
-    dotsContainer.appendChild(more);
-  }
+
+  // If more than 10 nodes exist, append a small "10+" label after the dots
+  // if (activeNodes > 10) {
+  //   const more = document.createElement('span');
+  //   more.style.fontSize = '9px';
+  //   more.style.color = 'var(--muted)';
+  //   more.textContent = ' 10+';
+  //   dotsContainer.appendChild(more);
+  // }
 
   const sel = document.getElementById('rm-sel');
   const prev = sel.value;
