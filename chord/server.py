@@ -339,9 +339,15 @@ def create_app(node: ChordNode) -> Flask:
                 nid = state["node_id"]
                 if nid not in seen:
                     seen[nid] = state
+                    # Enqueue successor first, then all finger addresses so the
+                    # walk can bridge over any dead node in the successor chain.
                     succ_addr = state.get("successor", {}).get("address")
                     if succ_addr and succ_addr not in visited:
                         to_visit.append(succ_addr)
+                    for finger in state.get("fingers", []):
+                        fa = finger.get("node_address")
+                        if fa and fa not in visited:
+                            to_visit.append(fa)
             except Exception:
                 pass
 
@@ -464,8 +470,14 @@ def create_app(node: ChordNode) -> Flask:
                     logger.debug(f"[API] Ring walk stopped at {current['address']}: {e}")
                     break
             
-            # Find next available port
+            # Find next available port — probe until no node responds on that port
             next_port = 5002 if not ports else max(ports) + 1
+            while True:
+                try:
+                    _requests.get(f"http://127.0.0.1:{next_port}/chord/ping", timeout=0.5)
+                    next_port += 1  # port is occupied, try next
+                except Exception:
+                    break  # no response → port is free
             logger.info(f"[API] Used ports: {sorted(ports)}, next port: {next_port}")
             
             # Get the join address (current node)
@@ -1000,12 +1012,8 @@ class FailureWatcherThread(threading.Thread):
                 if k.startswith("job:") and isinstance(v, dict)
                 and v.get("status") in ACTIVE_STATUSES
                 and not v.get("replica_of")  # skip replicas (handled above)
-                and (
-                    # Match by address if we know it
-                    (failed_addr and v.get("claimed_by") == failed_addr)
-                    # Fallback: unclaimed jobs that Chord handed us via bulk_put
-                    or (not v.get("claimed_by") and v.get("status") == PENDING)
-                )
+                and failed_addr is not None
+                and v.get("claimed_by") == failed_addr
             ]
 
         if not orphaned and not promoted:

@@ -176,6 +176,21 @@ class ChordNode:
                 )
             except Exception as e:
                 logger.warning(f"[Node {self.node_id}] Stabilize failed: {e}")
+                # Successor may be dead — search fingers for a reachable fallback
+                for i in range(M - 1, 0, -1):
+                    f = self.fingers[i]
+                    if f.node_id is None or f.node_id == self.node_id:
+                        continue
+                    try:
+                        self._transport.ping(f.node_address)
+                        self.successor = {"id": f.node_id, "address": f.node_address}
+                        logger.info(
+                            f"[Node {self.node_id}] Successor dead; fell back to "
+                            f"finger {i} (node {f.node_id})"
+                        )
+                        break
+                    except Exception:
+                        continue
 
     def notify(self, candidate: dict):
         """
