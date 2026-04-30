@@ -120,6 +120,7 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
 .jid   { font-family: var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .jnode { font-family: var(--mono); color: var(--purple); flex-shrink: 0; font-size: 10px; }
 .jstat { color: var(--muted); flex-shrink: 0; font-size: 10px; }
+.jts   { color: var(--muted); flex-shrink: 0; font-size: 10px; font-family: var(--mono); margin-left: auto; }
 
 /* ── Agent log ── */
 .log-item {
@@ -1001,13 +1002,21 @@ function renderJobs(jobs) {
   if (!jobs.length) { el2.innerHTML='<div class="empty">No jobs yet</div>'; return; }
   el2.innerHTML = jobs.map(j => {
     const sid  = (j.job_id||'?').slice(0,8);
-    const port = j.claimed_by ? (':'+j.claimed_by.split(':').pop()) : '';
+    // Map address to node ID using ring info
+    let nodeInfo = '?';
+    if (j.claimed_by && ring.nodes) {
+      const node = ring.nodes.find(n => n.address === j.claimed_by);
+      nodeInfo = node ? `Node ${node.node_id}` : j.claimed_by;
+    }
+    // Format timestamp in PDT (UTC-7) - time only
+    const ts = j.created_at ? new Date(j.created_at * 1000).toLocaleString('en-US', {timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true}) : '—';
     return `<div class="job-item s-${j.status}">
       <div class="jdot"></div>
       <span class="jtype">${j.type||'?'}</span>
       <span class="jid" title="${j.job_id}">${sid}…</span>
-      <span class="jnode">${port}</span>
+      <span class="jnode" title="${j.claimed_by||''}">${nodeInfo}</span>
       <span class="jstat">${j.status}</span>
+      <span class="jts" title="Created (PDT)">${ts}</span>
     </div>`;
   }).join('');
 }

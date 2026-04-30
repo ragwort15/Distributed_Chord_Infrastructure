@@ -82,29 +82,44 @@ class AgentLoop(threading.Thread):
                     logger.debug(f"[AgentLoop] Placement advice skipped: {e}")
 
     def _collect_ring_metrics(self) -> List[Dict]:
-        """Walk finger table and collect /metrics from reachable nodes."""
-        transport = self.node._transport
-        seen = set()
+        """Walk full ring to collect /metrics from ALL reachable nodes (not just finger table)."""
+        import requests
         result = []
 
         # Always include self
         try:
             m = self.node.metrics()
             result.append(m)
-            seen.add(self.node.node_id)
+            seen = {self.node.node_id}
         except Exception:
-            pass
+            seen = set()
 
-        for finger in self.node.fingers:
-            if finger.node_id is None or finger.node_id in seen:
-                continue
-            seen.add(finger.node_id)
+        # Full ring walk: follow successor chain to reach all nodes
+        current = self.node.successor
+        visited_count = 0
+        
+        while current and current.get("id") not in seen and visited_count < 1000:
+            seen.add(current["id"])
+            visited_count += 1
             try:
-                m = transport.get_metrics(finger.node_address)
-                result.append(m)
+                # Fetch metrics from this node
+                resp = requests.get(f"http://{current['address']}/metrics", timeout=2)
+                if resp.status_code == 200:
+                    m = resp.json()
+                    result.append(m)
+                
+                # Get successor of this node to continue ring walk
+                state_resp = requests.get(f"http://{current['address']}/chord/state", timeout=2)
+                if state_resp.status_code == 200:
+                    state = state_resp.json()
+                    current = state.get("successor")
+                else:
+                    break
             except Exception:
-                pass  # Node unreachable — skip silently
+                # Node unreachable, try to continue with next
+                break
 
+        logger.debug(f"[AgentLoop {self.node.node_id}] Collected metrics from {len(result)} nodes (ring walk completed in {visited_count} steps)")
         return result
 
     def _local_pending_jobs(self) -> List[Dict]:
