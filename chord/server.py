@@ -9,6 +9,7 @@ import threading
 import time
 import logging
 import pathlib
+import subprocess
 import requests as _requests
 from typing import List, Dict, Set, Optional
 from flask import Flask, request, jsonify, send_from_directory
@@ -427,6 +428,79 @@ def create_app(node: ChordNode) -> Flask:
             os._exit(0)
         threading.Thread(target=_do, daemon=True).start()
         return jsonify({"ok": True})
+
+    # ------------------------------------------------------------------
+    # Dashboard API — automatically add a new node to the ring
+    # ------------------------------------------------------------------
+
+    @app.post("/api/nodes/add")
+    def api_add_node():
+        """
+        Auto-add a new Chord node to the ring.
+        Determines the next available port and spawns a subprocess.
+        """
+        try:
+            # Get all current nodes and their ports
+            ports = set()
+            ports.add(int(node.address.split(':')[1]))  # Add current node's port
+            
+            # Full ring walk to find all used ports
+            seen: Set[int] = set()
+            current = node.successor
+            
+            while current and current["id"] not in seen and len(seen) < 1000:  # Limit to 1000 nodes
+                seen.add(current["id"])
+                try:
+                    port_str = current["address"].split(':')[1]
+                    ports.add(int(port_str))
+                    # Get successor of this node via HTTP /chord/state endpoint
+                    resp = _requests.get(f"http://{current['address']}/chord/state", timeout=2)
+                    if resp.status_code == 200:
+                        state_data = resp.json()
+                        current = state_data.get("successor")
+                    else:
+                        break
+                except Exception as e:
+                    logger.debug(f"[API] Ring walk stopped at {current['address']}: {e}")
+                    break
+            
+            # Find next available port
+            next_port = 5002 if not ports else max(ports) + 1
+            logger.info(f"[API] Used ports: {sorted(ports)}, next port: {next_port}")
+            
+            # Get the join address (current node)
+            join_addr = node.address
+            
+            # Spawn new node in background
+            def _spawn():
+                try:
+                    env = os.environ.copy()
+                    env['AGENT_STRATEGY'] = 'heuristic'
+                    # Get the project root directory (parent of chord/)
+                    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    subprocess.Popen([
+                        'python3', 'run_node.py',
+                        '--host', '127.0.0.1',
+                        '--port', str(next_port),
+                        '--join', join_addr,
+                        '--worker',
+                        '--log', 'INFO'
+                    ], env=env, cwd=project_root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    logger.info(f"[API] Spawned new node on port {next_port} from {project_root}")
+                except Exception as e:
+                    logger.error(f"[API] Failed to spawn node: {e}", exc_info=True)
+            
+            threading.Thread(target=_spawn, daemon=True).start()
+            
+            return jsonify({
+                "ok": True,
+                "port": next_port,
+                "address": f"127.0.0.1:{next_port}",
+                "message": f"New node spawning on port {next_port}"
+            })
+        except Exception as e:
+            logger.error(f"[API] Error in add_node: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
 
     # ------------------------------------------------------------------
     # File request routing — demonstrates DHT as a distributed file store

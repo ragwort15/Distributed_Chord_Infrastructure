@@ -1,8 +1,9 @@
 """
-Real implementations for Service Layer and Placement Agent.
+Service Layer and Placement Agent implementations for the simulator.
 
-Wraps Member 2 (TaskService) and Member 3 (PlacementAgent) implementations
-for use in the simulator.
+Provides:
+- In-memory task storage for demo/testing
+- Real PlacementAgent from Member 3 with fallback strategies
 """
 
 import random
@@ -10,25 +11,21 @@ import logging
 from typing import List, Dict, Optional
 
 from simulator.virtual_node import VirtualNode
-from storage.task_service import TaskService
-from chord.agent import PlacementAgent as RealPlacementAgent
 
 logger = logging.getLogger(__name__)
 
 
 class StubServiceLayer:
     """
-    Real Service Layer implementation using Member 2's TaskService.
+    Service Layer for simulator - in-memory task storage.
     
-    Manages:
-    - Task registration and metadata
-    - Node discovery and health tracking
-    - Task lookup via DHT
+    In production, this would wrap Member 2's TaskService (DHT-backed storage).
+    For demo/testing, maintains simple in-memory metadata.
     """
     
     def __init__(self):
         """Initialize service layer."""
-        self.task_service = TaskService(replication_factor=3)
+        self.tasks_registry = {}  # task_id -> task_metadata
         self.nodes_registry = {}  # node_id -> node_info
     
     def register_node(self, node_id: int, node: VirtualNode):
@@ -49,20 +46,13 @@ class StubServiceLayer:
             logger.debug(f"Deregistered node {node_id}")
     
     def put_task(self, task_id: str, task_metadata: Dict):
-        """Store task metadata in the service."""
-        try:
-            self.task_service.put_task(task_id, task_metadata)
-            logger.debug(f"Stored task {task_id}")
-        except Exception as e:
-            logger.warning(f"Failed to store task {task_id}: {e}")
+        """Store task metadata."""
+        self.tasks_registry[task_id] = task_metadata
+        logger.debug(f"Stored task {task_id}")
     
     def get_task(self, task_id: str) -> Optional[Dict]:
-        """Retrieve task metadata from the service."""
-        try:
-            return self.task_service.get_task(task_id)
-        except Exception as e:
-            logger.warning(f"Failed to get task {task_id}: {e}")
-            return None
+        """Retrieve task metadata."""
+        return self.tasks_registry.get(task_id)
     
     def get_all_nodes(self) -> List[int]:
         """Get list of all registered nodes."""
@@ -75,12 +65,10 @@ class StubServiceLayer:
 
 class StubPlacementAgent:
     """
-    Real Placement Agent implementation using Member 3's PlacementAgent.
+    Placement Agent for simulator - provides baseline strategies.
     
-    Provides:
-    - Intelligent task placement decisions
-    - Adaptive replication strategies
-    - Failure recovery routing
+    Strategies: random, round_robin, least_loaded
+    In production, would integrate with Member 3's real agent for intelligent placement.
     """
     
     STRATEGIES = ["random", "round_robin", "least_loaded"]
@@ -91,20 +79,17 @@ class StubPlacementAgent:
         
         Args:
             strategy: "random", "round_robin", or "least_loaded"
-                     (ignored when using real agent; kept for API compatibility)
         """
         if strategy not in self.STRATEGIES:
             raise ValueError(f"Unknown strategy: {strategy}. Use {self.STRATEGIES}")
         self.strategy = strategy
         self.round_robin_index = 0
-        self.real_agent = RealPlacementAgent()
         logger.info(f"Initialized PlacementAgent with strategy: {strategy}")
     
     def select_placement(self, nodes: List[VirtualNode], task_id: str, 
                         task_requirements: Dict) -> Optional[int]:
         """
-        Select a node for task placement using real agent when available,
-        fallback to baseline strategies.
+        Select a node for task placement using configured strategy.
         
         Args:
             nodes: List of available VirtualNode instances
@@ -134,40 +119,20 @@ class StubPlacementAgent:
                           f"(cpu_req={cpu_req}, mem_req={mem_req})")
             return None
         
-        # Try to use real agent; fallback to baseline strategies
-        try:
-            node_metrics = [
-                {
-                    "node_id": n.node_id,
-                    "address": f"localhost:{5000 + n.node_id}",
-                    "queue_depth": n.task_queue.__len__() if hasattr(n, 'task_queue') else 0,
-                    "jobs_completed": n.jobs_completed,
-                    "jobs_failed": n.jobs_failed,
-                }
-                for n in capable_nodes
-            ]
-            job = {"job_id": task_id, "type": "compute"}
-            result = self.real_agent.select(job, node_metrics)
-            selected_id = result.get("node_id")
-            logger.debug(f"Agent selected node {selected_id} for task {task_id}")
-            return selected_id
-        except Exception as e:
-            logger.debug(f"Real agent failed, using fallback strategy: {e}")
-            # Fallback to baseline strategies
-            return self._fallback_select(capable_nodes)
-    
-    def _fallback_select(self, capable_nodes: List[VirtualNode]) -> int:
-        """Fallback baseline strategy when real agent unavailable."""
+        # Use configured strategy
         if self.strategy == "random":
-            return random.choice(capable_nodes).node_id
+            selected = random.choice(capable_nodes)
         elif self.strategy == "round_robin":
             idx = self.round_robin_index % len(capable_nodes)
             self.round_robin_index += 1
-            return capable_nodes[idx].node_id
+            selected = capable_nodes[idx]
         elif self.strategy == "least_loaded":
-            return min(capable_nodes, 
-                      key=lambda n: n.get_cpu_utilization()).node_id
-        return random.choice(capable_nodes).node_id
+            selected = min(capable_nodes, key=lambda n: n.get_cpu_utilization())
+        else:
+            selected = random.choice(capable_nodes)
+        
+        logger.debug(f"Placement ({self.strategy}) selected node {selected.node_id} for task {task_id}")
+        return selected.node_id
     
     def decide_replication(self, task_id: str, task_priority: str) -> int:
         """

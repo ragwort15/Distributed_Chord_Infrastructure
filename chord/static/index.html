@@ -1245,16 +1245,32 @@ document.getElementById('tog-fingers').addEventListener('change', function(){ sh
 document.getElementById('tog-ids').addEventListener('change',     function(){ showIds=this.checked; renderRing(); });
 
 // ═══════════════════════════════════════════════════════════════
-// Add-node modal
+// Add-node auto-spawn
 // ═══════════════════════════════════════════════════════════════
-document.getElementById('btn-add').addEventListener('click', () => {
-  const self = ring.nodes.find(n=>n.node_id===ring.this_node);
-  const joinAddr = self?.address || '127.0.0.1:5001';
-  const ports = ring.nodes.map(n=>parseInt(n.address?.split(':').pop(),10)).filter(Boolean);
-  const nextPort = ports.length ? Math.max(...ports)+1 : 5002;
-  document.getElementById('add-cmd').textContent =
-    `python run_node.py --host 127.0.0.1 --port ${nextPort} --join ${joinAddr} --worker`;
-  document.getElementById('add-modal').classList.remove('hidden');
+document.getElementById('btn-add').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-add');
+  const originalText = btn.textContent;
+  btn.textContent = '⏳ Adding...';
+  btn.disabled = true;
+  
+  try {
+    const resp = await fetch('/api/nodes/add', { method: 'POST' });
+    const data = await resp.json();
+    
+    if (data.ok) {
+      btn.textContent = `✓ Added ${data.address}`;
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }, 2000);
+    } else {
+      btn.textContent = '✗ Failed: ' + (data.error || 'Unknown error');
+      btn.disabled = false;
+    }
+  } catch (err) {
+    btn.textContent = '✗ Error: ' + err.message;
+    btn.disabled = false;
+  }
 });
 document.getElementById('btn-close-modal').addEventListener('click', ()=>document.getElementById('add-modal').classList.add('hidden'));
 document.getElementById('add-modal').addEventListener('click', e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.add('hidden'); });
