@@ -1,6 +1,7 @@
 import copy
 import uuid
-from datetime import UTC, datetime
+from typing import Optional, List
+from datetime import datetime, timezone
 
 TASK_SCHEMA_VERSION = 1
 TASK_KIND = "task"
@@ -21,7 +22,7 @@ class TaskValidationError(ValueError):
 
 
 def utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def generate_task_id() -> str:
@@ -34,7 +35,7 @@ def build_task_key(task_id: str) -> str:
     return f"task:{task_id.strip()}"
 
 
-def is_task_record(value: dict | None) -> bool:
+def is_task_record(value: Optional[dict]) -> bool:
     return isinstance(value, dict) and value.get("kind") == TASK_KIND
 
 
@@ -57,7 +58,7 @@ def create_task_record(
     task_input: dict,
     owner_node: dict,
     replication_factor: int,
-    task_id: str | None = None,
+    task_id: Optional[str] = None,
 ) -> dict:
     _validate_required_task_fields(task_input)
 
@@ -122,7 +123,7 @@ def validate_task_record(record: dict):
         raise TaskValidationError("placement.replica_nodes must be a list")
 
 
-def set_replica_nodes(record: dict, replica_nodes: list[dict]) -> dict:
+def set_replica_nodes(record: dict, replica_nodes: List[dict]) -> dict:
     updated = copy.deepcopy(record)
     updated["placement"]["replica_nodes"] = replica_nodes
     updated["updated_at"] = utc_now_iso()

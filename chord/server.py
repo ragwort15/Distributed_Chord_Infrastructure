@@ -9,7 +9,9 @@ import threading
 import time
 import logging
 import pathlib
+import subprocess
 import requests as _requests
+from typing import List, Dict, Set, Optional
 from flask import Flask, request, jsonify, send_from_directory
 from chord.node import ChordNode, sha1_id
 from chord.transport import HttpTransport
@@ -33,7 +35,7 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
 # In-memory request log — last 100 entries, shared across all threads
-_request_log: list[dict] = []
+_request_log: List[Dict] = []
 _request_lock = threading.Lock()
 
 
@@ -337,9 +339,15 @@ def create_app(node: ChordNode) -> Flask:
                 nid = state["node_id"]
                 if nid not in seen:
                     seen[nid] = state
+                    # Enqueue successor first, then all finger addresses so the
+                    # walk can bridge over any dead node in the successor chain.
                     succ_addr = state.get("successor", {}).get("address")
                     if succ_addr and succ_addr not in visited:
                         to_visit.append(succ_addr)
+                    for finger in state.get("fingers", []):
+                        fa = finger.get("node_address")
+                        if fa and fa not in visited:
+                            to_visit.append(fa)
             except Exception:
                 pass
 
@@ -426,6 +434,85 @@ def create_app(node: ChordNode) -> Flask:
             os._exit(0)
         threading.Thread(target=_do, daemon=True).start()
         return jsonify({"ok": True})
+
+    # ------------------------------------------------------------------
+    # Dashboard API — automatically add a new node to the ring
+    # ------------------------------------------------------------------
+
+    @app.post("/api/nodes/add")
+    def api_add_node():
+        """
+        Auto-add a new Chord node to the ring.
+        Determines the next available port and spawns a subprocess.
+        """
+        try:
+            # Get all current nodes and their ports
+            ports = set()
+            ports.add(int(node.address.split(':')[1]))  # Add current node's port
+            
+            # Full ring walk to find all used ports
+            seen: Set[int] = set()
+            current = node.successor
+            
+            while current and current["id"] not in seen and len(seen) < 1000:  # Limit to 1000 nodes
+                seen.add(current["id"])
+                try:
+                    port_str = current["address"].split(':')[1]
+                    ports.add(int(port_str))
+                    # Get successor of this node via HTTP /chord/state endpoint
+                    resp = _requests.get(f"http://{current['address']}/chord/state", timeout=2)
+                    if resp.status_code == 200:
+                        state_data = resp.json()
+                        current = state_data.get("successor")
+                    else:
+                        break
+                except Exception as e:
+                    logger.debug(f"[API] Ring walk stopped at {current['address']}: {e}")
+                    break
+            
+            # Find next available port — probe until no node responds on that port
+            next_port = 5002 if not ports else max(ports) + 1
+            while True:
+                try:
+                    _requests.get(f"http://127.0.0.1:{next_port}/chord/ping", timeout=0.5)
+                    next_port += 1  # port is occupied, try next
+                except Exception:
+                    break  # no response → port is free
+            logger.info(f"[API] Used ports: {sorted(ports)}, next port: {next_port}")
+            
+            # Get the join address (current node)
+            join_addr = node.address
+            
+            # Spawn new node in background
+            def _spawn():
+                try:
+                    env = os.environ.copy()
+                    env['AGENT_STRATEGY'] = 'heuristic'
+                    # Get the project root directory (parent of chord/)
+                    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    subprocess.Popen([
+                        'python3', 'run_node.py',
+                        '--host', '127.0.0.1',
+                        '--port', str(next_port),
+                        '--join', join_addr,
+                        '--worker',
+                        '--log', 'INFO'
+                    ], env=env, cwd=project_root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    logger.info(f"[API] Spawned new node on port {next_port} from {project_root}")
+                except Exception as e:
+                    logger.error(f"[API] Failed to spawn node: {e}", exc_info=True)
+            
+            threading.Thread(target=_spawn, daemon=True).start()
+            
+            return jsonify({
+                "ok": True,
+                "port": next_port,
+                "address": f"127.0.0.1:{next_port}",
+                "message": f"New node spawning on port {next_port}"
+            })
+        except Exception as e:
+            logger.error(f"[API] Error in add_node: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
 
     # ------------------------------------------------------------------
     # File request routing — demonstrates DHT as a distributed file store
@@ -552,7 +639,7 @@ def create_app(node: ChordNode) -> Flask:
         recent_60s = [r for r in all_reqs if now - r["ts"] < 60]
         recent_30  = all_reqs[-30:] if all_reqs else []
 
-        hop_dist: dict[str, int] = {}
+        hop_dist: Dict[str, int] = {}
         for r in all_reqs:
             h = str(r.get("hops", 1))
             hop_dist[h] = hop_dist.get(h, 0) + 1
@@ -561,12 +648,12 @@ def create_app(node: ChordNode) -> Flask:
         avg_hops  = sum(hops_list) / len(hops_list) if hops_list else 0
 
         # Collect per-node metrics via ring walk
-        node_loads: dict[str, int] = {}
+        node_loads: Dict[str, int] = {}
         jobs_completed = 0
         jobs_failed    = 0
-        seen: set[int] = set()
+        seen: Set[int] = set()
         to_visit = [node.address]
-        visited:  set[str] = set()
+        visited:  Set[str] = set()
 
         while to_visit:
             addr = to_visit.pop(0)
@@ -925,12 +1012,8 @@ class FailureWatcherThread(threading.Thread):
                 if k.startswith("job:") and isinstance(v, dict)
                 and v.get("status") in ACTIVE_STATUSES
                 and not v.get("replica_of")  # skip replicas (handled above)
-                and (
-                    # Match by address if we know it
-                    (failed_addr and v.get("claimed_by") == failed_addr)
-                    # Fallback: unclaimed jobs that Chord handed us via bulk_put
-                    or (not v.get("claimed_by") and v.get("status") == PENDING)
-                )
+                and failed_addr is not None
+                and v.get("claimed_by") == failed_addr
             ]
 
         if not orphaned and not promoted:
@@ -1007,7 +1090,7 @@ def start_node(host: str, port: int, known_address: str = None,
                enable_dummy_client: bool = False,
                dummy_interval_min: float = 20.0,
                dummy_interval_max: float = 30.0,
-               grpc_port: int | None = None):
+               grpc_port: Optional[int] = None):
     import os
     log_level = os.environ.get("LOG_LEVEL", "INFO")
     import logging as _logging

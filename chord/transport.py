@@ -8,6 +8,7 @@ ChordNode logic completely decoupled from networking.
 import time
 import requests
 import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class HttpTransport:
         r.raise_for_status()
         return r.json()
 
-    def get_predecessor(self, address: str) -> dict | None:
+    def get_predecessor(self, address: str) -> Optional[dict]:
         r = _get(
             f"http://{address}/chord/predecessor",
             timeout=RPC_TIMEOUT,
@@ -109,7 +110,7 @@ class HttpTransport:
         r.raise_for_status()
         return True
 
-    def get(self, address: str, key: str) -> dict | None:
+    def get(self, address: str, key: str) -> Optional[dict]:
         r = _get(
             f"http://{address}/data/{key}",
             timeout=RPC_TIMEOUT,
@@ -161,7 +162,7 @@ class HttpTransport:
         r.raise_for_status()
         return True
 
-    def get_task_replica(self, address: str, task_key: str) -> dict | None:
+    def get_task_replica(self, address: str, task_key: str) -> Optional[dict]:
         r = _get(
             f"http://{address}/internal/tasks/replica/{task_key}",
             timeout=RPC_TIMEOUT,

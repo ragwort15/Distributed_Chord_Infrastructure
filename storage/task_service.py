@@ -1,3 +1,4 @@
+from typing import List, Dict, Optional
 from chord.node import sha1_id
 from storage.replication import ReplicationManager
 from storage.schema import (
@@ -35,7 +36,7 @@ class TaskService:
             return
         self.transport.put(node_ref["address"], key, value)
 
-    def _get_on_node(self, node_ref: dict, key: str) -> dict | None:
+    def _get_on_node(self, node_ref: dict, key: str) -> Optional[dict]:
         if node_ref["id"] == self.node.node_id:
             return self.node.get(key)
         return self.transport.get(node_ref["address"], key)
@@ -79,7 +80,7 @@ class TaskService:
             "storage": replication_result,
         }
 
-    def get_task(self, task_id: str, allow_replica_read: bool = True) -> dict | None:
+    def get_task(self, task_id: str, allow_replica_read: bool = True) -> Optional[dict]:
         task_key = build_task_key(task_id)
         primary = self._owner_for_key(task_key)
 
@@ -127,8 +128,8 @@ class TaskService:
 
     def query_local_tasks(
         self,
-        job_id: str | None = None,
-        status: str | None = None,
+        job_id: Optional[str] = None,
+        status: Optional[str] = None,
         include_deleted: bool = False,
         limit: int = 100,
     ) -> list[dict]:
@@ -163,7 +164,7 @@ class TaskService:
             "replicas": chain[1:],
         }
 
-    def get_node_state(self, address: str | None = None) -> dict:
+    def get_node_state(self, address: Optional[str] = None) -> dict:
         if not address or address == self.node.address:
             return self.node.state()
         return self.transport.get_state(address)
@@ -173,7 +174,7 @@ class TaskService:
         self.node.put(task_key, task_record)
         return {"ok": True, "task_key": task_key, "stored_at": self.node.node_id}
 
-    def get_replica_local(self, task_key: str) -> dict | None:
+    def get_replica_local(self, task_key: str) -> Optional[dict]:
         value = self.node.get(task_key)
         if value is None:
             return None
