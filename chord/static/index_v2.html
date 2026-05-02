@@ -1,0 +1,2404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chord DHT — Control Center</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<style>
+/* ─────────────────────────────────────────────────────────────
+   RESET + TOKENS
+───────────────────────────────────────────────────────────── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  /* brand */
+  --accent:#6366f1;
+  --accent-light:#818cf8;
+  --accent-dark:#4338ca;
+  --accent-glow:rgba(99,102,241,.25);
+  /* status */
+  --ok:#10b981;
+  --warn:#f59e0b;
+  --danger:#ef4444;
+  --info:#3b82f6;
+  /* surfaces */
+  --bg-base:#060810;
+  --bg-1:#0d1117;
+  --bg-2:#131a24;
+  --bg-3:#1a2234;
+  --bg-4:#1f2a3d;
+  --bg-glass:rgba(13,17,23,.72);
+  /* borders */
+  --b1:rgba(255,255,255,.06);
+  --b2:rgba(255,255,255,.10);
+  --b3:rgba(255,255,255,.16);
+  /* text */
+  --tx-1:#f1f5f9;
+  --tx-2:#94a3b8;
+  --tx-3:#64748b;
+  --tx-4:#334155;
+  /* spacing */
+  --r-sm:6px;
+  --r-md:10px;
+  --r-lg:14px;
+  --r-xl:20px;
+  --shadow-card:0 4px 24px rgba(0,0,0,.5);
+  --shadow-modal:0 20px 60px rgba(0,0,0,.8);
+  --mono:'JetBrains Mono','Fira Code','Courier New',monospace;
+}
+
+html,body{height:100%;overflow:hidden}
+body{
+  background:var(--bg-base);
+  color:var(--tx-1);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  font-size:13px;
+  line-height:1.55;
+  display:flex;
+}
+
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg-4);border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:var(--b3)}
+
+/* ─────────────────────────────────────────────────────────────
+   LEFT SIDEBAR NAV
+───────────────────────────────────────────────────────────── */
+.sidebar{
+  width:220px;flex-shrink:0;
+  background:var(--bg-1);
+  border-right:1px solid var(--b1);
+  display:flex;flex-direction:column;
+  height:100%;overflow:hidden;
+}
+
+.sidebar-logo{
+  padding:22px 20px 18px;
+  border-bottom:1px solid var(--b1);
+  flex-shrink:0;
+}
+.logo-mark{
+  display:flex;align-items:center;gap:10px;
+  font-size:16px;font-weight:800;
+  background:linear-gradient(135deg,var(--accent-light),var(--ok));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  background-clip:text;
+  letter-spacing:-.3px;
+}
+.logo-mark svg{flex-shrink:0}
+.logo-sub{font-size:10px;color:var(--tx-3);margin-top:2px;font-weight:400;-webkit-text-fill-color:var(--tx-3)}
+
+.nav-section{padding:12px 10px 6px;flex-shrink:0}
+.nav-section-label{
+  font-size:9.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.1em;color:var(--tx-4);padding:0 10px 6px;
+}
+
+.nav-item{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 12px;border-radius:var(--r-md);
+  cursor:pointer;color:var(--tx-2);
+  transition:all .16s;border:1px solid transparent;
+  margin-bottom:2px;font-size:13px;font-weight:500;
+  position:relative;
+}
+.nav-item svg{flex-shrink:0;width:16px;height:16px;opacity:.7;transition:opacity .16s}
+.nav-item:hover{background:var(--bg-3);color:var(--tx-1)}
+.nav-item:hover svg{opacity:1}
+.nav-item.active{
+  background:var(--accent-glow);
+  border-color:rgba(99,102,241,.3);
+  color:var(--accent-light);
+}
+.nav-item.active svg{opacity:1}
+.nav-badge{
+  margin-left:auto;font-size:9.5px;font-weight:700;
+  background:var(--danger);color:#fff;
+  border-radius:10px;padding:1px 6px;min-width:18px;text-align:center;
+  display:none;
+}
+.nav-badge.show{display:block}
+
+.sidebar-footer{
+  margin-top:auto;padding:14px 20px;border-top:1px solid var(--b1);
+  font-size:11px;color:var(--tx-3);
+}
+.node-pill{
+  display:flex;align-items:center;gap:7px;
+  background:var(--bg-3);border:1px solid var(--b2);
+  border-radius:var(--r-md);padding:8px 10px;margin-bottom:8px;
+  cursor:pointer;transition:border-color .2s;
+}
+.node-pill:hover{border-color:var(--accent)}
+.pulse{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--ok);flex-shrink:0;
+  animation:pulse-ring 2s infinite;
+}
+.pulse.warn{background:var(--warn)}
+.pulse.dead{background:var(--danger)}
+@keyframes pulse-ring{0%,100%{box-shadow:0 0 0 0 currentColor}50%{box-shadow:0 0 0 4px transparent}}
+.node-pill-info{flex:1;min-width:0}
+.node-pill-id{font-weight:700;font-family:var(--mono);color:var(--accent-light);font-size:13px}
+.node-pill-addr{font-size:10px;color:var(--tx-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ring-dots{display:flex;gap:3px;align-items:center;flex-wrap:wrap}
+.ring-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);transition:background .3s}
+.ring-dot.warn{background:var(--warn)}
+.ring-dot.dead{background:var(--danger)}
+
+/* ─────────────────────────────────────────────────────────────
+   MAIN AREA
+───────────────────────────────────────────────────────────── */
+.main{flex:1;display:flex;flex-direction:column;height:100%;overflow:hidden}
+
+/* Top bar */
+.topbar{
+  height:52px;flex-shrink:0;
+  display:flex;align-items:center;gap:12px;
+  padding:0 24px;
+  border-bottom:1px solid var(--b1);
+  background:var(--bg-1);
+}
+.topbar-title{font-size:15px;font-weight:700;color:var(--tx-1);letter-spacing:-.2px}
+.topbar-sub{font-size:12px;color:var(--tx-3);margin-left:6px}
+.tb-spacer{flex:1}
+.tb-chip{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:11px;font-weight:500;
+  padding:5px 12px;border-radius:20px;
+  border:1px solid var(--b2);background:var(--bg-3);
+  color:var(--tx-2);
+}
+.tb-chip .dot{width:6px;height:6px;border-radius:50%}
+
+/* Page content */
+.pages{flex:1;overflow:hidden;position:relative}
+.page{position:absolute;inset:0;overflow-y:auto;display:none;padding:24px}
+.page.active{display:block}
+#page-observability.active{display:flex;flex-direction:column;height:100%;padding:0}
+
+/* ─────────────────────────────────────────────────────────────
+   CARDS + GRID
+───────────────────────────────────────────────────────────── */
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:1fr 1fr}
+.g3{grid-template-columns:1fr 1fr 1fr}
+.g4{grid-template-columns:repeat(4,1fr)}
+.g-ring{grid-template-columns:1fr 340px}
+.g-dht{grid-template-columns:1fr 1fr}
+
+.card{
+  background:var(--bg-2);
+  border:1px solid var(--b1);
+  border-radius:var(--r-lg);
+  overflow:hidden;
+}
+.card-header{
+  padding:14px 18px 12px;
+  border-bottom:1px solid var(--b1);
+  display:flex;align-items:center;gap:10px;
+}
+.card-icon{
+  width:30px;height:30px;border-radius:var(--r-sm);
+  display:flex;align-items:center;justify-content:center;
+  font-size:14px;flex-shrink:0;
+}
+.card-title{font-size:13px;font-weight:700;color:var(--tx-1)}
+.card-sub{font-size:11px;color:var(--tx-3);margin-top:1px}
+.card-action{margin-left:auto}
+.card-body{padding:16px 18px}
+
+/* Stat cards */
+.stat-card{
+  background:var(--bg-2);border:1px solid var(--b1);
+  border-radius:var(--r-lg);padding:16px 20px;
+  display:flex;flex-direction:column;gap:6px;
+  position:relative;overflow:hidden;
+}
+.stat-card::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:var(--accent);
+}
+.stat-card.ok::before{background:var(--ok)}
+.stat-card.warn::before{background:var(--warn)}
+.stat-card.danger::before{background:var(--danger)}
+.stat-card.info::before{background:var(--info)}
+.stat-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--tx-3)}
+.stat-value{font-size:28px;font-weight:800;font-family:var(--mono);line-height:1;color:var(--tx-1)}
+.stat-meta{font-size:10.5px;color:var(--tx-3)}
+.stat-delta{font-size:11px;font-weight:600;color:var(--ok)}
+.stat-delta.neg{color:var(--danger)}
+
+/* ─────────────────────────────────────────────────────────────
+   RING VIEW
+───────────────────────────────────────────────────────────── */
+.ring-panel{
+  background:var(--bg-2);border:1px solid var(--b1);
+  border-radius:var(--r-lg);overflow:hidden;
+  display:flex;flex-direction:column;
+}
+.ring-toolbar{
+  padding:10px 16px;border-bottom:1px solid var(--b1);
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.ring-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:12px;min-height:480px}
+#ring-svg{width:100%;height:100%;max-width:620px;max-height:620px;aspect-ratio:1/1}
+.ring-footer{
+  padding:10px 16px;border-top:1px solid var(--b1);
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+}
+.leg{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--tx-3)}
+.leg-dot{width:8px;height:8px;border-radius:50%}
+.hop-badge{
+  margin-left:auto;
+  font-family:var(--mono);font-size:11.5px;color:var(--warn);
+  background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);
+  border-radius:20px;padding:4px 12px;
+  transition:opacity .3s;
+}
+.hop-badge.hidden{opacity:0;pointer-events:none}
+
+/* Ring sidebar */
+.ring-sidebar{display:flex;flex-direction:column;gap:14px}
+
+/* ─────────────────────────────────────────────────────────────
+   FORM CONTROLS
+───────────────────────────────────────────────────────────── */
+.field{display:flex;flex-direction:column;gap:5px}
+.field-label{
+  font-size:10.5px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.07em;color:var(--tx-3);
+}
+.field-hint{font-size:10px;color:var(--tx-4)}
+.inp{
+  background:var(--bg-1);border:1px solid var(--b2);
+  color:var(--tx-1);border-radius:var(--r-sm);
+  padding:8px 11px;font-size:12.5px;font-family:inherit;
+  outline:none;transition:border-color .18s,box-shadow .18s;
+  width:100%;
+}
+.inp:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+.inp::placeholder{color:var(--tx-4)}
+.inp-mono{font-family:var(--mono);font-size:12px}
+textarea.inp{resize:vertical;min-height:60px;line-height:1.5}
+select.inp{cursor:pointer}
+input[type=number].inp{width:80px}
+input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height:13px}
+.check-label{display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--tx-2);user-select:none}
+
+/* ─────────────────────────────────────────────────────────────
+   BUTTONS
+───────────────────────────────────────────────────────────── */
+.btn{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:8px 16px;border-radius:var(--r-md);
+  font-size:12.5px;font-weight:600;cursor:pointer;
+  border:1px solid transparent;transition:all .18s;
+  white-space:nowrap;flex-shrink:0;outline:none;
+}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important;filter:none!important}
+.btn:hover:not(:disabled){transform:translateY(-1px)}
+.btn:active:not(:disabled){transform:translateY(0)}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-primary:hover:not(:disabled){background:var(--accent-light);border-color:var(--accent-light);box-shadow:0 4px 16px var(--accent-glow)}
+.btn-ok{background:var(--ok);color:#fff;border-color:var(--ok)}
+.btn-ok:hover:not(:disabled){filter:brightness(1.15);box-shadow:0 4px 16px rgba(16,185,129,.3)}
+.btn-danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+.btn-danger:hover:not(:disabled){filter:brightness(1.15);box-shadow:0 4px 16px rgba(239,68,68,.3)}
+.btn-warn{background:var(--warn);color:#060810;border-color:var(--warn);font-weight:700}
+.btn-warn:hover:not(:disabled){filter:brightness(1.1);box-shadow:0 4px 14px rgba(245,158,11,.3)}
+.btn-ghost{background:transparent;color:var(--tx-2);border-color:var(--b2)}
+.btn-ghost:hover:not(:disabled){border-color:var(--b3);color:var(--tx-1);background:var(--bg-3)}
+.btn-sm{padding:5px 10px;font-size:11.5px;border-radius:var(--r-sm)}
+.btn-xs{padding:3px 8px;font-size:10.5px;border-radius:5px}
+.btn-icon{padding:7px;border-radius:var(--r-sm)}
+.btn-row{display:flex;gap:8px;align-items:center}
+
+/* ─────────────────────────────────────────────────────────────
+   STATUS BADGES
+───────────────────────────────────────────────────────────── */
+.badge{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:10px;font-weight:700;padding:2px 8px;
+  border-radius:20px;text-transform:uppercase;letter-spacing:.05em;
+}
+.badge-ok{background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.25)}
+.badge-warn{background:rgba(245,158,11,.15);color:#f59e0b;border:1px solid rgba(245,158,11,.25)}
+.badge-danger{background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.25)}
+.badge-info{background:rgba(59,130,246,.15);color:#3b82f6;border:1px solid rgba(59,130,246,.25)}
+.badge-purple{background:rgba(139,92,246,.15);color:#8b5cf6;border:1px solid rgba(139,92,246,.25)}
+.badge-neutral{background:var(--bg-4);color:var(--tx-3);border:1px solid var(--b2)}
+
+/* ─────────────────────────────────────────────────────────────
+   TABLES / LISTS
+───────────────────────────────────────────────────────────── */
+.data-table{width:100%;border-collapse:collapse;font-size:12px}
+.data-table th{
+  text-align:left;padding:8px 14px;
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--tx-3);border-bottom:1px solid var(--b1);
+  background:var(--bg-1);position:sticky;top:0;z-index:1;
+}
+.data-table td{
+  padding:9px 14px;border-bottom:1px solid var(--b1);
+  vertical-align:middle;
+}
+.data-table tr:last-child td{border-bottom:none}
+.data-table tbody tr{transition:background .12s}
+.data-table tbody tr:hover{background:var(--bg-3)}
+.data-table .mono{font-family:var(--mono);font-size:11px}
+.data-table .muted{color:var(--tx-3)}
+.table-wrap{overflow-x:auto;border-radius:var(--r-md);border:1px solid var(--b1)}
+
+/* Inline row items (job/request lines) */
+.row-item{
+  display:flex;align-items:center;gap:10px;
+  padding:9px 18px;border-bottom:1px solid var(--b1);
+  transition:background .12s;
+}
+.row-item:last-child{border-bottom:none}
+.row-item:hover{background:var(--bg-3)}
+
+/* ─────────────────────────────────────────────────────────────
+   EMPTY STATE
+───────────────────────────────────────────────────────────── */
+.empty-state{
+  display:flex;flex-direction:column;align-items:center;
+  justify-content:center;padding:48px 20px;gap:10px;
+  color:var(--tx-3);
+}
+.empty-state .icon{font-size:32px;opacity:.5}
+.empty-state p{font-size:12px;text-align:center;max-width:260px;line-height:1.6}
+
+/* ─────────────────────────────────────────────────────────────
+   CHARTS
+───────────────────────────────────────────────────────────── */
+.chart-card{
+  background:var(--bg-2);border:1px solid var(--b1);
+  border-radius:var(--r-lg);padding:18px 20px;
+  display:flex;flex-direction:column;gap:4px;
+}
+.chart-card canvas{margin-top:12px;flex:1}
+.chart-title{font-size:13px;font-weight:700;color:var(--tx-1)}
+.chart-sub{font-size:11px;color:var(--tx-3)}
+
+/* ─────────────────────────────────────────────────────────────
+   DHT STORE PAGE
+───────────────────────────────────────────────────────────── */
+.dht-result-box{
+  background:var(--bg-1);border:1px solid var(--b2);
+  border-radius:var(--r-sm);padding:12px;
+  font-family:var(--mono);font-size:12px;line-height:1.6;
+  min-height:80px;word-break:break-all;white-space:pre-wrap;
+  color:var(--tx-3);
+}
+.dht-result-box.ok{color:var(--ok);border-color:rgba(16,185,129,.3)}
+.dht-result-box.error{color:var(--danger);border-color:rgba(239,68,68,.3)}
+.dht-result-box.result{color:var(--accent-light);border-color:rgba(99,102,241,.25)}
+
+/* ─────────────────────────────────────────────────────────────
+   FAULT LAB
+───────────────────────────────────────────────────────────── */
+.fault-log{
+  max-height:220px;overflow-y:auto;
+  display:flex;flex-direction:column;gap:0;
+}
+.fault-log-item{
+  display:flex;gap:10px;padding:7px 0;
+  border-bottom:1px solid var(--b1);font-size:11.5px;
+}
+.fault-log-item:last-child{border-bottom:none}
+.fault-log-time{color:var(--tx-4);font-family:var(--mono);flex-shrink:0;font-size:10.5px;padding-top:1px}
+.fault-log-msg{color:var(--tx-2);line-height:1.45}
+
+/* Health bar */
+.health-bar{
+  height:6px;border-radius:3px;background:var(--bg-4);
+  overflow:hidden;margin:8px 0;
+}
+.health-bar-fill{height:100%;border-radius:3px;transition:width .5s,background .5s}
+
+/* ─────────────────────────────────────────────────────────────
+   MODAL OVERLAY
+───────────────────────────────────────────────────────────── */
+.overlay{
+  position:fixed;inset:0;
+  background:rgba(0,0,0,.78);
+  backdrop-filter:blur(4px);
+  display:flex;align-items:center;justify-content:center;
+  z-index:999;padding:20px;
+}
+.overlay.hidden{display:none}
+.modal{
+  background:var(--bg-2);
+  border:1px solid var(--b2);
+  border-radius:var(--r-xl);
+  box-shadow:var(--shadow-modal);
+  display:flex;flex-direction:column;
+  max-height:90vh;overflow:hidden;
+}
+.modal-head{
+  padding:20px 24px;border-bottom:1px solid var(--b1);
+  display:flex;align-items:center;gap:12px;flex-shrink:0;
+}
+.modal-head h3{font-size:16px;font-weight:700;flex:1}
+.modal-body{overflow-y:auto;flex:1;padding:20px 24px}
+.modal-foot{
+  padding:16px 24px;border-top:1px solid var(--b1);
+  display:flex;justify-content:flex-end;gap:8px;flex-shrink:0;
+}
+
+/* Node detail modal tabs */
+.nd-tabs{display:flex;gap:0;padding:0 24px;border-bottom:1px solid var(--b1);flex-shrink:0}
+.nd-tab{
+  background:none;border:none;border-bottom:2px solid transparent;
+  color:var(--tx-3);font-size:12.5px;font-weight:500;
+  padding:11px 16px;cursor:pointer;margin-bottom:-1px;transition:color .15s;
+}
+.nd-tab:hover{color:var(--tx-1)}
+.nd-tab.active{color:var(--accent-light);border-bottom-color:var(--accent)}
+.nd-body{display:none;padding:20px 24px;overflow-y:auto;flex:1}
+.nd-body.active{display:block}
+
+.nd-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+.nd-stat{
+  background:var(--bg-1);border:1px solid var(--b1);
+  border-radius:var(--r-md);padding:12px 14px;
+}
+.nd-stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--tx-3);margin-bottom:4px}
+.nd-stat-val{font-size:20px;font-weight:800;font-family:var(--mono);color:var(--tx-1)}
+.nd-stat-sub{font-size:10.5px;color:var(--tx-3);margin-top:2px}
+.nd-ptr{
+  display:flex;align-items:center;gap:10px;
+  background:var(--bg-1);border:1px solid var(--b1);
+  border-radius:var(--r-md);padding:10px 14px;margin-bottom:8px;
+}
+.nd-ptr-label{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--tx-3);width:90px;flex-shrink:0}
+.nd-ptr-id{font-family:var(--mono);font-weight:700;font-size:14px}
+.nd-ptr-addr{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--tx-3)}
+
+/* Divider */
+.divider{height:1px;background:var(--b1);margin:14px 0}
+
+/* Code block */
+.codeblock{
+  background:var(--bg-1);border:1px solid var(--b2);
+  border-radius:var(--r-md);padding:12px 14px;
+  font-family:var(--mono);font-size:12px;color:var(--ok);
+  word-break:break-all;user-select:all;line-height:1.6;
+}
+
+/* Feedback */
+.feedback{font-size:11.5px;font-family:var(--mono);min-height:16px;line-height:1.4}
+.feedback.ok{color:var(--ok)}
+.feedback.err{color:var(--danger)}
+.feedback.info{color:var(--tx-3)}
+
+/* Pill separator */
+.sep{width:1px;height:16px;background:var(--b2);flex-shrink:0}
+
+/* Section label */
+.section-label{
+  font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.1em;color:var(--tx-3);margin-bottom:10px;
+  display:flex;align-items:center;gap:8px;
+}
+.section-label::after{content:'';flex:1;height:1px;background:var(--b1)}
+
+/* Tabs (inline) */
+.tab-strip{display:flex;gap:4px;margin-bottom:14px}
+.tab-pill{
+  padding:5px 13px;border-radius:20px;border:1px solid var(--b2);
+  background:transparent;color:var(--tx-3);font-size:11.5px;font-weight:500;
+  cursor:pointer;transition:all .15s;
+}
+.tab-pill:hover{color:var(--tx-1);border-color:var(--b3)}
+.tab-pill.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.tab-pane{display:none}
+.tab-pane.active{display:block}
+
+/* Agent log */
+.agent-item{
+  padding:8px 18px;border-bottom:1px solid var(--b1);
+  font-family:var(--mono);font-size:11px;line-height:1.6;
+}
+.agent-item:last-child{border-bottom:none}
+.a-name{color:var(--accent-light);font-weight:700}
+.a-strat-llm{color:var(--ok)}
+.a-strat-h{color:var(--warn)}
+.a-muted{color:var(--tx-3)}
+.a-reason{
+  color:var(--tx-3);font-size:10px;margin-top:2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+/* Spinner */
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{
+  width:14px;height:14px;border-radius:50%;
+  border:2px solid var(--b2);border-top-color:var(--accent);
+  animation:spin .7s linear infinite;display:inline-block;
+}
+
+/* Filter chips */
+.filter-chips{display:flex;gap:5px;padding:10px 18px;border-bottom:1px solid var(--b1);flex-shrink:0}
+.filter-chip{
+  padding:3px 10px;border-radius:14px;
+  border:1px solid var(--b2);background:transparent;
+  color:var(--tx-3);font-size:11px;font-weight:500;cursor:pointer;transition:all .15s;
+}
+.filter-chip:hover{border-color:var(--b3);color:var(--tx-1)}
+.filter-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* Jobs status dot */
+.jdot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.jdot-pending{background:var(--warn)}
+.jdot-claimed,.jdot-running{background:var(--info);animation:pulse-ring .8s infinite}
+.jdot-done{background:var(--ok)}
+.jdot-failed{background:var(--danger)}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════ SIDEBAR ═══════════════════════ -->
+<nav class="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" stroke="#818cf8" stroke-width="1.5"/>
+        <circle cx="12" cy="12" r="5" stroke="#10b981" stroke-width="1.5"/>
+        <circle cx="12" cy="12" r="1.5" fill="#818cf8"/>
+        <line x1="12" y1="2" x2="12" y2="7" stroke="#818cf8" stroke-width="1.5"/>
+        <line x1="12" y1="17" x2="12" y2="22" stroke="#818cf8" stroke-width="1.5"/>
+        <line x1="2" y1="12" x2="7" y2="12" stroke="#818cf8" stroke-width="1.5"/>
+        <line x1="17" y1="12" x2="22" y2="12" stroke="#818cf8" stroke-width="1.5"/>
+      </svg>
+      Chord DHT
+    </div>
+    <div class="logo-sub">Distributed Control Center</div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Monitor</div>
+    <div class="nav-item active" data-page="ring">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
+      Ring Topology
+    </div>
+    <div class="nav-item" data-page="analytics">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Analytics
+    </div>
+    <div class="nav-item" data-page="observability">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      Observability
+    </div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Workloads</div>
+    <div class="nav-item" data-page="jobs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>
+      Jobs
+      <span class="nav-badge" id="badge-jobs"></span>
+    </div>
+    <div class="nav-item" data-page="tasks">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      Task Registry
+      <span class="nav-badge" id="badge-tasks"></span>
+    </div>
+    <div class="nav-item" data-page="requests">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      File Requests
+    </div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Data</div>
+    <div class="nav-item" data-page="dht">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+      DHT Store
+    </div>
+    <div class="nav-item" data-page="agent">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v6l4 2"/></svg>
+      Agent Log
+    </div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Control</div>
+    <div class="nav-item" data-page="fault">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      Fault Lab
+      <span class="nav-badge" id="badge-faults"></span>
+    </div>
+  </div>
+
+  <div class="sidebar-footer">
+    <div class="node-pill" id="node-pill" title="Click to view all nodes">
+      <div class="pulse" id="sidebar-pulse"></div>
+      <div class="node-pill-info">
+        <div class="node-pill-id" id="sidebar-node-id">Node —</div>
+        <div class="node-pill-addr" id="sidebar-node-addr">connecting…</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+      <div class="ring-dots" id="ring-dots-sidebar"></div>
+      <span style="font-size:10px;color:var(--tx-4)" id="sidebar-ring-size">— nodes</span>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══════════════════════ MAIN ═══════════════════════ -->
+<div class="main">
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <div>
+      <span class="topbar-title" id="topbar-title">Ring Topology</span>
+      <span class="topbar-sub" id="topbar-sub">Live view of the Chord DHT ring</span>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-chip" id="health-chip">
+      <div class="dot" id="health-dot" style="width:7px;height:7px;border-radius:50%;background:var(--ok)"></div>
+      <span id="health-label">Ring healthy</span>
+    </div>
+    <div class="sep"></div>
+    <div class="tb-chip"><div class="dot" style="background:var(--info)"></div><span id="tb-queue">Queue: 0</span></div>
+  </div>
+
+  <!-- Pages -->
+  <div class="pages">
+
+    <!-- ══════════════ PAGE: RING TOPOLOGY ══════════════ -->
+    <div class="page active" id="page-ring">
+      <div class="grid g-ring" style="height:calc(100vh - 110px)">
+
+        <!-- Ring canvas -->
+        <div class="ring-panel">
+          <div class="ring-toolbar">
+            <label class="check-label"><input type="checkbox" id="tog-fingers"> Finger table</label>
+            <label class="check-label"><input type="checkbox" id="tog-ids" checked> Node IDs</label>
+            <label class="check-label"><input type="checkbox" id="tog-ports"> Port labels</label>
+            <div style="flex:1"></div>
+            <button class="btn btn-ghost btn-sm" id="btn-refresh-ring" title="Manually refresh the ring topology">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              Refresh
+            </button>
+            <button class="btn btn-ghost btn-sm" id="btn-add-node">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Add Node
+            </button>
+            <select class="inp btn-sm" id="rm-sel" style="width:160px;padding:5px 10px;font-size:11.5px">
+              <option value="">Remove node…</option>
+            </select>
+            <button class="btn btn-danger btn-sm" id="btn-rm" disabled>Remove</button>
+          </div>
+          <div class="ring-wrap">
+            <svg id="ring-svg" viewBox="0 0 700 700" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker id="arr-succ" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+                  <polygon points="0 0,7 3,0 6" fill="#10b981" opacity=".8"/>
+                </marker>
+                <marker id="arr-hop" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+                  <polygon points="0 0,7 3,0 6" fill="#f59e0b"/>
+                </marker>
+                <filter id="glow-sm">
+                  <feGaussianBlur stdDeviation="3" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <filter id="glow-lg">
+                  <feGaussianBlur stdDeviation="6" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <radialGradient id="ring-bg-grad" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="#131a24"/>
+                  <stop offset="100%" stop-color="#0d1117"/>
+                </radialGradient>
+              </defs>
+            </svg>
+          </div>
+          <div class="ring-footer">
+            <div class="leg"><div class="leg-dot" style="background:var(--ok)"></div>Successor</div>
+            <div class="leg"><div class="leg-dot" style="background:var(--warn)"></div>Routing hop</div>
+            <div class="leg"><div class="leg-dot" style="background:var(--danger)"></div>Failed</div>
+            <div class="leg"><div class="leg-dot" style="background:#8b5cf6"></div>Finger</div>
+            <div class="leg"><div class="leg-dot" style="border:2px solid #fff;background:transparent;width:10px;height:10px"></div>This node</div>
+            <div class="hop-badge hidden" id="hop-badge">⇢ <span id="hop-path">—</span> · <b id="hop-cnt">0</b> hop(s)</div>
+          </div>
+        </div>
+
+        <!-- Right sidebar: submit + stats -->
+        <div class="ring-sidebar" style="overflow-y:auto;padding-bottom:8px">
+
+          <!-- Quick stats -->
+          <div class="grid g2" style="gap:10px">
+            <div class="stat-card ok">
+              <div class="stat-label">Ring Size</div>
+              <div class="stat-value" id="rs-ring-size">—</div>
+              <div class="stat-meta">active nodes</div>
+            </div>
+            <div class="stat-card info">
+              <div class="stat-label">Queue Depth</div>
+              <div class="stat-value" id="rs-queue">—</div>
+              <div class="stat-meta">pending jobs</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Jobs Done</div>
+              <div class="stat-value" id="rs-done">—</div>
+              <div class="stat-meta">total completed</div>
+            </div>
+            <div class="stat-card danger">
+              <div class="stat-label">Failed</div>
+              <div class="stat-value" id="rs-fail">—</div>
+              <div class="stat-meta">total failed</div>
+            </div>
+          </div>
+
+          <!-- Submit job -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-icon" style="background:rgba(99,102,241,.15)">▶</div>
+              <div>
+                <div class="card-title">Submit Job</div>
+                <div class="card-sub">Routed by AI placement agent</div>
+              </div>
+            </div>
+            <div class="card-body">
+              <form id="job-form" autocomplete="off" style="display:flex;flex-direction:column;gap:10px">
+                <div class="field">
+                  <label class="field-label">Job Type</label>
+                  <select class="inp" id="jtype">
+                    <option value="echo">echo — reflect payload</option>
+                    <option value="sleep">sleep — delay N seconds</option>
+                    <option value="compute">compute — sum 0..N (CPU)</option>
+                  </select>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr auto;gap:10px">
+                  <div class="field">
+                    <label class="field-label">Target Node</label>
+                    <select class="inp" id="jtarget">
+                      <option value="">Auto (AI agent)</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" title="Hint to the agent — how many copies to place across different nodes. Not stored on the job itself.">Replicas ⓘ</label>
+                    <input type="number" class="inp" id="jreplicas" value="1" min="1" max="10" style="width:64px;text-align:center">
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label">Payload JSON</label>
+                  <textarea class="inp inp-mono" id="jpayload" rows="2">{"message":"hello"}</textarea>
+                </div>
+                <button type="submit" class="btn btn-primary" id="btn-submit" style="width:100%;justify-content:center">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                  Submit Job
+                </button>
+                <div class="feedback info" id="submit-fb"></div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Recent jobs mini list -->
+          <div class="card" style="flex:1">
+            <div class="card-header">
+              <div class="card-title">Recent Jobs</div>
+              <div class="card-action">
+                <button class="btn btn-ghost btn-xs" onclick="navigate('jobs')">View all →</button>
+              </div>
+            </div>
+            <div id="mini-jobs-list">
+              <div class="empty-state" style="padding:24px"><div class="icon">📋</div><p>No jobs yet</p></div>
+            </div>
+          </div>
+
+        </div><!-- /ring sidebar -->
+      </div>
+    </div><!-- /page-ring -->
+
+    <!-- ══════════════ PAGE: ANALYTICS ══════════════ -->
+    <div class="page" id="page-analytics">
+      <div class="grid g4" style="margin-bottom:16px">
+        <div class="stat-card info"><div class="stat-label">Total Requests</div><div class="stat-value" id="an-reqs">—</div></div>
+        <div class="stat-card warn"><div class="stat-label">Avg Hops</div><div class="stat-value" id="an-hops">—</div></div>
+        <div class="stat-card ok"><div class="stat-label">Jobs Done</div><div class="stat-value" id="an-done">—</div></div>
+        <div class="stat-card danger"><div class="stat-label">Jobs Failed</div><div class="stat-value" id="an-fail">—</div></div>
+      </div>
+      <div class="grid g2" style="gap:16px">
+        <div class="chart-card" style="height:240px">
+          <div class="chart-title">Request Throughput</div>
+          <div class="chart-sub">Requests / min · rolling 2-min window</div>
+          <canvas id="chart-throughput"></canvas>
+        </div>
+        <div class="chart-card" style="height:240px">
+          <div class="chart-title">Hop Count Distribution</div>
+          <div class="chart-sub">O(log N) target — expect ≤ 3 hops</div>
+          <canvas id="chart-hops"></canvas>
+        </div>
+        <div class="chart-card" style="height:240px">
+          <div class="chart-title">Node Load (Queue Depth)</div>
+          <div class="chart-sub">Pending jobs per node</div>
+          <canvas id="chart-load"></canvas>
+        </div>
+        <div class="chart-card" style="height:240px">
+          <div class="chart-title">Agent Strategy Mix</div>
+          <div class="chart-sub">LLM vs heuristic placement decisions</div>
+          <canvas id="chart-agent"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ PAGE: OBSERVABILITY ══════════════ -->
+    <div class="page" id="page-observability" style="padding:0">
+      <div style="flex:1;overflow:hidden">
+        <iframe id="gf-iframe"
+          src="http://localhost:3000/d/chord-dht-01?orgId=1&kiosk=tv&theme=dark&refresh=5s"
+          style="width:100%;height:100%;border:none;display:block"
+          title="Grafana Dashboard" allowfullscreen>
+        </iframe>
+      </div>
+      <div style="padding:10px 24px;border-top:1px solid var(--b1);background:var(--bg-1);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+        <span style="font-size:11px;color:var(--tx-3)">Prometheus scraping all nodes every 5 s · 12 panels · auto-refresh</span>
+        <a href="http://localhost:3000/d/chord-dht-01?theme=dark" target="_blank" style="font-size:11.5px;color:var(--accent-light);text-decoration:none">Open full Grafana ↗</a>
+      </div>
+    </div>
+
+    <!-- ══════════════ PAGE: JOBS ══════════════ -->
+    <div class="page" id="page-jobs">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">All Jobs</div>
+          <div class="card-sub" id="jobs-subtitle">across entire ring</div>
+          <div class="card-action btn-row">
+            <button class="btn btn-primary btn-sm" onclick="navigate('ring')">＋ Submit Job</button>
+          </div>
+        </div>
+        <div class="filter-chips" id="job-filter-chips">
+          <button class="filter-chip active" data-filter="all">All</button>
+          <button class="filter-chip" data-filter="pending">⏳ Pending</button>
+          <button class="filter-chip" data-filter="running">▶ Running</button>
+          <button class="filter-chip" data-filter="done">✓ Done</button>
+          <button class="filter-chip" data-filter="failed">✗ Failed</button>
+        </div>
+        <div id="jobs-table-wrap" style="overflow-y:auto;max-height:calc(100vh - 240px)">
+          <table class="data-table" id="jobs-table">
+            <thead>
+              <tr>
+                <th style="width:30px"></th>
+                <th>Job ID</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Node</th>
+                <th>Created</th>
+                <th title="replica_of=null means this is the primary copy. The replica count you submit is a routing hint to the agent — it is not stored on the job itself.">Role ⓘ</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-tbody">
+              <tr><td colspan="7"><div class="empty-state"><div class="icon">📋</div><p>No jobs yet</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ PAGE: TASK REGISTRY ══════════════ -->
+    <div class="page" id="page-tasks">
+      <div class="grid g2" style="gap:16px;margin-bottom:16px">
+        <!-- Register task -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Register Task</div>
+            <div class="card-sub">POST /tasks — stored on responsible Chord node</div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+            <div class="field">
+              <label class="field-label">Task ID</label>
+              <input class="inp inp-mono" id="task-reg-id" placeholder="Leave blank to auto-generate">
+            </div>
+            <div class="field">
+              <label class="field-label">Job ID (optional)</label>
+              <input class="inp inp-mono" id="task-reg-jobid" placeholder="Link to a job">
+            </div>
+            <div class="field">
+              <label class="field-label">Payload (JSON)</label>
+              <textarea class="inp inp-mono" id="task-reg-payload" rows="3">{"name":"my-task","priority":"normal"}</textarea>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr auto;gap:10px">
+              <button class="btn btn-primary" id="btn-register-task" style="justify-content:center">Register Task</button>
+              <input type="number" class="inp" id="task-reg-replicas" value="1" min="1" max="5" style="width:60px;text-align:center" title="Replicas">
+            </div>
+            <div class="feedback info" id="task-reg-fb"></div>
+          </div>
+        </div>
+
+        <!-- Lookup task -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Lookup Task Owner</div>
+            <div class="card-sub">GET /ring/lookup/:task_id — find responsible node</div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+            <div class="field">
+              <label class="field-label">Task ID</label>
+              <input class="inp inp-mono" id="task-lookup-id" placeholder="Enter task ID to locate…">
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-ghost" id="btn-task-lookup" style="flex:1;justify-content:center">Find Owner</button>
+              <button class="btn btn-ghost" id="btn-task-get" style="flex:1;justify-content:center">Get Task</button>
+            </div>
+            <div class="dht-result-box" id="task-lookup-result">Result will appear here…</div>
+            <div class="btn-row">
+              <button class="btn btn-danger btn-sm" id="btn-task-delete" style="flex:1;justify-content:center">Delete Task</button>
+              <button class="btn btn-warn btn-sm" id="btn-task-hard-delete" style="flex:1;justify-content:center">Hard Delete</button>
+            </div>
+            <div class="feedback info" id="task-lookup-fb"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Task list -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Local Tasks</div>
+          <div class="card-sub">GET /tasks — tasks on this node</div>
+          <div class="card-action btn-row">
+            <input class="inp" id="task-filter-jobid" placeholder="Filter by job ID…" style="width:200px">
+            <select class="inp" id="task-filter-status" style="width:130px">
+              <option value="">All statuses</option>
+              <option value="pending">pending</option>
+              <option value="running">running</option>
+              <option value="done">done</option>
+              <option value="failed">failed</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" id="btn-refresh-tasks">↻ Refresh</button>
+          </div>
+        </div>
+        <div style="overflow-y:auto;max-height:400px">
+          <table class="data-table">
+            <thead><tr><th>Task ID</th><th>Job ID</th><th>Status</th><th>Node</th><th>Replicas</th><th>Actions</th></tr></thead>
+            <tbody id="tasks-tbody">
+              <tr><td colspan="6"><div class="empty-state"><div class="icon">🗂</div><p>No tasks yet</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ PAGE: FILE REQUESTS ══════════════ -->
+    <div class="page" id="page-requests">
+      <div class="grid g2" style="gap:16px;margin-bottom:16px">
+        <!-- Simulate file request -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Simulate File Request</div>
+            <div class="card-sub">POST /request — route file through DHT</div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+            <div class="field">
+              <label class="field-label">Filename</label>
+              <input class="inp" id="req-filename" placeholder="e.g. report.pdf or dataset.csv">
+            </div>
+            <div class="field">
+              <label class="field-label">Client Tag</label>
+              <input class="inp" id="req-client" value="dashboard" placeholder="client identifier">
+            </div>
+            <button class="btn btn-primary" id="btn-simulate-req" style="justify-content:center">Route File Request</button>
+            <div class="dht-result-box" id="req-result">Result will appear here…</div>
+          </div>
+        </div>
+        <!-- Stats -->
+        <div class="card">
+          <div class="card-header"><div class="card-title">Request Stats</div></div>
+          <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="nd-stat"><div class="nd-stat-label">Total</div><div class="nd-stat-val" id="req-total">—</div></div>
+            <div class="nd-stat"><div class="nd-stat-label">Avg Hops</div><div class="nd-stat-val" id="req-avg-hops">—</div></div>
+            <div class="nd-stat"><div class="nd-stat-label">1-hop %</div><div class="nd-stat-val" id="req-1hop">—</div></div>
+            <div class="nd-stat"><div class="nd-stat-label">2+ hop %</div><div class="nd-stat-val" id="req-2hop">—</div></div>
+          </div>
+        </div>
+      </div>
+      <!-- Request log -->
+      <div class="card">
+        <div class="card-header"><div class="card-title">Request Log</div><div class="card-sub">Last 30 routed file requests</div></div>
+        <div style="overflow-y:auto;max-height:500px">
+          <table class="data-table" id="req-table">
+            <thead><tr><th>File</th><th>Routed From</th><th>Served By</th><th>Hops</th><th>Key ID</th><th>Time</th></tr></thead>
+            <tbody id="req-tbody">
+              <tr><td colspan="6"><div class="empty-state"><div class="icon">📡</div><p>Waiting for requests…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ PAGE: DHT STORE ══════════════ -->
+    <div class="page" id="page-dht">
+      <div class="grid g-dht" style="gap:16px;margin-bottom:16px">
+        <!-- GET -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon" style="background:rgba(59,130,246,.15);font-size:11px;font-weight:700;color:var(--info)">GET</div>
+            <div><div class="card-title">Retrieve Value</div><div class="card-sub">GET /get/:key — routed lookup</div></div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+            <div class="field">
+              <label class="field-label">Key</label>
+              <input class="inp inp-mono" id="dht-get-key" placeholder="e.g. config.json">
+            </div>
+            <button class="btn btn-primary" id="btn-dht-get" style="justify-content:center">Lookup</button>
+            <div class="dht-result-box" id="dht-get-result">Result will appear here…</div>
+          </div>
+        </div>
+        <!-- PUT -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon" style="background:rgba(16,185,129,.15);font-size:11px;font-weight:700;color:var(--ok)">PUT</div>
+            <div><div class="card-title">Store Value</div><div class="card-sub">POST /put/:key — routed store</div></div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+            <div class="field">
+              <label class="field-label">Key</label>
+              <input class="inp inp-mono" id="dht-put-key" placeholder="e.g. dataset.csv">
+            </div>
+            <div class="field">
+              <label class="field-label">Value (JSON or string)</label>
+              <textarea class="inp inp-mono" id="dht-put-val" rows="3" placeholder='{"data":"hello world"}'></textarea>
+            </div>
+            <div class="btn-row">
+              <button class="btn btn-ok" id="btn-dht-put" style="flex:1;justify-content:center">Store</button>
+              <button class="btn btn-danger" id="btn-dht-del" style="flex:1;justify-content:center">Delete</button>
+            </div>
+            <div class="dht-result-box" id="dht-put-result">Result will appear here…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Ring Lookup -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <div class="card-icon" style="background:rgba(139,92,246,.15);font-size:14px">🔍</div>
+          <div><div class="card-title">Find Responsible Node</div><div class="card-sub">GET /ring/lookup/:id — which node owns this key?</div></div>
+        </div>
+        <div class="card-body">
+          <div style="display:flex;gap:10px;margin-bottom:12px">
+            <input class="inp inp-mono" id="dht-lookup-id" placeholder="Key or task ID to locate in the ring…" style="flex:1">
+            <button class="btn btn-ghost" id="btn-ring-lookup">Find Owner</button>
+          </div>
+          <div id="dht-lookup-result" style="display:none">
+            <div class="grid g3" style="gap:10px">
+              <div class="nd-stat"><div class="nd-stat-label">Primary Node</div><div class="nd-stat-val" id="lr-node">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">Address</div><div class="nd-stat-val" style="font-size:13px" id="lr-addr">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">Replicas</div><div class="nd-stat-val" style="font-size:13px" id="lr-replicas">—</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Local data snapshot -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Local Data Keys</div>
+          <div class="card-sub">Keys stored on this node (from /chord/state)</div>
+          <div class="card-action"><button class="btn btn-ghost btn-sm" id="btn-refresh-keys">↻ Refresh</button></div>
+        </div>
+        <div style="overflow-y:auto;max-height:300px">
+          <table class="data-table">
+            <thead><tr><th>Key</th><th>Type</th><th>Size</th></tr></thead>
+            <tbody id="local-keys-tbody">
+              <tr><td colspan="3"><div class="empty-state" style="padding:24px"><div class="icon">🗃</div><p>No keys yet</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ PAGE: AGENT LOG ══════════════ -->
+    <div class="page" id="page-agent">
+      <div class="grid g2" style="gap:16px;margin-bottom:16px">
+        <div class="stat-card"><div class="stat-label">Total Decisions</div><div class="stat-value" id="ag-total">—</div></div>
+        <div class="stat-card ok"><div class="stat-label">LLM Decisions</div><div class="stat-value" id="ag-llm">—</div></div>
+        <div class="stat-card warn"><div class="stat-label">Heuristic</div><div class="stat-value" id="ag-h">—</div></div>
+        <div class="stat-card info"><div class="stat-label">Avg Latency</div><div class="stat-value" id="ag-lat">—<span style="font-size:14px">ms</span></div></div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Agent Decision Log</div>
+          <div class="card-sub">GET /api/logs — last 40 decisions from agent_decisions.jsonl</div>
+        </div>
+        <div style="overflow-y:auto;max-height:calc(100vh - 340px)" id="agent-log-wrap">
+          <div class="empty-state"><div class="icon">🤖</div><p>No decisions yet</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ PAGE: FAULT LAB ══════════════ -->
+    <div class="page" id="page-fault">
+      <div class="grid g2" style="gap:16px;margin-bottom:16px">
+
+        <!-- Hard Crash -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon" style="background:rgba(239,68,68,.15);font-size:16px">💀</div>
+            <div><div class="card-title">Hard Crash (SIGKILL)</div><div class="card-sub">POST /api/nodes/:addr/crash — no graceful handoff</div></div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+            <div class="field">
+              <label class="field-label">Select Node</label>
+              <select class="inp" id="crash-sel"><option value="">Choose a node…</option></select>
+            </div>
+            <button class="btn btn-danger" id="btn-crash" style="justify-content:center">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              Send SIGKILL
+            </button>
+            <div style="font-size:11px;color:var(--tx-3);line-height:1.6">Ring self-heals via stabilization in ~6 s. Recovery agent rescues orphaned jobs automatically.</div>
+          </div>
+        </div>
+
+        <!-- Graceful Leave -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon" style="background:rgba(245,158,11,.15);font-size:16px">🚪</div>
+            <div><div class="card-title">Graceful Leave</div><div class="card-sub">POST /admin/leave — orderly handoff to successor</div></div>
+          </div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+            <div class="field">
+              <label class="field-label">Select Node</label>
+              <select class="inp" id="leave-sel"><option value="">Choose a node…</option></select>
+            </div>
+            <button class="btn btn-warn" id="btn-leave" style="justify-content:center">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              Initiate Leave
+            </button>
+            <div style="font-size:11px;color:var(--tx-3);line-height:1.6">Node transfers keys to successor before shutdown. Cleaner than a crash — data is preserved.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Ring Health -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <div class="card-title">Ring Health</div>
+          <div class="card-action">
+            <div class="badge" id="health-badge-fault">● Monitoring</div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap" id="node-health-chips"></div>
+          <div class="health-bar">
+            <div class="health-bar-fill" id="health-bar-fill" style="width:100%;background:var(--ok)"></div>
+          </div>
+          <div style="font-size:11px;color:var(--tx-3)" id="health-bar-label">All nodes healthy</div>
+        </div>
+      </div>
+
+      <!-- Recovery log -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Recovery Event Log</div>
+          <div class="card-sub">Automatic fault detection and recovery timeline</div>
+        </div>
+        <div class="card-body">
+          <div class="fault-log" id="fault-log">
+            <div class="empty-state" style="padding:24px"><div class="icon">🛡</div><p>No fault events yet. Ring is stable.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /pages -->
+</div><!-- /main -->
+
+<!-- ═══════════════════════ RING STATUS MODAL ═══════════════════════ -->
+<div class="overlay hidden" id="ring-status-overlay">
+  <div class="modal" style="width:min(500px,95vw)">
+    <div class="modal-head">
+      <span style="font-size:18px">🔗</span>
+      <h3>Ring Status — <span id="rs-modal-count" style="color:var(--accent-light)">—</span> nodes</h3>
+      <button class="btn btn-ghost btn-icon" id="btn-close-rs" style="margin-left:auto">✕</button>
+    </div>
+    <div class="modal-body" style="padding:0;max-height:60vh" id="rs-modal-body">
+      <div class="empty-state">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ NODE DETAIL MODAL ═══════════════════════ -->
+<div class="overlay hidden" id="node-modal-overlay">
+  <div class="modal" style="width:min(820px,95vw);max-height:90vh">
+    <div class="modal-head">
+      <div id="nd-color-bar" style="width:5px;height:46px;border-radius:3px;flex-shrink:0"></div>
+      <div style="flex:1">
+        <h3 id="nd-title">Node —</h3>
+        <div style="font-size:12px;color:var(--tx-3)" id="nd-subtitle">—</div>
+      </div>
+      <span id="nd-badge" class="badge badge-neutral" style="margin-right:8px"></span>
+      <button class="btn btn-ghost btn-icon" id="btn-close-nd">✕</button>
+    </div>
+    <div class="nd-tabs">
+      <button class="nd-tab active" data-tab="overview">Overview</button>
+      <button class="nd-tab" data-tab="fingers">Finger Table</button>
+      <button class="nd-tab" data-tab="data">Data Store</button>
+      <button class="nd-tab" data-tab="explain">How It Works</button>
+    </div>
+    <div class="nd-body active" id="nd-tab-overview">
+      <div class="nd-grid" id="nd-metrics-grid"></div>
+      <div id="nd-ptrs"></div>
+    </div>
+    <div class="nd-body" id="nd-tab-fingers">
+      <table class="data-table">
+        <thead><tr><th>#</th><th>Start (n+2ⁱ)</th><th>Points To Node</th><th>Address</th></tr></thead>
+        <tbody id="nd-finger-tbody"></tbody>
+      </table>
+    </div>
+    <div class="nd-body" id="nd-tab-data">
+      <div id="nd-data-content"></div>
+    </div>
+    <div class="nd-body" id="nd-tab-explain">
+      <div id="nd-explain-content"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ ADD NODE MODAL ═══════════════════════ -->
+<div class="overlay hidden" id="add-modal-overlay">
+  <div class="modal" style="width:440px">
+    <div class="modal-head">
+      <h3>Add a Node to the Ring</h3>
+      <button class="btn btn-ghost btn-icon" id="btn-close-add" style="margin-left:auto">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="color:var(--tx-2);font-size:12.5px;line-height:1.7;margin-bottom:14px">A new node is being spawned. You can also run the command below manually in a new terminal:</p>
+      <div class="codeblock" id="add-node-cmd">…</div>
+      <p style="font-size:11.5px;color:var(--tx-3);margin-top:12px;line-height:1.6">The ring rebalances in ~4 s (two stabilization cycles). The new node inherits keys from its successor.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="btn-close-add2">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* ═══════════════════════════════════════════════════════════════════
+   CONSTANTS & STATE
+═══════════════════════════════════════════════════════════════════ */
+const CX=350,CY=350,R=240,NR=20,SZ=256;
+const SVG_NS='http://www.w3.org/2000/svg';
+
+const PALETTE=[
+  '#6366f1','#10b981','#f59e0b','#3b82f6',
+  '#8b5cf6','#ec4899','#14b8a6','#f97316',
+  '#a855f7','#06b6d4','#84cc16','#ef4444',
+];
+let colorMap={};
+function buildColors(nodes){
+  const s=[...nodes].sort((a,b)=>a.node_id-b.node_id);
+  colorMap={};
+  s.forEach((n,i)=>colorMap[n.node_id]=PALETTE[i%PALETTE.length]);
+}
+function nc(id){return colorMap[id]||'#6366f1'}
+
+let ring={nodes:[],this_node:null};
+let showFin=false,showIds=true,showPorts=false,animating=false;
+const deadNodes=new Map();
+const intentionallyRemoved=new Set(); // addresses of nodes we deliberately removed
+let prevIds=new Set();
+const prevAddrById=new Map(); // node_id → address from last poll (for dead-node detection)
+const faultEvents=[];
+let allJobs=[],jobFilter='all';
+let chartsInited=false;
+const analyticsHist=[];
+let chartTP,chartHops,chartLoad,chartAgent;
+
+/* ═══════════════════════════════════════════════════════════════════
+   NAVIGATION
+═══════════════════════════════════════════════════════════════════ */
+const PAGE_META={
+  ring:    {title:'Ring Topology',    sub:'Live Chord DHT ring visualization'},
+  analytics:{title:'Analytics',       sub:'Performance metrics and charts'},
+  observability:{title:'Observability',sub:'Grafana / Prometheus dashboards'},
+  jobs:    {title:'Jobs',             sub:'All jobs across the ring'},
+  tasks:   {title:'Task Registry',    sub:'Chord-distributed task store'},
+  requests:{title:'File Requests',    sub:'DHT file routing log'},
+  dht:     {title:'DHT Store',        sub:'Direct key-value operations'},
+  agent:   {title:'Agent Log',        sub:'AI placement & recovery decisions'},
+  fault:   {title:'Fault Lab',        sub:'Fault injection & ring recovery testing'},
+};
+
+function navigate(page){
+  document.querySelectorAll('.nav-item').forEach(el=>{
+    el.classList.toggle('active',el.dataset.page===page);
+  });
+  document.querySelectorAll('.page').forEach(el=>{
+    el.classList.toggle('active',el.id===`page-${page}`);
+  });
+  const m=PAGE_META[page]||{};
+  document.getElementById('topbar-title').textContent=m.title||page;
+  document.getElementById('topbar-sub').textContent=m.sub||'';
+  if(page==='analytics'){initCharts();pollMetrics();}
+  if(page==='tasks'){loadTasks();}
+  if(page==='dht'){loadLocalKeys();}
+  if(page==='agent'){pollLogs();}
+}
+
+document.querySelectorAll('.nav-item[data-page]').forEach(el=>{
+  el.addEventListener('click',()=>navigate(el.dataset.page));
+});
+document.getElementById('node-pill').addEventListener('click',openRingModal);
+
+/* ═══════════════════════════════════════════════════════════════════
+   SVG HELPERS
+═══════════════════════════════════════════════════════════════════ */
+const ff=n=>n.toFixed(2);
+function se(tag,attrs={}){
+  const e=document.createElementNS(SVG_NS,tag);
+  for(const[k,v]of Object.entries(attrs))e.setAttribute(k,v);
+  return e;
+}
+function st(x,y,s,attrs={}){
+  const t=se('text',{x:ff(x),y:ff(y),'text-anchor':'middle','dominant-baseline':'middle',...attrs});
+  t.textContent=s;return t;
+}
+const ang=id=>(id/SZ)*2*Math.PI-Math.PI/2;
+const np=id=>({x:CX+R*Math.cos(ang(id)),y:CY+R*Math.sin(ang(id))});
+function arcD(a,b){
+  if(a===b)return null;
+  const pa=np(a),pb=np(b);
+  const cw=((b-a)%SZ+SZ)%SZ;
+  return`M ${ff(pa.x)} ${ff(pa.y)} A ${R} ${R} 0 ${cw>SZ/2?1:0} 1 ${ff(pb.x)} ${ff(pb.y)}`;
+}
+function lineD(a,b){const pa=np(a),pb=np(b);return`M ${ff(pa.x)} ${ff(pa.y)} L ${ff(pb.x)} ${ff(pb.y)}`;}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CHORD ROUTING SIM
+═══════════════════════════════════════════════════════════════════ */
+function inRange(x,a,b,incB=false){
+  x=((x%SZ)+SZ)%SZ;a=((a%SZ)+SZ)%SZ;b=((b%SZ)+SZ)%SZ;
+  if(a===b)return true;
+  if(a<b)return incB?a<x&&x<=b:a<x&&x<b;
+  return incB?x>a||x<=b:x>a||x<b;
+}
+function simRoute(from,to){
+  const map={};for(const n of ring.nodes)map[n.node_id]=n;
+  const hops=[from];let cur=from;
+  for(let i=0;i<24;i++){
+    if(cur===to)break;
+    const node=map[cur];if(!node)break;
+    const succ=node.successor?.id;
+    if(succ===to||inRange(to,cur,succ,true)){if(hops[hops.length-1]!==succ)hops.push(succ);break;}
+    let next=null;
+    for(const f of(node.fingers||[]).slice().reverse()){
+      if(f.node_id!=null&&f.node_id!==cur&&inRange(f.node_id,cur,to)){next=f.node_id;break;}
+    }
+    if(!next||next===cur){if(hops[hops.length-1]!==succ)hops.push(succ);break;}
+    if(hops[hops.length-1]!==next)hops.push(next);
+    cur=next;
+  }
+  return hops;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RING RENDERING
+═══════════════════════════════════════════════════════════════════ */
+function renderRing(){
+  try{
+    const svg=document.getElementById('ring-svg');
+    const defs=svg.querySelector('defs');
+    while(svg.lastChild&&svg.lastChild!==defs)svg.removeChild(svg.lastChild);
+    const nodes=ring.nodes;
+    buildColors(nodes);
+
+    // Background disc
+    svg.appendChild(se('circle',{cx:CX,cy:CY,r:R+30,fill:'url(#ring-bg-grad)'}));
+    svg.appendChild(se('circle',{cx:CX,cy:CY,r:R,fill:'none',stroke:'rgba(255,255,255,.04)','stroke-width':1}));
+
+    // Tick marks
+    for(let id=0;id<SZ;id+=SZ/8){
+      const a=ang(id);
+      svg.appendChild(se('line',{x1:ff(CX+(R-9)*Math.cos(a)),y1:ff(CY+(R-9)*Math.sin(a)),x2:ff(CX+R*Math.cos(a)),y2:ff(CY+R*Math.sin(a)),stroke:'rgba(255,255,255,.08)','stroke-width':1.5}));
+      svg.appendChild(st(CX+(R+17)*Math.cos(a),CY+(R+17)*Math.sin(a),id,{fill:'rgba(255,255,255,.15)','font-size':9,'font-family':'monospace'}));
+    }
+
+    if(!nodes.length){
+      svg.appendChild(st(CX,CY,'Connecting…',{fill:'rgba(255,255,255,.3)','font-size':16}));
+      return;
+    }
+
+    // Finger lines
+    if(showFin){
+      const g=se('g',{opacity:.18});
+      for(const n of nodes){
+        for(const f of(n.fingers||[])){
+          if(f.node_id==null||f.node_id===n.node_id)continue;
+          g.appendChild(se('path',{d:lineD(n.node_id,f.node_id),fill:'none',stroke:'#8b5cf6','stroke-width':1,'stroke-dasharray':'5,4'}));
+        }
+      }
+      svg.appendChild(g);
+    }
+
+    // Successor arcs
+    const sg=se('g');
+    for(const n of nodes){
+      const sid=n.successor?.id;
+      if(sid==null||sid===n.node_id)continue;
+      const d=arcD(n.node_id,sid);if(!d)continue;
+      sg.appendChild(se('path',{d,fill:'none',stroke:nc(n.node_id),'stroke-width':2,opacity:.45,'marker-end':'url(#arr-succ)'}));
+    }
+    svg.appendChild(sg);
+
+    // Hop animation layer
+    svg.appendChild(se('g',{id:'hop-g'}));
+
+    // Nodes
+    const ng=se('g');
+    for(const n of nodes){
+      const p=np(n.node_id),c=nc(n.node_id);
+      const isThis=n.node_id===ring.this_node;
+
+      if(isThis){
+        ng.appendChild(se('circle',{cx:ff(p.x),cy:ff(p.y),r:NR+10,fill:'none',stroke:c,'stroke-width':1.5,opacity:.2,filter:'url(#glow-lg)'}));
+        ng.appendChild(se('circle',{cx:ff(p.x),cy:ff(p.y),r:NR+18,fill:'none',stroke:c,'stroke-width':1,opacity:.08}));
+      }
+
+      // Node glow
+      ng.appendChild(se('circle',{cx:ff(p.x),cy:ff(p.y),r:NR+4,fill:c,opacity:.08,filter:'url(#glow-sm)'}));
+
+      const circle=se('circle',{
+        cx:ff(p.x),cy:ff(p.y),r:NR,
+        fill:c,'fill-opacity':.2,
+        stroke:c,'stroke-width':isThis?2.8:2,
+        id:`nc-${n.node_id}`,style:'cursor:pointer'
+      });
+      circle.addEventListener('click',()=>openNodeDetail(n.node_id));
+      ng.appendChild(circle);
+
+      if(showIds)ng.appendChild(st(p.x,p.y,n.node_id,{fill:c,'font-size':11,'font-weight':700,'font-family':'monospace'}));
+
+      const qd=n.metrics?.queue_depth??0;
+      if(qd>0){
+        const bx=ff(p.x+NR*.75),by=ff(p.y-NR*.75);
+        ng.appendChild(se('circle',{cx:bx,cy:by,r:9,fill:'#f59e0b','fill-opacity':.95}));
+        ng.appendChild(st(parseFloat(bx),parseFloat(by),qd,{fill:'#060810','font-size':8.5,'font-weight':800,'font-family':'monospace'}));
+      }
+
+      if(showPorts){
+        const port=(n.address||'').split(':')[1]||'';
+        if(port)ng.appendChild(st(p.x,p.y+NR+13,':'+port,{fill:c,'font-size':8,'font-family':'monospace',opacity:.7}));
+      }
+    }
+    svg.appendChild(ng);
+
+    // Dead ghosts
+    const dg=se('g');
+    for(const[id]of deadNodes){
+      if(ring.nodes.find(n=>n.node_id===id))continue;
+      const p=np(id);
+      dg.appendChild(se('circle',{cx:ff(p.x),cy:ff(p.y),r:NR+8,fill:'none',stroke:'#ef4444','stroke-width':1.5,'stroke-dasharray':'5,4',opacity:.4}));
+      dg.appendChild(se('circle',{cx:ff(p.x),cy:ff(p.y),r:NR,fill:'#ef4444','fill-opacity':.07,stroke:'#ef4444','stroke-width':1.5,'stroke-dasharray':'5,4'}));
+      dg.appendChild(st(p.x,p.y-1,id,{fill:'#ef4444','font-size':10,'font-family':'monospace','font-weight':700}));
+      dg.appendChild(st(p.x,p.y+13,'✕',{fill:'#ef4444','font-size':9}));
+    }
+    svg.appendChild(dg);
+  }catch(e){console.error('renderRing:',e);}
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ROUTING ANIMATION
+═══════════════════════════════════════════════════════════════════ */
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+function hilite(id,on){
+  const e=document.getElementById(`nc-${id}`);if(!e)return;
+  const c=nc(id),isThis=id===ring.this_node;
+  if(on){e.setAttribute('fill','#f59e0b');e.setAttribute('fill-opacity','.45');e.setAttribute('stroke','#f59e0b');e.setAttribute('stroke-width',3);}
+  else{e.setAttribute('fill',c);e.setAttribute('fill-opacity','.2');e.setAttribute('stroke',c);e.setAttribute('stroke-width',isThis?2.8:2);}
+}
+
+async function animateRoute(from,to){
+  if(animating)return;animating=true;
+  const hops=simRoute(from,to);
+  const g=document.getElementById('hop-g');if(g)g.innerHTML='';
+  for(let i=0;i<hops.length;i++){
+    hilite(hops[i],true);
+    if(i>0&&g){
+      const pa=np(hops[i-1]),pb=np(hops[i]);
+      g.appendChild(se('line',{x1:ff(pa.x),y1:ff(pa.y),x2:ff(pb.x),y2:ff(pb.y),stroke:'#f59e0b','stroke-width':2.5,'stroke-dasharray':'8,4','marker-end':'url(#arr-hop)',opacity:.9}));
+    }
+    await sleep(480);
+  }
+  const badge=document.getElementById('hop-badge');
+  document.getElementById('hop-path').textContent=hops.join(' → ');
+  document.getElementById('hop-cnt').textContent=hops.length-1;
+  badge.classList.remove('hidden');
+  await sleep(3200);
+  if(g)g.innerHTML='';
+  hops.forEach(id=>hilite(id,false));
+  badge.classList.add('hidden');
+  animating=false;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SIDEBAR + HEADER STATE
+═══════════════════════════════════════════════════════════════════ */
+let maxNodes=1;
+
+function updateSidebar(){
+  const n=ring.nodes.length;
+  if(n>maxNodes)maxNodes=n;
+  const frac=n/maxNodes;
+  const status=frac>=1.0?'ok':frac>=0.6?'warn':'dead';
+
+  document.getElementById('sidebar-pulse').className='pulse '+(status==='ok'?'':'')+(status!=='ok'?status:'');
+  document.getElementById('sidebar-ring-size').textContent=`${n} node${n!==1?'s':''}`;
+
+  // Ring dots
+  const dotsEl=document.getElementById('ring-dots-sidebar');
+  dotsEl.innerHTML='';
+  for(let i=0;i<Math.min(n,12);i++){
+    const d=document.createElement('div');
+    d.className='ring-dot'+(status!=='ok'?' '+status:'');
+    dotsEl.appendChild(d);
+  }
+
+  // Health chip
+  const chip=document.getElementById('health-chip');
+  const dot=document.getElementById('health-dot');
+  const lbl=document.getElementById('health-label');
+  if(deadNodes.size>0){dot.style.background='var(--danger)';lbl.textContent=`${deadNodes.size} node(s) dead`;}
+  else if(n<2){dot.style.background='var(--warn)';lbl.textContent='Single-node ring';}
+  else{dot.style.background='var(--ok)';lbl.textContent='Ring healthy';}
+
+  document.getElementById('tb-queue').textContent=`Queue: ${ring.nodes.reduce((s,nd)=>s+(nd.metrics?.queue_depth||0),0)}`;
+
+  // Self info
+  if(ring.this_node!=null){
+    const self=ring.nodes.find(nd=>nd.node_id===ring.this_node);
+    if(self){
+      document.getElementById('sidebar-node-id').textContent=`Node ${ring.this_node}`;
+      document.getElementById('sidebar-node-addr').textContent=self.address||'';
+    }
+  }
+
+  // Sync ring stat cards
+  document.getElementById('rs-ring-size').textContent=n;
+  const totalQ=ring.nodes.reduce((s,nd)=>s+(nd.metrics?.queue_depth||0),0);
+  const totalDone=ring.nodes.reduce((s,nd)=>s+(nd.metrics?.jobs_completed||0),0);
+  const totalFail=ring.nodes.reduce((s,nd)=>s+(nd.metrics?.jobs_failed||0),0);
+  document.getElementById('rs-queue').textContent=totalQ;
+  document.getElementById('rs-done').textContent=totalDone;
+  document.getElementById('rs-fail').textContent=totalFail;
+
+  // Sync remove dropdown
+  const rmSel=document.getElementById('rm-sel');
+  const prev=rmSel.value;
+  rmSel.innerHTML='<option value="">Remove node…</option>';
+  for(const nd of ring.nodes){
+    const o=document.createElement('option');
+    o.value=nd.address;
+    o.textContent=`Node ${nd.node_id} (${nd.address})${nd.node_id===ring.this_node?' ★':''}`;
+    rmSel.appendChild(o);
+  }
+  if(prev)rmSel.value=prev;
+
+  // Sync fault selects
+  ['crash-sel','leave-sel'].forEach(id=>{
+    const el=document.getElementById(id);if(!el)return;
+    const cur=el.value;
+    el.innerHTML='<option value="">Choose a node…</option>';
+    for(const nd of ring.nodes){
+      const o=document.createElement('option');
+      o.value=nd.address;
+      o.textContent=`Node ${nd.node_id} — ${nd.address}`;
+      el.appendChild(o);
+    }
+    if(cur)el.value=cur;
+  });
+
+  // Sync job target
+  const jsel=document.getElementById('jtarget');
+  if(jsel){
+    const cur=jsel.value;
+    jsel.innerHTML='<option value="">Auto (AI agent)</option>';
+    for(const nd of ring.nodes){
+      const o=document.createElement('option');
+      o.value=nd.address;
+      o.textContent=`Node ${nd.node_id} — ${nd.address}`;
+      jsel.appendChild(o);
+    }
+    if(cur)jsel.value=cur;
+  }
+
+  // Fault page health
+  const hbf=document.getElementById('health-badge-fault');
+  const hbFill=document.getElementById('health-bar-fill');
+  const hbLbl=document.getElementById('health-bar-label');
+  if(hbf){
+    const pct=Math.round(frac*100);
+    hbFill.style.width=pct+'%';
+    if(deadNodes.size>0){hbf.className='badge badge-danger';hbf.textContent=`● ${deadNodes.size} dead`;hbFill.style.background='var(--danger)';hbLbl.textContent=`${deadNodes.size} node(s) dead — ring healing`;}
+    else if(n<2){hbf.className='badge badge-warn';hbf.textContent='● Degraded';hbFill.style.background='var(--warn)';hbLbl.textContent='Single-node ring — no redundancy';}
+    else{hbf.className='badge badge-ok';hbf.textContent='● Healthy';hbFill.style.background='var(--ok)';hbLbl.textContent=`${n} nodes online — all healthy`;}
+  }
+
+  // Node health chips
+  const chipsCont=document.getElementById('node-health-chips');
+  if(chipsCont){
+    chipsCont.innerHTML=ring.nodes.map(nd=>{
+      const qd=nd.metrics?.queue_depth??0;
+      const cls=qd>3?'badge-warn':'badge-ok';
+      return`<span class="badge ${cls}" style="cursor:pointer" onclick="openNodeDetail(${nd.node_id})">N${nd.node_id}${qd>0?` q:${qd}`:''}</span>`;
+    }).join('');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   POLL FUNCTIONS
+═══════════════════════════════════════════════════════════════════ */
+async function pollRing(){
+  try{
+    const r=await fetch('/api/ring',{cache:'no-store'});
+    ring=await r.json();
+
+    const newIds=new Set(ring.nodes.map(n=>n.node_id));
+    const newAddrs=new Set(ring.nodes.map(n=>n.address));
+
+    // Update the forward-lookup map with the latest addresses
+    ring.nodes.forEach(n=>prevAddrById.set(n.node_id,n.address));
+
+    for(const id of prevIds){
+      if(!newIds.has(id)&&!deadNodes.has(id)){
+        // Use the snapshot address saved before ring was overwritten
+        const addr=prevAddrById.get(id);
+        // If we intentionally removed this address, skip the ghost entirely
+        if(addr&&intentionallyRemoved.has(addr)) continue;
+        deadNodes.set(id,{ts:Date.now()});
+        addFaultEvent(`💀 Node ${id} disappeared from ring`);
+        setTimeout(()=>addFaultEvent('🔄 Ring stabilizing — finger tables updating…'),3000);
+        setTimeout(()=>addFaultEvent(`✅ Ring re-stabilized after Node ${id} loss`),8000);
+        const b=document.getElementById('badge-faults');
+        b.textContent=deadNodes.size;b.classList.add('show');
+      }
+    }
+    // Remove intentionally-removed nodes from deadNodes if they snuck in,
+    // and clear addresses that are no longer in the ring
+    for(const addr of intentionallyRemoved){
+      if(!newAddrs.has(addr)) intentionallyRemoved.delete(addr);
+    }
+    // Also purge any ghosts whose address was intentionally removed
+    for(const[id,]of deadNodes){
+      const addr=prevAddrById.get(id);
+      if(addr&&intentionallyRemoved.has(addr)) deadNodes.delete(id);
+    }
+    for(const[id,info]of deadNodes){
+      if(newIds.has(id)){deadNodes.delete(id);addFaultEvent(`🟢 Node ${id} recovered`);}
+      else if(Date.now()-info.ts>40000)deadNodes.delete(id);
+    }
+    if(!deadNodes.size){const b=document.getElementById('badge-faults');b.classList.remove('show');}
+    prevIds=newIds;
+
+    renderRing();
+    updateSidebar();
+
+    try{
+      const sr=await fetch('/api/status',{cache:'no-store'});
+      const st=await sr.json();
+      document.getElementById('tb-queue').textContent=`Queue: ${st.queue_depth||0}`;
+    }catch{}
+  }catch(e){console.error('pollRing:',e);}
+}
+
+async function pollJobs(){
+  try{
+    const r=await fetch('/api/jobs',{cache:'no-store'});
+    allJobs=(await r.json()).jobs||[];
+    const cnt=document.getElementById('badge-jobs');
+    const running=allJobs.filter(j=>j.status==='running'||j.status==='claimed').length;
+    if(running){cnt.textContent=running;cnt.classList.add('show');}else cnt.classList.remove('show');
+    renderJobs();
+    renderMiniJobs();
+  }catch{}
+}
+
+let _lastReqTs=0;
+async function pollRequests(){
+  try{
+    const r=await fetch('/api/requests',{cache:'no-store'});
+    const data=await r.json();
+    const reqs=data.requests||[];
+    renderRequests(reqs);
+    if(reqs.length&&reqs[0].ts>_lastReqTs){
+      _lastReqTs=reqs[0].ts;
+      const req=reqs[0];
+      if(req.routed_from!=null&&req.served_by_node!=null&&req.routed_from!==req.served_by_node)
+        animateRoute(req.routed_from,req.served_by_node);
+    }
+  }catch{}
+}
+
+async function pollLogs(){
+  try{
+    const r=await fetch('/api/logs',{cache:'no-store'});
+    const entries=(await r.json()).entries||[];
+    renderAgentLog(entries);
+    if(chartsInited)updateAgentChart(entries);
+  }catch{}
+}
+
+async function pollMetrics(){
+  try{
+    const r=await fetch('/api/metrics/snapshot',{cache:'no-store'});
+    const snap=await r.json();
+    if(chartsInited)updateCharts(snap);
+  }catch{}
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RENDER: JOBS
+═══════════════════════════════════════════════════════════════════ */
+function renderJobs(){
+  const tbody=document.getElementById('jobs-tbody');
+  if(!tbody)return;
+  let jobs=allJobs;
+  if(jobFilter!=='all'){
+    jobs=allJobs.filter(j=>{
+      if(jobFilter==='running')return j.status==='running'||j.status==='claimed';
+      return j.status===jobFilter;
+    });
+  }
+  const sub=document.getElementById('jobs-subtitle');
+  if(sub)sub.textContent=`${allJobs.length} total · ${jobs.length} shown`;
+  if(!jobs.length){
+    tbody.innerHTML=`<tr><td colspan="7"><div class="empty-state"><div class="icon">📋</div><p>${allJobs.length?'No jobs match filter':'No jobs yet'}</p></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML=jobs.map(j=>{
+    const sid=(j.job_id||'?').slice(0,12);
+    const nd=ring.nodes.find(n=>n.address===j.claimed_by);
+    const nodeStr=nd?`Node ${nd.node_id}`:(j.claimed_by?j.claimed_by.split(':')[1]||'?':'—');
+    const ts=j.created_at?new Date(j.created_at*1000).toLocaleTimeString():'—';
+    const stCls={pending:'badge-warn',claimed:'badge-info',running:'badge-info',done:'badge-ok',failed:'badge-danger'}[j.status]||'badge-neutral';
+    const dotCls={pending:'jdot-pending',claimed:'jdot-claimed',running:'jdot-running',done:'jdot-done',failed:'jdot-failed'}[j.status]||'';
+    return`<tr>
+      <td><div class="jdot ${dotCls}"></div></td>
+      <td class="mono" title="${j.job_id}">${sid}…</td>
+      <td><span class="badge badge-neutral">${j.type||'?'}</span></td>
+      <td><span class="badge ${stCls}">${j.status}</span></td>
+      <td class="mono muted" style="color:${nc(nd?.node_id)||'var(--tx-3)'}">${nodeStr}</td>
+      <td class="mono muted">${ts}</td>
+      <td><span class="badge ${j.replica_of?'badge-warn':'badge-ok'}" title="${j.replica_of?'Replica copy of job '+j.replica_of:'Primary job — replica count is a routing hint to the agent, not stored here'}">${j.replica_of?'replica':'primary'}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderMiniJobs(){
+  const el=document.getElementById('mini-jobs-list');if(!el)return;
+  const top=allJobs.slice(0,6);
+  if(!top.length){el.innerHTML='<div class="empty-state" style="padding:20px"><div class="icon">📋</div><p>No jobs yet</p></div>';return;}
+  el.innerHTML=top.map(j=>{
+    const dotCls={pending:'jdot-pending',claimed:'jdot-claimed',running:'jdot-running',done:'jdot-done',failed:'jdot-failed'}[j.status]||'';
+    const nd=ring.nodes.find(n=>n.address===j.claimed_by);
+    const ts=j.created_at?new Date(j.created_at*1000).toLocaleTimeString():'—';
+    return`<div class="row-item" style="gap:8px;font-size:11.5px">
+      <div class="jdot ${dotCls}"></div>
+      <span style="font-weight:600;flex-shrink:0">${j.type||'?'}</span>
+      <span class="mono" style="color:var(--tx-3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${j.job_id}">${(j.job_id||'').slice(0,10)}…</span>
+      ${nd?`<span style="color:${nc(nd.node_id)};font-family:var(--mono);font-size:10px">N${nd.node_id}</span>`:''}
+      <span style="color:var(--tx-4);font-family:var(--mono);font-size:10px">${ts}</span>
+    </div>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RENDER: FILE REQUESTS
+═══════════════════════════════════════════════════════════════════ */
+const FILE_ICONS={pdf:'📄',csv:'📊',bin:'⚙️',yaml:'⚙️',gz:'🗜',zip:'🗜',pptx:'📊',png:'🖼',jpg:'🖼',mp4:'🎬',tar:'🗜',md:'📝',sql:'🗄',json:'📋',txt:'📝',sh:'⚡',parquet:'📊'};
+function ficon(name){const ext=(name.includes('.')?name.split('.').pop():'').toLowerCase();return FILE_ICONS[ext]||'📁';}
+
+function renderRequests(reqs){
+  const tbody=document.getElementById('req-tbody');if(!tbody)return;
+  if(!reqs.length){tbody.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="icon">📡</div><p>Waiting…</p></div></td></tr>';return;}
+
+  // Stats
+  const avg=reqs.length?reqs.reduce((s,r)=>s+r.hops,0)/reqs.length:0;
+  const h1=reqs.filter(r=>r.hops===1).length;
+  document.getElementById('req-total').textContent=reqs.length;
+  document.getElementById('req-avg-hops').textContent=avg.toFixed(1);
+  document.getElementById('req-1hop').textContent=reqs.length?Math.round(h1/reqs.length*100)+'%':'—';
+  document.getElementById('req-2hop').textContent=reqs.length?Math.round((reqs.length-h1)/reqs.length*100)+'%':'—';
+
+  tbody.innerHTML=reqs.map(r=>{
+    const c=colorMap[r.served_by_node]||'var(--tx-2)';
+    const t=new Date(r.ts*1000).toLocaleTimeString();
+    const hopCls=r.hops===1?'badge-ok':r.hops<=3?'badge-warn':'badge-danger';
+    return`<tr>
+      <td><span style="margin-right:5px">${ficon(r.filename)}</span><span class="mono">${r.filename}</span></td>
+      <td class="mono muted">N${r.routed_from??'?'}</td>
+      <td class="mono" style="color:${c}">N${r.served_by_node??'?'}</td>
+      <td><span class="badge ${hopCls}">${r.hops} hop${r.hops!==1?'s':''}</span></td>
+      <td class="mono muted">${r.key_id}</td>
+      <td class="mono muted">${t}</td>
+    </tr>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   RENDER: AGENT LOG
+═══════════════════════════════════════════════════════════════════ */
+function renderAgentLog(entries){
+  const wrap=document.getElementById('agent-log-wrap');if(!wrap)return;
+  if(!entries.length){wrap.innerHTML='<div class="empty-state"><div class="icon">🤖</div><p>No decisions yet</p></div>';return;}
+
+  let llm=0,heur=0,totalLat=0;
+  entries.forEach(e=>{
+    const s=e.strategy||'';
+    if(s==='llm')llm++;else if(s.startsWith('heuristic'))heur++;
+    totalLat+=e.latency_ms||0;
+  });
+  document.getElementById('ag-total').textContent=entries.length;
+  document.getElementById('ag-llm').textContent=llm;
+  document.getElementById('ag-h').textContent=heur;
+  document.getElementById('ag-lat').textContent=entries.length?Math.round(totalLat/entries.length):'—';
+
+  wrap.innerHTML=[...entries].reverse().map(e=>{
+    const s=e.strategy||'';
+    const sCls=s==='llm'?'a-strat-llm':s.startsWith('heuristic')?'a-strat-h':'a-muted';
+    const t=new Date(e.ts*1000).toLocaleTimeString();
+    const rea=e.decision?.reasoning||'';
+    return`<div class="agent-item">
+      <span class="a-name">${e.agent}</span>
+      <span class="a-muted"> · ${e.tool} · </span>
+      <span class="${sCls}">${s}</span>
+      <span class="a-muted"> · ${e.latency_ms}ms · ${t}</span>
+      ${rea?`<div class="a-reason" title="${rea}">${rea}</div>`:''}
+    </div>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   FAULT EVENTS
+═══════════════════════════════════════════════════════════════════ */
+function addFaultEvent(msg){
+  const t=new Date().toLocaleTimeString();
+  faultEvents.unshift({t,msg});
+  if(faultEvents.length>50)faultEvents.pop();
+  const el=document.getElementById('fault-log');
+  if(!el)return;
+  el.innerHTML=faultEvents.length
+    ?faultEvents.map(e=>`<div class="fault-log-item"><span class="fault-log-time">${e.t}</span><span class="fault-log-msg">${e.msg}</span></div>`).join('')
+    :'<div class="empty-state" style="padding:20px"><div class="icon">🛡</div><p>No fault events yet</p></div>';
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CHARTS
+═══════════════════════════════════════════════════════════════════ */
+const GRID_C={color:'rgba(255,255,255,.05)',drawBorder:false};
+const TICK_C={color:'#475569',font:{size:10}};
+
+function initCharts(){
+  if(chartsInited)return;chartsInited=true;
+  Chart.defaults.color='#64748b';Chart.defaults.font.size=10;
+  const c=id=>document.getElementById(id).getContext('2d');
+
+  chartTP=new Chart(c('chart-throughput'),{
+    type:'line',
+    data:{labels:[],datasets:[{label:'Req/min',data:[],borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.1)',fill:true,tension:.4,pointRadius:3,pointBackgroundColor:'#6366f1'}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
+      plugins:{legend:{display:false}},
+      scales:{x:{grid:GRID_C,ticks:{...TICK_C,maxTicksLimit:6}},y:{grid:GRID_C,ticks:TICK_C,beginAtZero:true}}}
+  });
+  chartHops=new Chart(c('chart-hops'),{
+    type:'bar',
+    data:{labels:['1','2','3','4+'],datasets:[{data:[0,0,0,0],backgroundColor:['#10b981','#3b82f6','#f59e0b','#ef4444'],borderRadius:5}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
+      plugins:{legend:{display:false}},
+      scales:{x:{grid:GRID_C,ticks:TICK_C},y:{grid:GRID_C,ticks:TICK_C,beginAtZero:true}}}
+  });
+  chartLoad=new Chart(c('chart-load'),{
+    type:'bar',
+    data:{labels:[],datasets:[{label:'Queue',data:[],backgroundColor:[],borderRadius:5}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
+      plugins:{legend:{display:false}},
+      scales:{x:{grid:GRID_C,ticks:TICK_C},y:{grid:GRID_C,ticks:TICK_C,beginAtZero:true}}}
+  });
+  chartAgent=new Chart(c('chart-agent'),{
+    type:'doughnut',
+    data:{labels:['LLM','Heuristic','None'],datasets:[{data:[0,0,0],backgroundColor:['#10b981','#f59e0b','#1e293b'],borderWidth:2,borderColor:'#0d1117'}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
+      plugins:{legend:{display:true,position:'bottom',labels:{color:'#64748b',font:{size:10},padding:10}}}}
+  });
+}
+
+function updateCharts(snap){
+  analyticsHist.push(snap);
+  if(analyticsHist.length>24)analyticsHist.shift();
+  chartTP.data.labels=analyticsHist.map(s=>new Date(s.ts*1000).toLocaleTimeString());
+  chartTP.data.datasets[0].data=analyticsHist.map(s=>s.req_per_min);
+  chartTP.update('none');
+  const hd=snap.hop_dist||{};
+  chartHops.data.datasets[0].data=[hd['1']||0,hd['2']||0,hd['3']||0,Object.entries(hd).filter(([k])=>+k>=4).reduce((s,[,v])=>s+v,0)];
+  chartHops.update('none');
+  const loads=snap.node_loads||{};
+  const nids=Object.keys(loads).sort((a,b)=>+a-+b);
+  chartLoad.data.labels=nids.map(id=>`N${id}`);
+  chartLoad.data.datasets[0].data=nids.map(id=>loads[id]);
+  chartLoad.data.datasets[0].backgroundColor=nids.map(id=>colorMap[+id]||'#6366f1');
+  chartLoad.update('none');
+  document.getElementById('an-reqs').textContent=snap.total_requests;
+  document.getElementById('an-hops').textContent=snap.avg_hops.toFixed(1);
+  document.getElementById('an-done').textContent=snap.jobs_completed;
+  document.getElementById('an-fail').textContent=snap.jobs_failed;
+}
+
+function updateAgentChart(entries){
+  let llm=0,h=0,none=0;
+  entries.forEach(e=>{const s=e.strategy||'';if(s==='llm')llm++;else if(s.startsWith('heuristic'))h++;else none++;});
+  chartAgent.data.datasets[0].data=[llm,h,none];
+  chartAgent.update('none');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   JOB SUBMISSION
+═══════════════════════════════════════════════════════════════════ */
+const payloadDefaults={echo:'{"message":"hello"}',sleep:'{"seconds":2}',compute:'{"n":10000}'};
+document.getElementById('jtype').addEventListener('change',function(){
+  document.getElementById('jpayload').value=payloadDefaults[this.value]||'{}';
+});
+
+function setFb(id,msg,type='info'){
+  const el=document.getElementById(id);
+  el.className=`feedback ${type}`;el.textContent=msg;
+}
+
+document.getElementById('job-form').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const btn=document.getElementById('btn-submit');
+  const type=document.getElementById('jtype').value;
+  const replicas=parseInt(document.getElementById('jreplicas').value)||1;
+  const target=document.getElementById('jtarget').value;
+  let payload={};
+  try{payload=JSON.parse(document.getElementById('jpayload').value||'{}');}
+  catch{setFb('submit-fb','✗ Invalid JSON payload','err');return;}
+
+  btn.disabled=true;btn.innerHTML='<div class="spinner"></div> Submitting…';
+  setFb('submit-fb','','info');
+
+  try{
+    const body={type,payload,replicas};
+    if(target)body.target_node=target;
+    const res=await fetch('/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await res.json();
+    if(data.ok){
+      setFb('submit-fb',`✓ Job ${data.job_id?.slice(0,10)}… → Node ${data.stored_at_node}`,'ok');
+      if(ring.this_node!=null&&data.stored_at_node!=null)animateRoute(ring.this_node,data.stored_at_node);
+      setTimeout(pollJobs,400);
+    }else{setFb('submit-fb',`✗ ${data.error||'unknown error'}`,'err');}
+  }catch(err){setFb('submit-fb',`✗ ${err.message}`,'err');}
+  finally{btn.disabled=false;btn.innerHTML='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Submit Job';}
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   JOB FILTER
+═══════════════════════════════════════════════════════════════════ */
+document.querySelectorAll('.filter-chip').forEach(chip=>{
+  chip.addEventListener('click',()=>{
+    document.querySelectorAll('.filter-chip').forEach(c=>c.classList.remove('active'));
+    chip.classList.add('active');
+    jobFilter=chip.dataset.filter;
+    renderJobs();
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   NODE MANAGEMENT
+═══════════════════════════════════════════════════════════════════ */
+document.getElementById('btn-add-node').addEventListener('click',async()=>{
+  const btn=document.getElementById('btn-add-node');
+  btn.disabled=true;btn.innerHTML='<div class="spinner"></div> Adding…';
+  try{
+    const r=await fetch('/api/nodes/add',{method:'POST'});
+    const d=await r.json();
+    const cmd=d.cmd||d.command||`python run_node.py --port ${d.port||'<PORT>'} --join ${window.location.host} --worker`;
+    document.getElementById('add-node-cmd').textContent=cmd;
+    document.getElementById('add-modal-overlay').classList.remove('hidden');
+    setTimeout(pollRing,3500);
+  }catch(err){
+    const port=Math.floor(Math.random()*1000)+5100;
+    document.getElementById('add-node-cmd').textContent=`python run_node.py --port ${port} --join ${window.location.host} --worker`;
+    document.getElementById('add-modal-overlay').classList.remove('hidden');
+  }finally{btn.disabled=false;btn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Node';}
+});
+
+const rmSel=document.getElementById('rm-sel');
+const rmBtn=document.getElementById('btn-rm');
+rmSel.addEventListener('change',()=>rmBtn.disabled=!rmSel.value);
+rmBtn.addEventListener('click',async()=>{
+  const addr=rmSel.value;if(!addr)return;
+  const nd=ring.nodes.find(n=>n.address===addr);
+  if(!confirm(`Remove Node ${nd?.node_id} (${addr})?\n\nThis will gracefully shut down the node.`))return;
+  rmBtn.disabled=true;
+  intentionallyRemoved.add(addr); // mark before fetch so pollRing skips ghost
+  try{
+    await fetch(`/api/nodes/${encodeURIComponent(addr)}`,{method:'DELETE'});
+    addFaultEvent(`🗑 Removed Node ${nd?.node_id} (${addr})`);
+    setTimeout(pollRing,2000);
+  }catch(e){alert(`Error: ${e.message}`);}
+  finally{rmBtn.disabled=false;}
+});
+
+// Toggles
+document.getElementById('tog-fingers').addEventListener('change',function(){showFin=this.checked;renderRing();});
+document.getElementById('tog-ids').addEventListener('change',function(){showIds=this.checked;renderRing();});
+document.getElementById('tog-ports').addEventListener('change',function(){showPorts=this.checked;renderRing();});
+
+document.getElementById('btn-refresh-ring').addEventListener('click',async function(){
+  const btn=this;
+  const icon=btn.querySelector('svg');
+  btn.disabled=true;
+  icon.style.animation='spin .6s linear infinite';
+  await pollRing();
+  await pollJobs();
+  icon.style.animation='';
+  btn.disabled=false;
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   FAULT INJECTION
+═══════════════════════════════════════════════════════════════════ */
+document.getElementById('btn-crash').addEventListener('click',async()=>{
+  const addr=document.getElementById('crash-sel').value;
+  if(!addr){alert('Select a node first');return;}
+  const nd=ring.nodes.find(n=>n.address===addr);
+  if(!confirm(`Send SIGKILL to Node ${nd?.node_id} (${addr})?\n\nNo data handoff — ring heals in ~6 s.`))return;
+  intentionallyRemoved.add(addr); // mark before fetch so pollRing skips ghost
+  addFaultEvent(`⚡ SIGKILL → Node ${nd?.node_id} (${addr})`);
+  try{
+    await fetch(`/api/nodes/${encodeURIComponent(addr)}/crash`,{method:'POST'});
+    addFaultEvent(`💀 Node ${nd?.node_id} killed`);
+  }catch{addFaultEvent(`💀 Node ${nd?.node_id} killed (no reply — expected)`);}
+});
+
+document.getElementById('btn-leave').addEventListener('click',async()=>{
+  const addr=document.getElementById('leave-sel').value;
+  if(!addr){alert('Select a node first');return;}
+  const nd=ring.nodes.find(n=>n.address===addr);
+  if(!confirm(`Graceful leave for Node ${nd?.node_id} (${addr})?\n\nData will be transferred to successor.`))return;
+  intentionallyRemoved.add(addr); // mark before fetch so pollRing skips ghost
+  addFaultEvent(`🚪 Leave signal → Node ${nd?.node_id} (${addr})`);
+  try{
+    await fetch(`/api/nodes/${encodeURIComponent(addr)}`,{method:'DELETE'});
+    addFaultEvent(`✅ Leave initiated for Node ${nd?.node_id}`);
+  }catch{addFaultEvent(`✅ Node ${nd?.node_id} leaving (no reply — expected)`);}
+  setTimeout(pollRing,2000);
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   DHT STORE
+═══════════════════════════════════════════════════════════════════ */
+function setDht(id,txt,cls=''){
+  const el=document.getElementById(id);
+  el.className=`dht-result-box ${cls}`;
+  el.textContent=typeof txt==='object'?JSON.stringify(txt,null,2):txt;
+}
+
+document.getElementById('btn-dht-get').addEventListener('click',async()=>{
+  const key=document.getElementById('dht-get-key').value.trim();if(!key)return;
+  setDht('dht-get-result','Loading…','');
+  try{
+    const r=await fetch(`/get/${encodeURIComponent(key)}`,{cache:'no-store'});
+    if(r.status===404){setDht('dht-get-result','Key not found','error');return;}
+    setDht('dht-get-result',await r.json(),'result');
+  }catch(e){setDht('dht-get-result',`Error: ${e.message}`,'error');}
+});
+
+document.getElementById('btn-dht-put').addEventListener('click',async()=>{
+  const key=document.getElementById('dht-put-key').value.trim();
+  const raw=document.getElementById('dht-put-val').value.trim();
+  if(!key||!raw)return;
+  let value=raw;try{value=JSON.parse(raw);}catch{}
+  setDht('dht-put-result','Storing…','');
+  try{
+    const r=await fetch(`/put/${encodeURIComponent(key)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value})});
+    setDht('dht-put-result',await r.json(),'ok');
+  }catch(e){setDht('dht-put-result',`Error: ${e.message}`,'error');}
+});
+
+document.getElementById('btn-dht-del').addEventListener('click',async()=>{
+  const key=document.getElementById('dht-put-key').value.trim();if(!key)return;
+  if(!confirm(`Delete key "${key}" from DHT?`))return;
+  setDht('dht-put-result','Deleting…','');
+  try{
+    const r=await fetch(`/data/${encodeURIComponent(key)}`,{method:'DELETE'});
+    setDht('dht-put-result',await r.json(),'ok');
+  }catch(e){setDht('dht-put-result',`Error: ${e.message}`,'error');}
+});
+
+document.getElementById('btn-ring-lookup').addEventListener('click',async()=>{
+  const id=document.getElementById('dht-lookup-id').value.trim();if(!id)return;
+  try{
+    const r=await fetch(`/ring/lookup/${encodeURIComponent(id)}`,{cache:'no-store'});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    const data=d.data||d;
+    document.getElementById('dht-lookup-result').style.display='grid';
+    document.getElementById('lr-node').textContent=data.primary_node_id??data.node_id??'—';
+    document.getElementById('lr-addr').textContent=data.primary_address??data.node_address??data.address??'—';
+    document.getElementById('lr-replicas').textContent=data.replica_nodes?.join(', ')||data.replicas?.join(', ')||'none';
+  }catch(e){alert(`Lookup failed: ${e.message}`);}
+});
+
+async function loadLocalKeys(){
+  const tbody=document.getElementById('local-keys-tbody');if(!tbody)return;
+  try{
+    const r=await fetch('/chord/state',{cache:'no-store'});
+    const st=await r.json();
+    const keys=Object.entries(st.data_store||st.data||{});
+    if(!keys.length){tbody.innerHTML='<tr><td colspan="3"><div class="empty-state" style="padding:20px"><div class="icon">🗃</div><p>No keys</p></div></td></tr>';return;}
+    tbody.innerHTML=keys.map(([k,v])=>{
+      const t=Array.isArray(v)?'array':typeof v;
+      const sz=JSON.stringify(v).length;
+      return`<tr><td class="mono">${k}</td><td><span class="badge badge-neutral">${t}</span></td><td class="mono muted">${sz} chars</td></tr>`;
+    }).join('');
+  }catch(e){tbody.innerHTML=`<tr><td colspan="3" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
+}
+document.getElementById('btn-refresh-keys').addEventListener('click',loadLocalKeys);
+
+/* ═══════════════════════════════════════════════════════════════════
+   FILE REQUEST SIMULATION
+═══════════════════════════════════════════════════════════════════ */
+document.getElementById('btn-simulate-req').addEventListener('click',async()=>{
+  const fn=document.getElementById('req-filename').value.trim();
+  if(!fn){alert('Enter a filename');return;}
+  const client=document.getElementById('req-client').value.trim()||'dashboard';
+  const box=document.getElementById('req-result');
+  box.className='dht-result-box';box.textContent='Routing…';
+  try{
+    const r=await fetch('/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:fn,client})});
+    const d=await r.json();
+    box.className='dht-result-box result';
+    box.textContent=JSON.stringify(d,null,2);
+    setTimeout(pollRequests,300);
+  }catch(e){box.className='dht-result-box error';box.textContent=`Error: ${e.message}`;}
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   TASK REGISTRY
+═══════════════════════════════════════════════════════════════════ */
+document.getElementById('btn-register-task').addEventListener('click',async()=>{
+  let payload={};
+  try{payload=JSON.parse(document.getElementById('task-reg-payload').value||'{}');}
+  catch{setFb('task-reg-fb','✗ Invalid JSON payload','err');return;}
+  const taskId=document.getElementById('task-reg-id').value.trim();
+  const jobId=document.getElementById('task-reg-jobid').value.trim();
+  const replicas=parseInt(document.getElementById('task-reg-replicas').value)||1;
+  const body={...payload,replicas};
+  if(taskId)body.task_id=taskId;
+  if(jobId)body.job_id=jobId;
+  setFb('task-reg-fb','Registering…','info');
+  try{
+    const r=await fetch('/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.ok){setFb('task-reg-fb',`✓ Task registered: ${d.data?.task_id?.slice(0,14)||'done'}…`,'ok');loadTasks();}
+    else setFb('task-reg-fb',`✗ ${d.error?.message||JSON.stringify(d.error)}`,'err');
+  }catch(e){setFb('task-reg-fb',`✗ ${e.message}`,'err');}
+});
+
+document.getElementById('btn-task-lookup').addEventListener('click',async()=>{
+  const id=document.getElementById('task-lookup-id').value.trim();if(!id)return;
+  const box=document.getElementById('task-lookup-result');
+  box.className='dht-result-box';box.textContent='Looking up…';
+  try{
+    const r=await fetch(`/ring/lookup/${encodeURIComponent(id)}`,{cache:'no-store'});
+    const d=await r.json();
+    box.className='dht-result-box result';
+    box.textContent=JSON.stringify(d.data||d,null,2);
+  }catch(e){box.className='dht-result-box error';box.textContent=`Error: ${e.message}`;}
+});
+
+document.getElementById('btn-task-get').addEventListener('click',async()=>{
+  const id=document.getElementById('task-lookup-id').value.trim();if(!id)return;
+  const box=document.getElementById('task-lookup-result');
+  box.className='dht-result-box';box.textContent='Fetching…';
+  try{
+    const r=await fetch(`/tasks/${encodeURIComponent(id)}`,{cache:'no-store'});
+    const d=await r.json();
+    box.className=`dht-result-box ${d.ok?'result':'error'}`;
+    box.textContent=JSON.stringify(d.data||d,null,2);
+  }catch(e){box.className='dht-result-box error';box.textContent=`Error: ${e.message}`;}
+});
+
+document.getElementById('btn-task-delete').addEventListener('click',async()=>{
+  const id=document.getElementById('task-lookup-id').value.trim();if(!id)return;
+  if(!confirm(`Soft-delete task ${id}?`))return;
+  try{
+    const r=await fetch(`/tasks/${encodeURIComponent(id)}`,{method:'DELETE'});
+    const d=await r.json();
+    setFb('task-lookup-fb',d.ok?`✓ Task deleted`:`✗ ${d.error?.message}`,'ok');
+    loadTasks();
+  }catch(e){setFb('task-lookup-fb',`✗ ${e.message}`,'err');}
+});
+
+document.getElementById('btn-task-hard-delete').addEventListener('click',async()=>{
+  const id=document.getElementById('task-lookup-id').value.trim();if(!id)return;
+  if(!confirm(`HARD-delete task ${id}? This removes all replicas permanently.`))return;
+  try{
+    const r=await fetch(`/tasks/${encodeURIComponent(id)}?hard=true`,{method:'DELETE'});
+    const d=await r.json();
+    setFb('task-lookup-fb',d.ok?`✓ Task hard-deleted`:`✗ ${d.error?.message}`,'ok');
+    loadTasks();
+  }catch(e){setFb('task-lookup-fb',`✗ ${e.message}`,'err');}
+});
+
+async function loadTasks(){
+  const tbody=document.getElementById('tasks-tbody');if(!tbody)return;
+  const jobId=document.getElementById('task-filter-jobid')?.value.trim();
+  const status=document.getElementById('task-filter-status')?.value;
+  let url='/tasks?limit=100';
+  if(jobId)url+=`&job_id=${encodeURIComponent(jobId)}`;
+  if(status)url+=`&status=${encodeURIComponent(status)}`;
+  try{
+    const r=await fetch(url,{cache:'no-store'});
+    const d=await r.json();
+    const tasks=(d.data?.tasks||d.tasks||[]);
+    const cnt=document.getElementById('badge-tasks');
+    if(tasks.length){cnt.textContent=tasks.length;cnt.classList.add('show');}else cnt.classList.remove('show');
+    if(!tasks.length){tbody.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="icon">🗂</div><p>No tasks</p></div></td></tr>';return;}
+    tbody.innerHTML=tasks.map(t=>{
+      const stCls={pending:'badge-warn',running:'badge-info',done:'badge-ok',complete:'badge-ok',failed:'badge-danger',deleted:'badge-neutral'}[t.status]||'badge-neutral';
+      const nd=ring.nodes.find(n=>n.address===t.node);
+      const nodeStr=nd?`Node ${nd.node_id}`:(t.node||'—');
+      const tid=(t.task_id||'?').slice(0,14);
+      const jid=(t.job_id||'').slice(0,10);
+      return`<tr>
+        <td class="mono">${tid}…</td>
+        <td class="mono muted">${jid?jid+'…':'—'}</td>
+        <td><span class="badge ${stCls}">${t.status||'?'}</span></td>
+        <td class="mono" style="color:${nc(nd?.node_id)||'var(--tx-3)'}">${nodeStr}</td>
+        <td class="muted">${t.replicas||1}</td>
+        <td><button class="btn btn-ghost btn-xs" onclick="document.getElementById('task-lookup-id').value='${t.task_id||''}';navigate('tasks')">View</button></td>
+      </tr>`;
+    }).join('');
+  }catch(e){tbody.innerHTML=`<tr><td colspan="6" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
+}
+document.getElementById('btn-refresh-tasks').addEventListener('click',loadTasks);
+document.getElementById('task-filter-jobid').addEventListener('input',loadTasks);
+document.getElementById('task-filter-status').addEventListener('change',loadTasks);
+
+/* ═══════════════════════════════════════════════════════════════════
+   RING STATUS MODAL
+═══════════════════════════════════════════════════════════════════ */
+function openRingModal(){
+  const overlay=document.getElementById('ring-status-overlay');
+  const body=document.getElementById('rs-modal-body');
+  document.getElementById('rs-modal-count').textContent=ring.nodes.length;
+  if(!ring.nodes.length){body.innerHTML='<div class="empty-state">No nodes</div>';overlay.classList.remove('hidden');return;}
+  body.innerHTML=ring.nodes.map(nd=>{
+    const c=nc(nd.node_id);const isThis=nd.node_id===ring.this_node;
+    const qd=nd.metrics?.queue_depth??0;const done=nd.metrics?.jobs_completed??0;
+    return`<div onclick="openNodeDetail(${nd.node_id});document.getElementById('ring-status-overlay').classList.add('hidden')" style="display:flex;align-items:center;gap:14px;padding:13px 20px;border-bottom:1px solid var(--b1);cursor:pointer;transition:background .12s" onmouseover="this.style.background='var(--bg-3)'" onmouseout="this.style.background=''">
+      <div style="width:38px;height:38px;border-radius:50%;background:${c}22;border:2px solid ${c};display:flex;align-items:center;justify-content:center;font-weight:800;font-family:var(--mono);color:${c};font-size:13px">${nd.node_id}</div>
+      <div style="flex:1">
+        <div style="font-weight:700">Node ${nd.node_id} ${isThis?'<span style="font-size:10px;color:var(--accent-light);font-weight:600">★ THIS</span>':''}</div>
+        <div style="font-size:11px;color:var(--tx-3);font-family:var(--mono)">${nd.address}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-family:var(--mono);font-weight:700;color:${qd>0?'var(--warn)':'var(--ok)'}">${qd} queued</div>
+        <div style="font-size:10px;color:var(--tx-3)">${done} done</div>
+      </div>
+    </div>`;
+  }).join('');
+  overlay.classList.remove('hidden');
+}
+document.getElementById('btn-close-rs').addEventListener('click',()=>document.getElementById('ring-status-overlay').classList.add('hidden'));
+document.getElementById('ring-status-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.classList.add('hidden');});
+
+/* ═══════════════════════════════════════════════════════════════════
+   NODE DETAIL MODAL
+═══════════════════════════════════════════════════════════════════ */
+function openNodeDetail(nodeId){
+  const nd=ring.nodes.find(n=>n.node_id===nodeId);if(!nd)return;
+  const c=nc(nodeId);const isThis=nodeId===ring.this_node;
+  document.getElementById('nd-color-bar').style.background=c;
+  document.getElementById('nd-title').textContent=`Node ${nodeId}`;
+  document.getElementById('nd-subtitle').textContent=nd.address||'';
+  const badge=document.getElementById('nd-badge');
+  badge.className=isThis?'badge badge-purple':'badge badge-neutral';
+  badge.textContent=isThis?'★ This Node':'Peer';
+
+  const qd=nd.metrics?.queue_depth??0,done=nd.metrics?.jobs_completed??0,fail=nd.metrics?.jobs_failed??0;
+  const dataKeys=Object.keys(nd.data_store||nd.data||{});
+
+  document.getElementById('nd-metrics-grid').innerHTML=`
+    <div class="nd-stat"><div class="nd-stat-label">Node ID</div><div class="nd-stat-val" style="color:${c}">${nodeId}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Queue Depth</div><div class="nd-stat-val" style="color:${qd>0?'var(--warn)':'var(--ok)'}">${qd}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Jobs Done</div><div class="nd-stat-val" style="color:var(--ok)">${done}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Jobs Failed</div><div class="nd-stat-val" style="color:${fail>0?'var(--danger)':'var(--tx-3)'}">${fail}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Keys Stored</div><div class="nd-stat-val">${dataKeys.length}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Fingers</div><div class="nd-stat-val">${(nd.fingers||[]).length}</div></div>
+  `;
+
+  const succ=nd.successor||{},pred=nd.predecessor||{};
+  document.getElementById('nd-ptrs').innerHTML=`
+    <div class="nd-ptr"><span class="nd-ptr-label">Successor</span><span class="nd-ptr-id" style="color:${nc(succ.id)}">${succ.id??'—'}</span><span class="nd-ptr-addr">${succ.address||''}</span></div>
+    <div class="nd-ptr"><span class="nd-ptr-label">Predecessor</span><span class="nd-ptr-id" style="color:${nc(pred.id)}">${pred.id??'—'}</span><span class="nd-ptr-addr">${pred.address||''}</span></div>
+  `;
+
+  document.getElementById('nd-finger-tbody').innerHTML=(nd.fingers||[]).map((f,i)=>{
+    const fc=f.node_id!=null?nc(f.node_id):'var(--tx-3)';
+    return`<tr><td class="muted">${i}</td><td class="mono muted">${f.start??'—'}</td><td class="mono" style="color:${fc};font-weight:700">${f.node_id??'—'}</td><td class="mono muted">${f.address||''}</td></tr>`;
+  }).join('')||'<tr><td colspan="4" style="padding:20px;text-align:center;color:var(--tx-4)">No finger data</td></tr>';
+
+  document.getElementById('nd-data-content').innerHTML=dataKeys.length
+    ?`<div class="table-wrap"><table class="data-table"><thead><tr><th>Key</th><th>Type</th></tr></thead><tbody>${dataKeys.map(k=>{const v=nd.data_store[k]||nd.data[k];return`<tr><td class="mono" style="color:var(--accent-light)">${k}</td><td><span class="badge badge-neutral">${typeof v}</span></td></tr>`;}).join('')}</tbody></table></div>`
+    :'<div class="empty-state"><div class="icon">🗃</div><p>No data keys on this node</p></div>';
+
+  document.getElementById('nd-explain-content').innerHTML=`
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:8px">Chord DHT Overview</h3>
+    <p style="font-size:12px;line-height:1.75;color:var(--tx-2);margin-bottom:12px">Chord is a distributed hash table protocol providing O(log N) lookup across N nodes. Each node maintains a <em>finger table</em> for efficient routing — entry i points to the node responsible for key <code style="font-family:var(--mono);background:var(--bg-1);padding:1px 5px;border-radius:3px;color:var(--ok)">n + 2ⁱ mod 2ᴹ</code>.</p>
+    <div style="background:var(--bg-1);border:1px solid var(--b2);border-radius:var(--r-md);padding:12px 14px;font-family:var(--mono);font-size:12px;color:var(--warn);margin:12px 0">finger[i] = successor(n + 2ⁱ mod 2ᴹ),  i = 0…M-1</div>
+    <h3 style="font-size:13px;font-weight:700;margin:14px 0 6px">This Node (${nodeId})</h3>
+    <p style="font-size:12px;line-height:1.75;color:var(--tx-2)">Owns keys in range <code style="font-family:var(--mono);background:var(--bg-1);padding:1px 5px;border-radius:3px;color:var(--ok)">(${pred.id??'?'}, ${nodeId}]</code>. Stores <strong>${dataKeys.length}</strong> local keys. Stabilization runs every 2 s to maintain ring health and fix finger entries.</p>
+    <h3 style="font-size:13px;font-weight:700;margin:14px 0 6px">AI Agent Integration</h3>
+    <p style="font-size:12px;line-height:1.75;color:var(--tx-2)">The PlacementAgent selects which node executes each job based on queue depth and failure rates. The RecoveryAgent detects node failures and re-submits orphaned jobs. Both use Claude LLM or heuristic fallback.</p>
+  `;
+
+  // Reset tabs
+  document.querySelectorAll('.nd-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.nd-body').forEach(b=>b.classList.remove('active'));
+  document.querySelector('.nd-tab[data-tab="overview"]').classList.add('active');
+  document.getElementById('nd-tab-overview').classList.add('active');
+  document.getElementById('node-modal-overlay').classList.remove('hidden');
+}
+document.querySelectorAll('.nd-tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    document.querySelectorAll('.nd-tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.nd-body').forEach(b=>b.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(`nd-tab-${tab.dataset.tab}`).classList.add('active');
+  });
+});
+document.getElementById('btn-close-nd').addEventListener('click',()=>document.getElementById('node-modal-overlay').classList.add('hidden'));
+document.getElementById('node-modal-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.classList.add('hidden');});
+
+// Add modal close
+['btn-close-add','btn-close-add2'].forEach(id=>{
+  document.getElementById(id)?.addEventListener('click',()=>document.getElementById('add-modal-overlay').classList.add('hidden'));
+});
+document.getElementById('add-modal-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.classList.add('hidden');});
+
+/* ═══════════════════════════════════════════════════════════════════
+   BOOT
+═══════════════════════════════════════════════════════════════════ */
+setInterval(pollRing,     2000);
+setInterval(pollJobs,     2500);
+setInterval(pollRequests, 2200);
+setInterval(pollLogs,     4000);
+setInterval(pollMetrics,  5500);
+
+pollRing();
+pollJobs();
+pollRequests();
+pollLogs();
+</script>
+</body>
+</html>
