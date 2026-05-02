@@ -401,13 +401,27 @@ def create_app(node: ChordNode) -> Flask:
         log_path = pathlib.Path(os.environ.get("AGENT_LOG_PATH", "agent_decisions.jsonl"))
         if not log_path.exists():
             return jsonify({"entries": []})
+
+        try:
+            limit = max(1, min(int(request.args.get("limit", "40")), 2000))
+        except ValueError:
+            limit = 40
+        exclude = {a.strip() for a in request.args.get("exclude", "").split(",") if a.strip()}
+
         lines = log_path.read_text().strip().splitlines()
         entries = []
-        for line in lines[-40:]:
+        # Walk newest → oldest, skip excluded agents, stop when we have `limit`.
+        for line in reversed(lines):
             try:
-                entries.append(json.loads(line))
+                e = json.loads(line)
             except Exception:
-                pass
+                continue
+            if exclude and e.get("agent") in exclude:
+                continue
+            entries.append(e)
+            if len(entries) >= limit:
+                break
+        entries.reverse()  # restore chronological order
         return jsonify({"entries": entries})
 
     # ------------------------------------------------------------------

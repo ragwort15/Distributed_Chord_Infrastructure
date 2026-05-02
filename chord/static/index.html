@@ -466,28 +466,35 @@ select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex:
       </div>
     </div><!-- end #view-analytics -->
 
-    <!-- ── Grafana / Observability view ── -->
+    <!-- ── Observability view (native, no Grafana) ── -->
     <div class="view-content hidden" id="view-grafana">
-      <div class="grafana-wrap">
-        <!-- Full Grafana dashboard in one iframe (kiosk=tv skips nav/auth) -->
-        <div class="grafana-frame" style="flex:1">
-          <iframe
-            id="gf-main"
-            src="http://localhost:3000/d/chord-dht-01?orgId=1&kiosk=tv&theme=dark&refresh=5s"
-            title="Chord DHT Grafana Dashboard"
-            allowfullscreen>
-          </iframe>
+      <div class="charts-grid">
+        <div class="chart-card">
+          <div class="chart-title">Agent Activity <span class="chart-sub">decisions per minute · last 10 min · by agent</span></div>
+          <canvas id="chart-obs-activity"></canvas>
         </div>
-        <!-- Fallback strip -->
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;padding:6px 2px">
-          <span style="font-size:11px;color:var(--muted)">
-            Prometheus scraping all nodes every 5 s · 12 panels · auto-refresh
-          </span>
-          <a href="http://localhost:3000/d/chord-dht-01?theme=dark" target="_blank"
-             style="font-size:11px;color:var(--blue);text-decoration:none">
-            Open full Grafana →
-          </a>
+        <div class="chart-card">
+          <div class="chart-title">Decision Latency <span class="chart-sub">ms per decision · last 30 decisions</span></div>
+          <canvas id="chart-obs-latency"></canvas>
         </div>
+        <div class="chart-card">
+          <div class="chart-title">Ring Maintenance <span class="chart-sub">this node · since startup</span></div>
+          <div id="obs-ring-maint" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:6px 2px;flex:1;align-content:center">
+            <div class="metric-stat" style="padding:10px 6px"><div class="ms-val" id="obs-stab" style="font-size:22px">—</div><div class="ms-label">Stabilize Runs</div></div>
+            <div class="metric-stat" style="padding:10px 6px"><div class="ms-val" id="obs-fix"  style="font-size:22px;color:var(--purple)">—</div><div class="ms-label">Finger Fixes</div></div>
+            <div class="metric-stat" style="padding:10px 6px"><div class="ms-val" id="obs-fail" style="font-size:22px;color:var(--red)">—</div><div class="ms-label">Pred. Failures Detected</div></div>
+          </div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Tasks by Status <span class="chart-sub">this node · /tasks store</span></div>
+          <canvas id="chart-obs-tasks"></canvas>
+        </div>
+      </div>
+      <div class="metrics-row">
+        <div class="metric-stat"><div class="ms-val" id="obs-total">—</div><div class="ms-label">Total Decisions</div></div>
+        <div class="metric-stat"><div class="ms-val" id="obs-avg-lat" style="color:var(--amber)">—</div><div class="ms-label">Avg Latency (ms)</div></div>
+        <div class="metric-stat"><div class="ms-val" id="obs-strat"   style="color:var(--green)">—</div><div class="ms-label">Dominant Strategy</div></div>
+        <div class="metric-stat"><div class="ms-val" id="obs-tasks-n" style="color:var(--purple)">—</div><div class="ms-label">Tasks Stored</div></div>
       </div>
     </div><!-- end #view-grafana -->
 
@@ -777,6 +784,150 @@ async function pollMetrics() {
   } catch {}
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Observability tab — native panels (replaces Grafana iframe)
+// ═══════════════════════════════════════════════════════════════
+let obsChartActivity, obsChartLatency, obsChartTasks;
+let obsInited = false;
+let obsTimer  = null;
+
+function initObs() {
+  if (obsInited) return;
+  obsInited = true;
+  const ctx = id => document.getElementById(id).getContext('2d');
+
+  obsChartActivity = new Chart(ctx('chart-obs-activity'), {
+    type: 'bar',
+    data: { labels: [], datasets: [
+      { label:'Placement',   data:[], backgroundColor:'#58a6ff', stack:'a' },
+      { label:'Replication', data:[], backgroundColor:'#bc8cff', stack:'a' },
+      { label:'Recovery',    data:[], backgroundColor:'#f85149', stack:'a' },
+    ]},
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{ legend:{ display:true, position:'bottom', labels:{color:'#8b949e', font:{size:10}, padding:8, boxWidth:10 }}},
+      scales:{ x:{stacked:true, grid:GRID_STYLE, ticks:{...TICK_STYLE, maxTicksLimit:6}},
+               y:{stacked:true, grid:GRID_STYLE, ticks:TICK_STYLE, beginAtZero:true} } }
+  });
+
+  obsChartLatency = new Chart(ctx('chart-obs-latency'), {
+    type: 'line',
+    data: { labels: [], datasets: [{ label:'ms', data:[], borderColor:'#d29922',
+            backgroundColor:'rgba(210,153,34,.12)', fill:true, tension:.35, pointRadius:2 }]},
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}, tooltip:{callbacks:{title:c=>c[0].label, label:c=>`${c.parsed.y} ms`}}},
+      scales:{ x:{grid:GRID_STYLE, ticks:{...TICK_STYLE, maxTicksLimit:6}},
+               y:{grid:GRID_STYLE, ticks:TICK_STYLE, beginAtZero:true} } }
+  });
+
+  obsChartTasks = new Chart(ctx('chart-obs-tasks'), {
+    type: 'doughnut',
+    data: { labels:['Registered','Running','Completed','Failed','Deleted'],
+            datasets:[{ data:[0,0,0,0,0],
+              backgroundColor:['#58a6ff','#d29922','#3fb950','#f85149','#8b949e'],
+              borderWidth:2, borderColor:'#161b22' }]},
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:true, position:'bottom', labels:{color:'#8b949e', font:{size:10}, padding:8, boxWidth:10}}}}
+  });
+}
+
+function parseProm(text) {
+  // Returns the FIRST numeric value for each metric name (ignoring labels).
+  const out = {};
+  for (const line of text.split('\n')) {
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([0-9eE.+-]+)/);
+    if (!m) continue;
+    const name = m[1], val = parseFloat(m[3]);
+    if (!Number.isFinite(val)) continue;
+    out[name] = (out[name] || 0) + val;  // sum across labels (here only one node)
+  }
+  return out;
+}
+
+async function pollObs() {
+  if (!obsInited) return;
+
+  // 1) Agent decisions log → activity by minute + latency line + summary
+  try {
+    const r       = await fetch('/api/logs?limit=300&exclude=AgentLoop', {cache:'no-store'});
+    const entries = (await r.json()).entries || [];
+    const now     = Date.now() / 1000;
+
+    // Bucket last 10 min into 1-min bins
+    const BINS = 10;
+    const buckets = Array.from({length: BINS}, () => ({Placement:0, Replication:0, Recovery:0}));
+    const labels  = [];
+    for (let i = BINS - 1; i >= 0; i--) {
+      const t = now - i * 60;
+      labels.push(new Date(t * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}));
+    }
+    for (const e of entries) {
+      const ageMin = (now - e.ts) / 60;
+      if (ageMin < 0 || ageMin >= BINS) continue;
+      const idx = BINS - 1 - Math.floor(ageMin);
+      const a   = e.agent || '';
+      if (a.startsWith('Placement'))   buckets[idx].Placement++;
+      else if (a.startsWith('Replication')) buckets[idx].Replication++;
+      else if (a.startsWith('Recovery'))    buckets[idx].Recovery++;
+    }
+    obsChartActivity.data.labels = labels;
+    obsChartActivity.data.datasets[0].data = buckets.map(b => b.Placement);
+    obsChartActivity.data.datasets[1].data = buckets.map(b => b.Replication);
+    obsChartActivity.data.datasets[2].data = buckets.map(b => b.Recovery);
+    obsChartActivity.update('none');
+
+    // Latency: last 30 entries in chronological order
+    const last30 = entries.slice(-30);
+    obsChartLatency.data.labels = last30.map((_, i) => `#${entries.length - last30.length + i + 1}`);
+    obsChartLatency.data.datasets[0].data = last30.map(e => e.latency_ms || 0);
+    obsChartLatency.update('none');
+
+    // Summary
+    const total   = entries.length;
+    const avgLat  = total ? Math.round(entries.reduce((s,e)=>s+(e.latency_ms||0), 0) / total) : 0;
+    const counts  = {};
+    for (const e of entries) {
+      const s = e.strategy || '—';
+      counts[s] = (counts[s] || 0) + 1;
+    }
+    const dom = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0];
+    document.getElementById('obs-total').textContent   = total;
+    document.getElementById('obs-avg-lat').textContent = avgLat || '—';
+    document.getElementById('obs-strat').textContent   = dom ? dom[0] : '—';
+  } catch {}
+
+  // 2) Ring maintenance counters from local /prom_metrics
+  try {
+    const r = await fetch('/prom_metrics', {cache:'no-store'});
+    const t = await r.text();
+    const p = parseProm(t);
+    document.getElementById('obs-stab').textContent = p['chord_stabilize_runs_total']      ?? '—';
+    document.getElementById('obs-fix').textContent  = p['chord_finger_fix_runs_total']     ?? '—';
+    document.getElementById('obs-fail').textContent = p['chord_predecessor_failures_total'] ?? '—';
+  } catch {}
+
+  // 3) Tasks by status from local /tasks store
+  try {
+    const r    = await fetch('/tasks?include_deleted=true&limit=500', {cache:'no-store'});
+    const data = (await r.json()).data || {};
+    const tasks = data.tasks || [];
+    const c = {REGISTERED:0, RUNNING:0, COMPLETED:0, FAILED:0, DELETED:0};
+    for (const t of tasks) if (c[t.status] != null) c[t.status]++;
+    obsChartTasks.data.datasets[0].data = [c.REGISTERED, c.RUNNING, c.COMPLETED, c.FAILED, c.DELETED];
+    obsChartTasks.update('none');
+    document.getElementById('obs-tasks-n').textContent = tasks.length;
+  } catch {}
+}
+
+function startObsPolling() {
+  if (obsTimer) return;
+  pollObs();
+  obsTimer = setInterval(pollObs, 5000);
+}
+function stopObsPolling() {
+  if (obsTimer) { clearInterval(obsTimer); obsTimer = null; }
+}
+
 // ── View toggle ──
 const VIEWS = ['ring', 'analytics', 'grafana'];
 function switchView(name) {
@@ -785,6 +936,8 @@ function switchView(name) {
     document.getElementById(`view-${v}`)?.classList.toggle('hidden', v !== name);
   });
   if (name === 'analytics') { initCharts(); pollMetrics(); }
+  if (name === 'grafana')   { initObs();    startObsPolling(); }
+  else                      { stopObsPolling(); }
 }
 document.getElementById('vtab-ring').addEventListener('click',      () => switchView('ring'));
 document.getElementById('vtab-analytics').addEventListener('click', () => switchView('analytics'));
