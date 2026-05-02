@@ -11,6 +11,7 @@ import hashlib
 import threading
 import time
 import logging
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +53,14 @@ class ChordNode:
         self.address = address
         self.node_id = node_id if node_id is not None else sha1_id(address)
         self.predecessor: dict = None
-        self.fingers: list[FingerEntry] = self._init_fingers()
+        self.fingers: List[FingerEntry] = self._init_fingers()
         self.data_store: dict = {}
         self._lock = threading.RLock()
         self._transport = None  # injected after construction
+
+        # Job execution counters (updated by WorkerThread)
+        self.jobs_completed: int = 0
+        self.jobs_failed: int = 0
 
         # Point successor to self initially (single-node ring)
         self.fingers[0].node_id = self.node_id
@@ -148,7 +153,12 @@ class ChordNode:
             try:
                 succ = self.successor
                 if succ["id"] == self.node_id:
-                    return  # single-node ring
+                    # Successor points to self but we have a predecessor —
+                    # bootstrap by using predecessor as successor so stabilize
+                    # can discover the real ring topology on the next cycle.
+                    if self.predecessor and self.predecessor["id"] != self.node_id:
+                        self.successor = self.predecessor
+                    return
 
                 # Ask successor for its predecessor
                 x = self._transport.get_predecessor(succ["address"])
@@ -166,6 +176,21 @@ class ChordNode:
                 )
             except Exception as e:
                 logger.warning(f"[Node {self.node_id}] Stabilize failed: {e}")
+                # Successor may be dead — search fingers for a reachable fallback
+                for i in range(M - 1, 0, -1):
+                    f = self.fingers[i]
+                    if f.node_id is None or f.node_id == self.node_id:
+                        continue
+                    try:
+                        self._transport.ping(f.node_address)
+                        self.successor = {"id": f.node_id, "address": f.node_address}
+                        logger.info(
+                            f"[Node {self.node_id}] Successor dead; fell back to "
+                            f"finger {i} (node {f.node_id})"
+                        )
+                        break
+                    except Exception:
+                        continue
 
     def notify(self, candidate: dict):
         """
@@ -262,7 +287,7 @@ class ChordNode:
             logger.debug(f"[Node {self.node_id}] Stored key={key}")
             return True
 
-    def get(self, key: str) -> dict | None:
+    def get(self, key: str) -> Optional[dict]:
         """Retrieve a key from local store."""
         with self._lock:
             return self.data_store.get(key)
@@ -276,6 +301,23 @@ class ChordNode:
         with self._lock:
             self.data_store.update(items)
             logger.info(f"[Node {self.node_id}] Bulk received {len(items)} keys")
+
+    # Agent metrics
+
+    def metrics(self) -> dict:
+        """Lightweight snapshot used by the agent loop and /metrics endpoint."""
+        with self._lock:
+            queue_depth = sum(
+                1 for v in self.data_store.values()
+                if isinstance(v, dict) and v.get("status") in ("pending", "claimed", "running")
+            )
+            return {
+                "node_id": self.node_id,
+                "address": self.address,
+                "queue_depth": queue_depth,
+                "jobs_completed": self.jobs_completed,
+                "jobs_failed": self.jobs_failed,
+            }
 
     # Debug / introspection
 

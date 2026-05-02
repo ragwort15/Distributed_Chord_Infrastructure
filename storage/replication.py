@@ -1,4 +1,5 @@
 import logging
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -9,7 +10,7 @@ class ReplicationManager:
         self.transport = transport
         self.replication_k = max(1, int(replication_k))
 
-    def get_successor_chain(self, primary_node: dict, k: int | None = None) -> list[dict]:
+    def get_successor_chain(self, primary_node: dict, k: Optional[int] = None) -> List[dict]:
         target_len = max(1, int(k or self.replication_k))
         chain: list[dict] = []
         visited_addresses: set[str] = set()
@@ -79,7 +80,7 @@ class ReplicationManager:
             "replication_state": "COMPLETE" if not failed else "DEGRADED",
         }
 
-    def read_from_replicas(self, task_key: str, primary_node: dict) -> dict | None:
+    def read_from_replicas(self, task_key: str, primary_node: dict) -> Optional[dict]:
         chain = self.get_successor_chain(primary_node)
         for replica in chain[1:]:
             try:

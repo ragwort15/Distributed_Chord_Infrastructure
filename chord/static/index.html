@@ -1,0 +1,1583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chord DHT — Live Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:     #0d1117;
+  --panel:  #161b22;
+  --panel2: #1c2128;
+  --border: #30363d;
+  --green:  #3fb950;
+  --red:    #f85149;
+  --blue:   #58a6ff;
+  --amber:  #d29922;
+  --purple: #bc8cff;
+  --text:   #e6edf3;
+  --muted:  #8b949e;
+  --ring-bg:#21262d;
+  --mono:   'JetBrains Mono','Fira Code','Courier New',monospace;
+}
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+  font-size: 13px; height: 100vh;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; border-bottom: 1px solid var(--border);
+  background: var(--panel); flex-shrink: 0; gap: 12px;
+}
+.logo { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.node-badge {
+  font-family: var(--mono); font-size: 11px; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 20px; flex-shrink: 0;
+  display: flex; align-items: center; gap: 10px;
+  transition: border-color .3s, background .3s;
+  cursor: pointer;
+}
+.node-badge:hover { opacity: 0.8; }
+.node-badge.health-ok { border-color: var(--green); background: rgba(63, 185, 80, .08); }
+.node-badge.health-warn { border-color: var(--amber); background: rgba(210, 153, 34, .08); }
+.node-badge.health-dead { border-color: var(--red); background: rgba(248, 81, 73, .08); }
+.node-badge .hi { color: var(--blue); font-weight: 600; }
+.health-ring { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.health-dots { display: flex; gap: 2px; align-items: center; }
+.health-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--border); transition: background .3s; }
+.health-dot.active-ok { background: var(--green); }
+.health-dot.active-warn { background: var(--amber); }
+.health-dot.active-dead { background: var(--red); }
+.health-label { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green); display: inline-block;
+  animation: blink 2s infinite; margin-right: 4px;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── Layout ── */
+main { display: grid; grid-template-columns: 1fr 330px; flex: 1; min-height: 0; }
+
+/* ── Ring panel (left) ── */
+.ring-panel {
+  display: flex; flex-direction: column; padding: 14px; gap: 10px; overflow: hidden;
+}
+.toolbar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
+.toolbar label { display: flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; }
+.toolbar input[type=checkbox] { accent-color: var(--blue); }
+.ring-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+#ring-svg { width: 100%; height: 100%; max-width: 680px; max-height: 680px; aspect-ratio: 1 / 1; }
+
+.legend { display: flex; gap: 14px; justify-content: center; flex-shrink: 0; }
+.leg { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.leg-dot { width: 9px; height: 9px; border-radius: 50%; }
+
+.hop-bar {
+  text-align: center; font-family: var(--mono); font-size: 12px; color: var(--amber);
+  padding: 7px 12px; background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.25);
+  border-radius: 6px; flex-shrink: 0; transition: opacity .3s;
+}
+.hop-bar.hidden { opacity: 0; pointer-events: none; }
+
+/* ── Sidebar (right) ── */
+aside { border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+.s-sec { border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.s-sec.grow { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.s-sec h2 {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); padding: 9px 14px 7px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 6px;
+}
+.s-count { font-weight: 400; color: #30363d; text-transform: none; letter-spacing: 0; font-size: 11px; }
+
+/* ── Submit form ── */
+.form-body { padding: 10px 14px; display: flex; flex-direction: column; gap: 7px; }
+.form-row { display: flex; gap: 6px; }
+select, input[type=text], input[type=number] {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 8px; border-radius: 5px; font-size: 12px; font-family: inherit; outline: none;
+}
+select:focus, input:focus { border-color: var(--blue); }
+select { flex: 1; } input[type=number] { width: 58px; } input[type=text] { flex: 1; font-family: var(--mono); }
+.btn {
+  padding: 5px 13px; border-radius: 5px; border: none;
+  font-size: 12px; font-weight: 500; cursor: pointer; transition: opacity .15s;
+}
+.btn:hover { opacity: .8; } .btn:active { opacity: .5; }
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-danger  { background: var(--red);  color: #fff; }
+.btn-ghost   { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+#submit-feedback { font-size: 11px; font-family: var(--mono); color: var(--muted); min-height: 16px; }
+
+/* ── Job list ── */
+.scroll { overflow-y: auto; flex: 1; }
+.job-item {
+  display: flex; align-items: center; gap: 7px; padding: 6px 14px;
+  border-bottom: 1px solid rgba(48,54,61,.45); font-size: 11px;
+}
+.job-item:last-child { border-bottom: none; }
+.jdot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.s-pending  .jdot { background: var(--amber); }
+.s-claimed  .jdot { background: var(--blue); }
+.s-running  .jdot { background: var(--blue); animation: blink .8s infinite; }
+.s-done     .jdot { background: var(--green); }
+.s-failed   .jdot { background: var(--red); }
+.jtype { font-weight: 500; flex-shrink: 0; }
+.jid   { font-family: var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.jnode { font-family: var(--mono); color: var(--purple); flex-shrink: 0; font-size: 10px; }
+.jstat { color: var(--muted); flex-shrink: 0; font-size: 10px; }
+.jts   { color: var(--muted); flex-shrink: 0; font-size: 10px; font-family: var(--mono); margin-left: auto; }
+
+/* ── Agent log ── */
+.log-item {
+  padding: 5px 14px; border-bottom: 1px solid rgba(48,54,61,.3);
+  font-family: var(--mono); font-size: 10px; line-height: 1.6;
+}
+.la { color: var(--blue); }
+.sl { color: var(--green); }
+.sh { color: var(--amber); }
+.sm { color: var(--muted); }
+.lr { color: var(--muted); font-size: 9.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Empty state ── */
+.empty { padding: 20px 14px; text-align: center; color: var(--muted); font-size: 11px; }
+
+/* ── Sidebar tab bar ── */
+.s-tabs-bar { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.s-tab-btn {
+  flex: 1; background: none; border: none; color: var(--muted); font-size: 11px; font-weight: 500;
+  padding: 8px 4px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color .15s;
+}
+.s-tab-btn:hover { color: var(--text); }
+.s-tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+.s-panel { display: none; flex: 1; }
+.s-panel.active { display: block; }
+
+/* ── File request items ── */
+.req-item {
+  padding: 7px 14px; border-bottom: 1px solid rgba(48,54,61,.4); font-size: 11px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.req-item:last-child { border-bottom: none; }
+.req-top { display: flex; align-items: center; gap: 6px; }
+.req-icon { font-size: 13px; flex-shrink: 0; }
+.req-name { font-family: var(--mono); font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.req-node { color: var(--purple); font-family: var(--mono); font-size: 10px; flex-shrink: 0; }
+.req-bot  { display: flex; gap: 8px; color: var(--muted); font-size: 10px; font-family: var(--mono); }
+.req-hops { color: var(--amber); }
+.req-key  { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Node controls bar ── */
+.node-controls { padding: 9px 14px; display: flex; gap: 6px; align-items: center; }
+.node-controls select { flex: 1; }
+
+/* ── Add-node modal ── */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.overlay.hidden { display: none; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 22px; max-width: 420px; width: 100%; }
+.modal h3 { font-size: 14px; margin-bottom: 10px; }
+.modal p { color: var(--muted); font-size: 12px; line-height: 1.6; margin-bottom: 8px; }
+.cmd { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 10px; font-family: var(--mono); font-size: 11px; color: var(--green); word-break: break-all; user-select: all; margin: 8px 0; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+
+/* ── Grafana embed view ── */
+.grafana-wrap {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 4px 0;
+}
+.grafana-row { display: flex; gap: 10px; flex: 1; min-height: 0; }
+.grafana-frame {
+  flex: 1; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel); overflow: hidden; min-height: 0;
+}
+.grafana-frame iframe { width: 100%; height: 100%; border: none; display: block; }
+.grafana-placeholder {
+  flex: 1; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; min-height: 200px;
+}
+.grafana-placeholder a { color: var(--blue); font-size: 13px; }
+.grafana-placeholder p { color: var(--muted); font-size: 11px; }
+
+/* ── View toggle (Ring / Analytics) ── */
+.view-tabs { display: flex; gap: 4px; flex-shrink: 0; }
+.vtab {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--muted);
+  font-size: 12px; font-weight: 500; padding: 5px 13px; border-radius: 6px;
+  cursor: pointer; transition: all .15s;
+}
+.vtab:hover { color: var(--text); }
+.vtab.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+.view-content { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.view-content.hidden { display: none; }
+
+/* ── Analytics grid ── */
+.charts-grid {
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+  gap: 12px; flex: 1; min-height: 0; padding: 4px 0;
+}
+.chart-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; display: flex; flex-direction: column; min-height: 0;
+}
+.chart-title {
+  font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 8px;
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.chart-sub { font-weight: 400; color: var(--muted); font-size: 10px; }
+.chart-card canvas { flex: 1; min-height: 0; }
+
+/* ── Analytics summary bar ── */
+.metrics-row {
+  display: flex; gap: 10px; flex-shrink: 0; padding-top: 10px;
+}
+.metric-stat {
+  flex: 1; background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 12px; text-align: center;
+}
+.ms-val   { font-size: 20px; font-weight: 700; font-family: var(--mono); color: var(--blue); }
+.ms-label { font-size: 10px; color: var(--muted); margin-top: 2px; text-transform: uppercase; letter-spacing:.05em; }
+
+/* ── Fault injection panel ── */
+.fault-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; }
+.fault-section {}
+.fault-label { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+.recovery-log { display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto; }
+.rec-item { display: flex; gap: 8px; font-size: 11px; padding: 3px 0; }
+.rec-time { color: var(--muted); font-family: var(--mono); flex-shrink: 0; }
+.rec-msg  { color: var(--text); }
+.fault-health { font-family: var(--mono); font-size: 12px; }
+.fh-ok   { color: var(--green); }
+.fh-warn { color: var(--amber); }
+.fh-dead { color: var(--red); }
+.s-tab-btn.fault-tab { color: var(--red); }
+
+/* ── Ring status modal ── */
+.ring-status-modal {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 0; max-width: 500px; width: 100%; max-height: 70vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.ring-status-header {
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.ring-status-header h3 {
+  font-size: 14px; font-weight: 600; margin: 0; color: var(--text);
+  display: flex; align-items: center; gap: 8px;
+}
+.ring-status-header .hi { color: var(--blue); }
+.ring-status-body { overflow-y: auto; flex: 1; padding: 0; }
+.ring-node-item {
+  padding: 10px 14px; border-bottom: 1px solid rgba(48,54,61,.3); display: flex;
+  align-items: center; gap: 10px; font-size: 11px; transition: background .15s;
+}
+.ring-node-item:hover { background: var(--panel2); cursor: pointer; }
+.ring-node-item:last-child { border-bottom: none; }
+.ring-node-icon { width: 22px; height: 22px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 9px; font-weight: 600;
+  flex-shrink: 0; color: #fff;
+}
+.ring-node-icon.ok { background: var(--green); }
+.ring-node-icon.warn { background: var(--amber); }
+.ring-node-icon.dead { background: var(--red); }
+.ring-node-info { flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.ring-node-id { font-weight: 600; color: var(--text); }
+.ring-node-addr { color: var(--purple); font-size: 10px; font-family: var(--mono); }
+.ring-node-status { color: var(--muted); font-size: 10px; }
+#node-modal { z-index: 60; }
+.nd-inner {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  width: min(780px, 94vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden;
+}
+.nd-header {
+  display: flex; align-items: center; gap: 14px; padding: 18px 22px;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.nd-color-bar { width: 6px; border-radius: 3px; align-self: stretch; flex-shrink: 0; }
+.nd-title { flex: 1; }
+.nd-node-id { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+.nd-addr    { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.nd-badges  { display: flex; gap: 6px; align-items: center; }
+.nd-badge {
+  font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 12px;
+  border: 1px solid; text-transform: uppercase; letter-spacing: .06em;
+}
+.nd-badge-self { color: #58a6ff; border-color: #58a6ff; background: rgba(88,166,255,.1); }
+.nd-badge-peer { color: var(--muted); border-color: var(--border); background: transparent; }
+
+/* Tabs */
+.nd-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); flex-shrink: 0; padding: 0 22px; }
+.nd-tab {
+  background: none; border: none; color: var(--muted); font-size: 12px; font-weight: 500;
+  padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color .15s;
+}
+.nd-tab:hover { color: var(--text); }
+.nd-tab.active { color: var(--text); border-bottom-color: var(--blue); }
+
+/* Tab body */
+.nd-body { flex: 1; overflow-y: auto; padding: 18px 22px; display: none; }
+.nd-body.active { display: block; }
+
+/* Overview grid */
+.nd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+.nd-card {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+}
+.nd-card-label { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 4px; }
+.nd-card-val   { font-size: 18px; font-weight: 700; font-family: var(--mono); }
+.nd-card-sub   { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--mono); }
+.nd-pointer { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 7px; margin-bottom: 8px; background: var(--bg); }
+.nd-pointer-label { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); width: 80px; flex-shrink: 0; }
+.nd-pointer-id    { font-family: var(--mono); font-weight: 700; font-size: 13px; }
+.nd-pointer-addr  { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: auto; }
+
+/* Finger table */
+.nd-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+.nd-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 5px 10px; border-bottom: 1px solid var(--border); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+.nd-table td { padding: 6px 10px; border-bottom: 1px solid rgba(48,54,61,.35); }
+.nd-table tr:last-child td { border-bottom: none; }
+.nd-table tr:hover td { background: rgba(255,255,255,.03); }
+.nd-table .nd-diff { font-weight: 700; }
+
+/* Data keys */
+.nd-key-list { display: flex; flex-direction: column; gap: 4px; }
+.nd-key { background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 5px 10px; font-family: var(--mono); font-size: 11px; display: flex; justify-content: space-between; align-items: center; }
+.nd-key-name { color: var(--blue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.nd-key-stat { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+
+/* How it works */
+.nd-explain h3 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; color: var(--text); }
+.nd-explain h3:first-child { margin-top: 0; }
+.nd-explain p  { font-size: 12px; line-height: 1.75; color: var(--muted); margin-bottom: 8px; }
+.nd-explain code { font-family: var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; font-size: 11px; color: var(--green); }
+.nd-explain .nd-formula { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font-family: var(--mono); font-size: 12px; color: var(--amber); margin: 8px 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    Chord DHT — Live Dashboard
+  </div>
+  <div style="flex:1"></div>
+  <div class="node-badge" id="health-badge">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span class="status-dot"></span>
+      <span style="font-weight:600;">🔗 Ring Status</span>
+    </div>
+    <span style="color:var(--border);">·</span>
+    <div class="health-ring">
+      <div class="health-dots" id="health-dots"></div>
+      <span class="health-label" id="b-size">— nodes</span><span id="b-qd" style="color:var(--amber)"></span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- ══════════ LEFT: Ring / Analytics ══════════ -->
+  <div class="ring-panel">
+    <div class="toolbar">
+      <!-- View toggle -->
+      <div class="view-tabs">
+        <button class="vtab active" id="vtab-ring">⬡ Ring</button>
+        <button class="vtab"        id="vtab-analytics">📊 Analytics</button>
+        <button class="vtab"        id="vtab-grafana">🔭 Observability</button>
+      </div>
+      <label><input type="checkbox" id="tog-fingers"> Fingers</label>
+      <label><input type="checkbox" id="tog-ids" checked> IDs</label>
+      <div style="flex:1"></div>
+      <button class="btn btn-ghost" id="btn-add">＋ Add Node</button>
+      <select id="rm-sel" style="flex:unset;width:auto;max-width:150px">
+        <option value="">Remove node…</option>
+      </select>
+      <button class="btn btn-danger" id="btn-rm">Remove</button>
+    </div>
+
+    <!-- ── Ring view ── -->
+    <div class="view-content" id="view-ring">
+    <div class="ring-wrap">
+      <svg id="ring-svg" viewBox="0 0 700 700" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arr-succ" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+            <polygon points="0 0,7 3,0 6" fill="#3fb950" opacity=".7"/>
+          </marker>
+          <marker id="arr-hop" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
+            <polygon points="0 0,7 3,0 6" fill="#d29922"/>
+          </marker>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="3" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+      </svg>
+    </div>
+
+    <div class="legend">
+      <div class="leg"><div class="leg-dot" style="background:var(--border);border:2px solid #888;border-radius:50%;width:11px;height:11px;margin-right:-2px"></div><div class="leg-dot" style="background:#3fb950"></div><div class="leg-dot" style="background:#58a6ff"></div><div class="leg-dot" style="background:#ffa657"></div><div class="leg-dot" style="background:#bc8cff"></div>&nbsp;Nodes (unique colour)</div>
+      <div class="leg"><div class="leg-dot" style="background:transparent;border:2px solid #aaa;border-radius:50%;width:11px;height:11px"></div>★ This node (glow)</div>
+      <div class="leg"><div class="leg-dot" style="background:#d29922"></div>Routing hop</div>
+      <div class="leg"><div class="leg-dot" style="background:#f85149"></div>Failed</div>
+      <div class="leg"><div class="leg-dot" style="background:#bc8cff"></div>Finger</div>
+    </div>
+
+    <div class="hop-bar hidden" id="hop-bar">
+      Route: <span id="hop-path">—</span>
+      &nbsp;·&nbsp;<strong id="hop-cnt">0</strong> hop(s)
+    </div>
+    </div><!-- end #view-ring -->
+
+    <!-- ── Analytics view ── -->
+    <div class="view-content hidden" id="view-analytics">
+      <div class="charts-grid">
+        <div class="chart-card">
+          <div class="chart-title">Request Throughput <span class="chart-sub">per min · last 2 min</span></div>
+          <canvas id="chart-throughput"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Hop Count Distribution <span class="chart-sub">O(log N) target ≤ 3</span></div>
+          <canvas id="chart-hops"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Node Load <span class="chart-sub">queue depth per node</span></div>
+          <canvas id="chart-load"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Agent Strategy <span class="chart-sub">LLM vs heuristic decisions</span></div>
+          <canvas id="chart-agent"></canvas>
+        </div>
+      </div>
+      <div class="metrics-row" id="metrics-summary">
+        <div class="metric-stat"><div class="ms-val" id="ms-reqs">—</div><div class="ms-label">Total Requests</div></div>
+        <div class="metric-stat"><div class="ms-val" id="ms-hops">—</div><div class="ms-label">Avg Hops</div></div>
+        <div class="metric-stat"><div class="ms-val" id="ms-done">—</div><div class="ms-label">Jobs Done</div></div>
+        <div class="metric-stat"><div class="ms-val" id="ms-fail">—</div><div class="ms-label">Jobs Failed</div></div>
+        <div class="metric-stat"><div class="ms-val" id="ms-nodes">—</div><div class="ms-label">Ring Size</div></div>
+      </div>
+    </div><!-- end #view-analytics -->
+
+    <!-- ── Grafana / Observability view ── -->
+    <div class="view-content hidden" id="view-grafana">
+      <div class="grafana-wrap">
+        <!-- Full Grafana dashboard in one iframe (kiosk=tv skips nav/auth) -->
+        <div class="grafana-frame" style="flex:1">
+          <iframe
+            id="gf-main"
+            src="http://localhost:3000/d/chord-dht-01?orgId=1&kiosk=tv&theme=dark&refresh=5s"
+            title="Chord DHT Grafana Dashboard"
+            allowfullscreen>
+          </iframe>
+        </div>
+        <!-- Fallback strip -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;padding:6px 2px">
+          <span style="font-size:11px;color:var(--muted)">
+            Prometheus scraping all nodes every 5 s · 12 panels · auto-refresh
+          </span>
+          <a href="http://localhost:3000/d/chord-dht-01?theme=dark" target="_blank"
+             style="font-size:11px;color:var(--blue);text-decoration:none">
+            Open full Grafana →
+          </a>
+        </div>
+      </div>
+    </div><!-- end #view-grafana -->
+
+  </div><!-- end .ring-panel -->
+
+  <!-- ══════════ RIGHT: Sidebar ══════════ -->
+  <aside>
+    <!-- Submit -->
+    <div class="s-sec">
+      <h2>Submit Job</h2>
+      <form class="form-body" id="job-form" autocomplete="off">
+        <div class="form-row">
+          <select id="jtype">
+            <option value="echo">echo</option>
+            <option value="sleep">sleep</option>
+            <option value="compute">compute</option>
+          </select>
+          <input type="number" id="jreplicas" value="1" min="1" max="8" title="Replicas">
+        </div>
+        <div class="form-row">
+          <input type="text" id="jpayload" value='{"message":"hello"}'>
+        </div>
+        <div class="form-row">
+          <button type="submit" class="btn btn-primary" id="btn-submit" style="flex:1">Submit Job</button>
+        </div>
+        <div id="submit-feedback"></div>
+      </form>
+    </div>
+
+    <!-- Tabbed panel: Requests | Jobs | Agent Log -->
+    <div class="s-sec grow" style="display:flex;flex-direction:column;min-height:0">
+      <div class="s-tabs-bar">
+        <button class="s-tab-btn active" data-panel="req">Requests</button>
+        <button class="s-tab-btn"        data-panel="jobs">Jobs <span id="j-count" class="s-count"></span></button>
+        <button class="s-tab-btn"        data-panel="logs">Agent</button>
+        <button class="s-tab-btn fault-tab" data-panel="fault">⚡ Fault</button>
+      </div>
+      <div class="scroll s-panel active" id="panel-req"><div class="empty">Waiting for requests…</div></div>
+      <div class="scroll s-panel"        id="panel-jobs"><div class="empty">No jobs yet</div></div>
+      <div class="scroll s-panel"        id="panel-logs"><div class="empty">No decisions yet</div></div>
+      <div class="s-panel"               id="panel-fault">
+        <div class="fault-body">
+          <div class="fault-section">
+            <div class="fault-label">Crash a Node (hard kill)</div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <select id="fault-sel" style="flex:1"><option value="">Select node…</option></select>
+              <button class="btn btn-danger" id="btn-crash">💀 Crash</button>
+            </div>
+            <div style="font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5">
+              Sends SIGKILL — no graceful leave. Ring heals via stabilization. Recovery agent rescues orphaned jobs.
+            </div>
+          </div>
+          <div class="fault-section">
+            <div class="fault-label">Ring Health</div>
+            <div id="fault-health" class="fault-health fh-ok">● Monitoring…</div>
+          </div>
+          <div class="fault-section">
+            <div class="fault-label">Recovery Log</div>
+            <div class="recovery-log" id="recovery-log"><div class="empty">No faults injected yet</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<!-- Ring status modal -->
+<div class="overlay hidden" id="ring-status-modal-overlay">
+  <div class="ring-status-modal">
+    <div class="ring-status-header">
+      <h3>🔗 Ring Status — <span class="hi" id="rs-node-count">—</span> nodes</h3>
+      <button class="btn btn-ghost" id="btn-close-ring-status" style="padding:4px 10px">✕</button>
+    </div>
+    <div class="ring-status-body" id="ring-status-body">
+      <div style="padding:20px;text-align:center;color:var(--muted);">Loading nodes…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Node detail modal -->
+<div class="overlay hidden" id="node-modal">
+  <div class="nd-inner">
+    <div class="nd-header">
+      <div class="nd-color-bar" id="nd-color-bar"></div>
+      <div class="nd-title">
+        <div class="nd-node-id" id="nd-node-id">—</div>
+        <div class="nd-addr"   id="nd-addr">—</div>
+      </div>
+      <div class="nd-badges">
+        <span class="nd-badge" id="nd-self-badge"></span>
+        <button class="btn btn-ghost" id="btn-close-nd" style="padding:4px 10px">✕</button>
+      </div>
+    </div>
+
+    <div class="nd-tabs">
+      <button class="nd-tab active" data-tab="overview">Overview</button>
+      <button class="nd-tab"        data-tab="fingers" >Finger Table</button>
+      <button class="nd-tab"        data-tab="data"    >Data Store</button>
+      <button class="nd-tab"        data-tab="explain" >How It Works</button>
+    </div>
+
+    <!-- Overview -->
+    <div class="nd-body active" id="nd-tab-overview">
+      <div class="nd-grid" id="nd-metrics"></div>
+      <div id="nd-pointers"></div>
+    </div>
+
+    <!-- Finger table -->
+    <div class="nd-body" id="nd-tab-fingers">
+      <table class="nd-table">
+        <thead><tr><th>#</th><th>Start (n+2ⁱ)</th><th>Points to Node</th><th>Address</th></tr></thead>
+        <tbody id="nd-finger-rows"></tbody>
+      </table>
+    </div>
+
+    <!-- Data store -->
+    <div class="nd-body" id="nd-tab-data">
+      <div class="nd-key-list" id="nd-key-list"></div>
+    </div>
+
+    <!-- How it works -->
+    <div class="nd-body nd-explain" id="nd-tab-explain">
+      <div id="nd-explain-body"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Add-node modal -->
+<div class="overlay hidden" id="add-modal">
+  <div class="modal">
+    <h3>Add a Node to the Ring</h3>
+    <p>Run this in a new terminal to join a worker node to the ring:</p>
+    <div class="cmd" id="add-cmd">…</div>
+    <p>The ring rebalances within ~4 s (two stabilization cycles).</p>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="btn-close-modal">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// Constants & state
+// ═══════════════════════════════════════════════════════════════
+const CX=350, CY=350, R=240, NR=20, SZ=256;
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Distinct palette — each node gets its own colour, cycling if > 12 nodes
+const NODE_PALETTE = [
+  '#3fb950','#58a6ff','#ffa657','#bc8cff',
+  '#f78166','#79c0ff','#56d364','#ff9f9f',
+  '#d2a8ff','#7ee787','#ffd700','#4fc3f7',
+];
+let nodeColorMap = {};
+
+function buildColorMap(nodes) {
+  const sorted = [...nodes].sort((a, b) => a.node_id - b.node_id);
+  nodeColorMap = {};
+  sorted.forEach((n, i) => {
+    nodeColorMap[n.node_id] = NODE_PALETTE[i % NODE_PALETTE.length];
+  });
+}
+
+function nodeColor(id) { return nodeColorMap[id] || '#3fb950'; }
+
+let ring    = { nodes: [], this_node: null };
+let showFin = false;
+let showIds = true;
+let animating = false;
+
+// Dead node tracking
+const deadNodes = new Map(); // node_id → {ts, address, id}
+let prevNodeIds = new Set();
+
+// Recovery log
+const recoveryEvents = [];
+function addRecoveryLog(msg) {
+  const t = new Date().toLocaleTimeString();
+  recoveryEvents.unshift({ t, msg });
+  if (recoveryEvents.length > 30) recoveryEvents.pop();
+  const el2 = document.getElementById('recovery-log');
+  if (el2) el2.innerHTML = recoveryEvents.map(e =>
+    `<div class="rec-item"><span class="rec-time">${e.t}</span><span class="rec-msg">${e.msg}</span></div>`
+  ).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Chart.js — Analytics view
+// ═══════════════════════════════════════════════════════════════
+const GRID_STYLE  = { color:'rgba(48,54,61,0.7)', drawBorder:false };
+const TICK_STYLE  = { color:'#8b949e', font:{ size:10 } };
+const analyticsHistory = []; // rolling last 24 snapshots
+let chartThroughput, chartHops, chartLoad, chartAgent;
+let chartsInited = false;
+
+function initCharts() {
+  if (chartsInited) return;
+  chartsInited = true;
+  Chart.defaults.color = '#8b949e';
+  Chart.defaults.font.size = 10;
+
+  const ctx = id => document.getElementById(id).getContext('2d');
+
+  chartThroughput = new Chart(ctx('chart-throughput'), {
+    type: 'line',
+    data: { labels: [], datasets: [{ label:'Req/min', data:[], borderColor:'#58a6ff', backgroundColor:'rgba(88,166,255,.12)', fill:true, tension:.4, pointRadius:3 }] },
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}},
+      scales:{ x:{grid:GRID_STYLE, ticks:{...TICK_STYLE, maxTicksLimit:6}}, y:{grid:GRID_STYLE, ticks:TICK_STYLE, beginAtZero:true} } }
+  });
+
+  chartHops = new Chart(ctx('chart-hops'), {
+    type: 'bar',
+    data: { labels:['1 hop','2 hops','3 hops','4+ hops'],
+      datasets:[{ data:[0,0,0,0], backgroundColor:['#3fb950','#58a6ff','#ffa657','#f85149'], borderRadius:4 }] },
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}},
+      scales:{ x:{grid:GRID_STYLE, ticks:TICK_STYLE}, y:{grid:GRID_STYLE, ticks:TICK_STYLE, beginAtZero:true} } }
+  });
+
+  chartLoad = new Chart(ctx('chart-load'), {
+    type: 'bar',
+    data: { labels:[], datasets:[{ label:'Queue Depth', data:[], backgroundColor:[], borderRadius:5 }] },
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}},
+      scales:{ x:{grid:GRID_STYLE, ticks:TICK_STYLE}, y:{grid:GRID_STYLE, ticks:TICK_STYLE, beginAtZero:true} } }
+  });
+
+  chartAgent = new Chart(ctx('chart-agent'), {
+    type: 'doughnut',
+    data: { labels:['LLM','Heuristic','No-agent'], datasets:[{ data:[0,0,0], backgroundColor:['#3fb950','#d29922','#30363d'], borderWidth:2, borderColor:'#161b22' }] },
+    options: { responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{ legend:{ display:true, position:'bottom', labels:{color:'#8b949e', font:{size:10}, padding:10 } } } }
+  });
+}
+
+function updateCharts(snap) {
+  analyticsHistory.push(snap);
+  if (analyticsHistory.length > 24) analyticsHistory.shift();
+
+  // Throughput
+  chartThroughput.data.labels = analyticsHistory.map(s => new Date(s.ts*1000).toLocaleTimeString());
+  chartThroughput.data.datasets[0].data = analyticsHistory.map(s => s.req_per_min);
+  chartThroughput.update('none');
+
+  // Hop distribution
+  const hd = snap.hop_dist || {};
+  chartHops.data.datasets[0].data = [
+    hd['1']||0, hd['2']||0, hd['3']||0,
+    Object.entries(hd).filter(([k])=>parseInt(k)>=4).reduce((s,[,v])=>s+v, 0)
+  ];
+  chartHops.update('none');
+
+  // Node load
+  const loads = snap.node_loads || {};
+  const nids  = Object.keys(loads).sort((a,b)=>parseInt(a)-parseInt(b));
+  chartLoad.data.labels = nids.map(id=>`Node ${id}`);
+  chartLoad.data.datasets[0].data = nids.map(id=>loads[id]);
+  chartLoad.data.datasets[0].backgroundColor = nids.map(id=>nodeColorMap[parseInt(id)]||'#3fb950');
+  chartLoad.update('none');
+
+  // Summary stats
+  document.getElementById('ms-reqs').textContent  = snap.total_requests;
+  document.getElementById('ms-hops').textContent  = snap.avg_hops.toFixed(1);
+  document.getElementById('ms-done').textContent  = snap.jobs_completed;
+  document.getElementById('ms-fail').textContent  = snap.jobs_failed;
+  document.getElementById('ms-nodes').textContent = snap.ring_size;
+}
+
+function updateAgentChart(entries) {
+  let llm=0, heur=0, none=0;
+  for (const e of entries) {
+    const s = e.strategy||'';
+    if (s==='llm') llm++;
+    else if (s.startsWith('heuristic')) heur++;
+    else none++;
+  }
+  chartAgent.data.datasets[0].data = [llm, heur, none];
+  chartAgent.update('none');
+}
+
+async function pollMetrics() {
+  try {
+    const r    = await fetch('/api/metrics/snapshot', {cache:'no-store'});
+    const snap = await r.json();
+    if (chartsInited) updateCharts(snap);
+  } catch {}
+}
+
+// ── View toggle ──
+const VIEWS = ['ring', 'analytics', 'grafana'];
+function switchView(name) {
+  VIEWS.forEach(v => {
+    document.getElementById(`vtab-${v}`)?.classList.toggle('active', v === name);
+    document.getElementById(`view-${v}`)?.classList.toggle('hidden', v !== name);
+  });
+  if (name === 'analytics') { initCharts(); pollMetrics(); }
+}
+document.getElementById('vtab-ring').addEventListener('click',      () => switchView('ring'));
+document.getElementById('vtab-analytics').addEventListener('click', () => switchView('analytics'));
+document.getElementById('vtab-grafana').addEventListener('click',   () => switchView('grafana'));
+
+// ═══════════════════════════════════════════════════════════════
+// Geometry
+// ═══════════════════════════════════════════════════════════════
+const angle  = id => (id / SZ) * 2 * Math.PI - Math.PI / 2;
+const npos   = id => ({ x: CX + R * Math.cos(angle(id)), y: CY + R * Math.sin(angle(id)) });
+const ff     = n  => n.toFixed(2);
+
+function arcD(a, b) {
+  if (a === b) return null;
+  const pa = npos(a), pb = npos(b);
+  const cw  = ((b - a) % SZ + SZ) % SZ;
+  const lg  = cw > SZ / 2 ? 1 : 0;
+  return `M ${ff(pa.x)} ${ff(pa.y)} A ${R} ${R} 0 ${lg} 1 ${ff(pb.x)} ${ff(pb.y)}`;
+}
+
+function lineD(a, b) {
+  const pa = npos(a), pb = npos(b);
+  return `M ${ff(pa.x)} ${ff(pa.y)} L ${ff(pb.x)} ${ff(pb.y)}`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Chord routing simulation  (mirrors chord/node.py)
+// ═══════════════════════════════════════════════════════════════
+function inRange(x, a, b, incB=false) {
+  x = ((x%SZ)+SZ)%SZ; a = ((a%SZ)+SZ)%SZ; b = ((b%SZ)+SZ)%SZ;
+  if (a===b) return true;
+  if (a<b) return incB ? a<x&&x<=b : a<x&&x<b;
+  return incB ? x>a||x<=b : x>a||x<b;
+}
+
+function simRoute(fromId, toId) {
+  const map = {};
+  for (const n of ring.nodes) map[n.node_id] = n;
+  const hops = [fromId];
+  let cur = fromId;
+  for (let i = 0; i < 24; i++) {
+    if (cur === toId) break;
+    const node = map[cur]; if (!node) break;
+    const succ = node.successor?.id;
+    if (succ === toId || inRange(toId, cur, succ, true)) {
+      if (hops[hops.length-1] !== succ) hops.push(succ);
+      break;
+    }
+    let next = null;
+    const fins = (node.fingers||[]).slice().reverse();
+    for (const f of fins) {
+      if (f.node_id!=null && f.node_id!==cur && inRange(f.node_id, cur, toId)) { next=f.node_id; break; }
+    }
+    if (!next || next===cur) { if (hops[hops.length-1]!==succ) hops.push(succ); break; }
+    if (hops[hops.length-1]!==next) hops.push(next);
+    cur = next;
+  }
+  return hops;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SVG helpers
+// ═══════════════════════════════════════════════════════════════
+function el(tag, attrs={}) {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+function txt(x, y, s, attrs={}) {
+  const t = el('text', { x: ff(x), y: ff(y), 'text-anchor':'middle', 'dominant-baseline':'middle', ...attrs });
+  t.textContent = s;
+  return t;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Ring rendering
+// ═══════════════════════════════════════════════════════════════
+function renderRing() {
+  try {
+  const svg = document.getElementById('ring-svg');
+  if (!svg) { console.error('SVG element not found'); return; }
+  const defs = svg.querySelector('defs');
+  while (svg.lastChild && svg.lastChild !== defs) svg.removeChild(svg.lastChild);
+
+  const nodes = ring.nodes;
+  buildColorMap(nodes);
+
+  // Background ring circle
+  svg.appendChild(el('circle', { cx:CX, cy:CY, r:R, fill:'none', stroke:'#21262d', 'stroke-width':2 }));
+
+  // Tick marks + ID labels for 0, 32, 64 …
+  for (let id = 0; id < SZ; id += SZ/8) {
+    const a = angle(id);
+    const ix = CX+(R-7)*Math.cos(a), iy = CY+(R-7)*Math.sin(a);
+    const ox = CX+ R   *Math.cos(a), oy = CY+ R   *Math.sin(a);
+    svg.appendChild(el('line',{ x1:ff(ix),y1:ff(iy),x2:ff(ox),y2:ff(oy), stroke:'#30363d','stroke-width':1.5 }));
+    const lx = CX+(R+15)*Math.cos(a), ly = CY+(R+15)*Math.sin(a);
+    svg.appendChild(txt(lx, ly, id, { fill:'#30363d','font-size':9,'font-family':'monospace' }));
+  }
+
+  if (!nodes.length) {
+    svg.appendChild(txt(CX, CY, 'Connecting…', { fill:'#8b949e','font-size':14 }));
+    return;
+  }
+
+  // ── Finger table lines ──
+  if (showFin) {
+    const g = el('g', { opacity:.22 });
+    for (const n of nodes) {
+      for (const f of (n.fingers||[])) {
+        if (f.node_id==null||f.node_id===n.node_id) continue;
+        g.appendChild(el('path',{ d:lineD(n.node_id,f.node_id), fill:'none', stroke:'#bc8cff','stroke-width':1,'stroke-dasharray':'4,3' }));
+      }
+    }
+    svg.appendChild(g);
+  }
+
+  // ── Successor arcs ──
+  const sg = el('g');
+  for (const n of nodes) {
+    const sid = n.successor?.id;
+    if (sid==null||sid===n.node_id) continue;
+    const d = arcD(n.node_id, sid);
+    if (!d) continue;
+    sg.appendChild(el('path',{ d, fill:'none', stroke:nodeColor(n.node_id),'stroke-width':2, opacity:.55,'marker-end':'url(#arr-succ)' }));
+  }
+  svg.appendChild(sg);
+
+  // ── Hop animation layer (empty until job submit) ──
+  svg.appendChild(el('g',{ id:'hop-g' }));
+
+  // ── Node circles + labels ──
+  const ng = el('g');
+  for (const n of nodes) {
+    const p = npos(n.node_id);
+    const c = nodeColor(n.node_id);
+    const isThis = n.node_id === ring.this_node;
+
+    // Outer glow ring for current node (uses same palette colour, just larger + faint)
+    if (isThis) {
+      ng.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR+7, fill:'none', stroke:c,'stroke-width':2, opacity:.35 }));
+      ng.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR+13, fill:'none', stroke:c,'stroke-width':1, opacity:.15 }));
+    }
+
+    // Node circle (click → detail modal)
+    const circle = el('circle',{
+      cx:ff(p.x), cy:ff(p.y), r:NR,
+      fill:c, 'fill-opacity':.15,
+      stroke:c, 'stroke-width': isThis ? 2.5 : 2,
+      id:`nc-${n.node_id}`,
+      style:'cursor:pointer'
+    });
+    circle.addEventListener('click', () => openNodeDetail(n.node_id));
+    ng.appendChild(circle);
+
+    // ID label
+    if (showIds) ng.appendChild(txt(p.x, p.y, n.node_id, { fill:c,'font-size':11,'font-family':'monospace','font-weight':600 }));
+
+    // Queue-depth badge
+    const qd = n.metrics?.queue_depth ?? 0;
+    if (qd > 0) {
+      const bx = ff(p.x + NR*0.72), by = ff(p.y - NR*0.72);
+      ng.appendChild(el('circle',{ cx:bx,cy:by, r:8, fill:'#d29922','fill-opacity':.92 }));
+      ng.appendChild(txt(parseFloat(bx), parseFloat(by), qd, { fill:'#0d1117','font-size':8.5,'font-weight':700,'font-family':'monospace' }));
+    }
+  }
+  svg.appendChild(ng);
+
+  // ── Dead node ghost circles ──
+  const dg = el('g');
+  for (const [id] of deadNodes) {
+    if (ring.nodes.find(n => n.node_id === id)) continue;
+    const p = npos(id);
+    dg.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR+6, fill:'none', stroke:'#f85149','stroke-width':1.5,'stroke-dasharray':'4,3', opacity:.6 }));
+    dg.appendChild(el('circle',{ cx:ff(p.x),cy:ff(p.y), r:NR, fill:'#f85149','fill-opacity':.1, stroke:'#f85149','stroke-width':1.5,'stroke-dasharray':'4,3' }));
+    dg.appendChild(txt(p.x, p.y-1, id,  { fill:'#f85149','font-size':10,'font-family':'monospace','font-weight':700 }));
+    dg.appendChild(txt(p.x, p.y+12,'✕', { fill:'#f85149','font-size':9,'font-family':'monospace' }));
+  }
+  svg.appendChild(dg);
+  } catch(e) { console.error('renderRing error:', e); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Routing animation
+// ═══════════════════════════════════════════════════════════════
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+function setNodeHighlight(id, on) {
+  const e = document.getElementById(`nc-${id}`); if (!e) return;
+  const c = nodeColor(id);
+  const isThis = id === ring.this_node;
+  if (on) {
+    e.setAttribute('fill','#d29922'); e.setAttribute('fill-opacity','.45');
+    e.setAttribute('stroke','#d29922'); e.setAttribute('stroke-width', 3);
+  } else {
+    e.setAttribute('fill',c); e.setAttribute('fill-opacity','.15');
+    e.setAttribute('stroke',c); e.setAttribute('stroke-width', isThis?2.5:2);
+  }
+}
+
+async function animateRoute(fromId, toId) {
+  if (animating) return;
+  animating = true;
+
+  const hops = simRoute(fromId, toId);
+  const g    = document.getElementById('hop-g');
+  if (g) g.innerHTML = '';
+
+  for (let i = 0; i < hops.length; i++) {
+    setNodeHighlight(hops[i], true);
+    if (i > 0 && g) {
+      const pa = npos(hops[i-1]), pb = npos(hops[i]);
+      g.appendChild(el('line',{
+        x1:ff(pa.x), y1:ff(pa.y), x2:ff(pb.x), y2:ff(pb.y),
+        stroke:'#d29922','stroke-width':2.5,'stroke-dasharray':'7,4',
+        'marker-end':'url(#arr-hop)', opacity:.9
+      }));
+    }
+    await sleep(520);
+  }
+
+  // Show hop bar
+  const bar = document.getElementById('hop-bar');
+  document.getElementById('hop-path').textContent = hops.join(' → ');
+  document.getElementById('hop-cnt').textContent   = hops.length - 1;
+  bar.classList.remove('hidden');
+
+  await sleep(3500);
+
+  if (g) g.innerHTML = '';
+  hops.forEach(id => setNodeHighlight(id, false));
+  bar.classList.add('hidden');
+  animating = false;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// File-type emoji helper
+// ═══════════════════════════════════════════════════════════════
+const FILE_ICONS = {
+  pdf:'📄', csv:'📊', bin:'⚙️', yaml:'⚙️', gz:'🗜️', zip:'🗜️',
+  pptx:'📊', png:'🖼️', jpg:'🖼️', mp4:'🎬', tar:'🗜️', md:'📝',
+  sql:'🗄️', json:'📋', txt:'📝', sh:'⚡', parquet:'📊',
+};
+function fileIcon(name) {
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+  return FILE_ICONS[ext] || '📁';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render file request list
+// ═══════════════════════════════════════════════════════════════
+function renderRequests(reqs) {
+  const el2 = document.getElementById('panel-req');
+  if (!reqs.length) { el2.innerHTML='<div class="empty">Waiting for requests…</div>'; return; }
+  el2.innerHTML = reqs.map(r => {
+    const c   = nodeColorMap[r.served_by_node] || 'var(--purple)';
+    const t   = new Date(r.ts*1000).toLocaleTimeString();
+    return `<div class="req-item">
+      <div class="req-top">
+        <span class="req-icon">${fileIcon(r.filename)}</span>
+        <span class="req-name" title="${r.filename}">${r.filename}</span>
+        <span class="req-node" style="color:${c}">→ Node ${r.served_by_node}</span>
+      </div>
+      <div class="req-bot">
+        <span class="req-hops">⇢ ${r.hops} hop${r.hops!==1?'s':''}</span>
+        <span class="req-key">key=${r.key_id}</span>
+        <span style="margin-left:auto">${t}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render job list
+// ═══════════════════════════════════════════════════════════════
+function renderJobs(jobs) {
+  const el2 = document.getElementById('panel-jobs');
+  document.getElementById('j-count').textContent = jobs.length ? `(${jobs.length})` : '';
+  if (!jobs.length) { el2.innerHTML='<div class="empty">No jobs yet</div>'; return; }
+  el2.innerHTML = jobs.map(j => {
+    const sid  = (j.job_id||'?').slice(0,8);
+    // Map address to node ID using ring info
+    let nodeInfo = '?';
+    if (j.claimed_by && ring.nodes) {
+      const node = ring.nodes.find(n => n.address === j.claimed_by);
+      nodeInfo = node ? `Node ${node.node_id}` : j.claimed_by;
+    }
+    // Format timestamp in PDT (UTC-7) - time only
+    const ts = j.created_at ? new Date(j.created_at * 1000).toLocaleString('en-US', {timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true}) : '—';
+    return `<div class="job-item s-${j.status}">
+      <div class="jdot"></div>
+      <span class="jtype">${j.type||'?'}</span>
+      <span class="jid" title="${j.job_id}">${sid}…</span>
+      <span class="jnode" title="${j.claimed_by||''}">${nodeInfo}</span>
+      <span class="jstat">${j.status}</span>
+      <span class="jts" title="Created (PDT)">${ts}</span>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Render agent log
+// ═══════════════════════════════════════════════════════════════
+function renderLogs(entries) {
+  const el2 = document.getElementById('panel-logs');
+  if (!entries.length) { el2.innerHTML='<div class="empty">No decisions yet</div>'; return; }
+  el2.innerHTML = [...entries].reverse().map(e => {
+    const strat = e.strategy||'';
+    const cls   = strat==='llm' ? 'sl' : strat.startsWith('heuristic') ? 'sh' : 'sm';
+    const rea   = e.decision?.reasoning || '';
+    const t     = new Date(e.ts*1000).toLocaleTimeString();
+    return `<div class="log-item">
+      <span class="la">${e.agent}</span><span class="sm"> · ${e.tool} · </span><span class="${cls}">${strat}</span><span class="sm"> · ${e.latency_ms}ms · ${t}</span>
+      ${rea ? `<div class="lr" title="${rea}">${rea}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Ring status modal
+// ═══════════════════════════════════════════════════════════════
+function openRingStatus() {
+  const overlay = document.getElementById('ring-status-modal-overlay');
+  const body = document.getElementById('ring-status-body');
+  const count = document.getElementById('rs-node-count');
+  
+  count.textContent = ring.nodes.length;
+  
+  if (!ring.nodes.length) {
+    body.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);">No nodes in ring</div>';
+    overlay.classList.remove('hidden');
+    return;
+  }
+  
+  const currentNodeId = ring.this_node;
+  body.innerHTML = ring.nodes.map(nd => {
+    const isCurrentNode = nd.node_id === currentNodeId;
+    const statusCls = 'ok';
+    const statusText = isCurrentNode ? '★ Current Node' : 'Online';
+    return `
+      <div class="ring-node-item" title="Click to view details">
+        <div class="ring-node-icon ${statusCls}">${nd.node_id % 10}</div>
+        <div class="ring-node-info">
+          <div class="ring-node-id">Node ${nd.node_id} ${isCurrentNode ? '★' : ''}</div>
+          <div class="ring-node-addr">${nd.address}</div>
+        </div>
+        <div class="ring-node-status">${statusText}</div>
+      </div>
+    `;
+  }).join('');
+  
+  overlay.classList.remove('hidden');
+}
+
+document.getElementById('health-badge')?.addEventListener('click', openRingStatus);
+document.getElementById('btn-close-ring-status')?.addEventListener('click', () => {
+  document.getElementById('ring-status-modal-overlay').classList.add('hidden');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+let maxNodesEverSeen = 7; // Track max ring size for health calculations
+
+function updateHeader() {
+  // Determine health status based on ring dynamics
+  const activeNodes = ring.nodes.length;
+
+  // Track max nodes ever seen to establish "healthy" baseline
+  if (activeNodes > maxNodesEverSeen) {
+    maxNodesEverSeen = activeNodes;
+  }
+
+  const expectedNodes = maxNodesEverSeen; // Use max as baseline
+  const healthPercent = activeNodes / expectedNodes;
+  let healthStatus = 'ok';
+  if (healthPercent < 1.0) healthStatus = healthPercent >= 0.6 ? 'warn' : 'dead';
+
+  // Update badge styling
+  const badge = document.getElementById('health-badge');
+  badge.className = 'node-badge health-' + healthStatus;
+
+  // Show only the active node count; cap visible count at 10 and display "10+" when larger
+  const displayCount = activeNodes > 10 ? '10+' : `${activeNodes} node${activeNodes!==1?'s':''}`;
+  document.getElementById('b-size').textContent = displayCount;
+
+  // Generate visual health indicator dots (show up to 10 dots)
+  const dotsContainer = document.getElementById('health-dots');
+  dotsContainer.innerHTML = '';
+  const visualDotsCount = Math.min(activeNodes, 10);
+  for (let i = 0; i < visualDotsCount; i++) {
+    const dot = document.createElement('div');
+    dot.className = 'health-dot';
+    if (i < activeNodes) {
+      dot.classList.add('active-' + healthStatus);
+    }
+    dotsContainer.appendChild(dot);
+  }
+
+  // If more than 10 nodes exist, append a small "10+" label after the dots
+  // if (activeNodes > 10) {
+  //   const more = document.createElement('span');
+  //   more.style.fontSize = '9px';
+  //   more.style.color = 'var(--muted)';
+  //   more.textContent = ' 10+';
+  //   dotsContainer.appendChild(more);
+  // }
+
+  const sel = document.getElementById('rm-sel');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Remove node…</option>';
+  for (const nd of ring.nodes) {
+    const opt = document.createElement('option');
+    opt.value = nd.address;
+    opt.textContent = `Node ${nd.node_id} (${nd.address})${nd.node_id===n?' ★':''}`;
+    sel.appendChild(opt);
+  }
+  if (prev) sel.value = prev;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// API polling
+// ═══════════════════════════════════════════════════════════════
+async function pollRing() {
+  try {
+    const ringResp = await fetch('/api/ring', {cache:'no-store'});
+    ring = await ringResp.json();
+
+    // ── Dead node tracking ──
+    const newIds = new Set(ring.nodes.map(n => n.node_id));
+    for (const id of prevNodeIds) {
+      if (!newIds.has(id) && !deadNodes.has(id)) {
+        deadNodes.set(id, { ts: Date.now() });
+        addRecoveryLog(`💀 Node ${id} disappeared from ring`);
+        setTimeout(() => addRecoveryLog(`🔄 Ring stabilizing — finger tables updating…`), 3000);
+        setTimeout(() => addRecoveryLog(`✅ Ring stabilized after Node ${id} loss`), 7000);
+      }
+    }
+    for (const [id, info] of deadNodes) {
+      if (newIds.has(id)) { deadNodes.delete(id); addRecoveryLog(`🟢 Node ${id} recovered`); }
+      else if (Date.now() - info.ts > 35000) deadNodes.delete(id);
+    }
+    prevNodeIds = newIds;
+
+    // ── Fault health indicator ──
+    const hEl = document.getElementById('fault-health');
+    if (hEl) {
+      if (deadNodes.size > 0) {
+        hEl.className = 'fault-health fh-dead';
+        hEl.textContent = `● ${deadNodes.size} node(s) dead — healing`;
+      } else if (ring.nodes.length < 2) {
+        hEl.className = 'fault-health fh-warn';
+        hEl.textContent = `● Single-node ring — no redundancy`;
+      } else {
+        hEl.className = 'fault-health fh-ok';
+        hEl.textContent = `● Ring healthy — ${ring.nodes.length} nodes`;
+      }
+    }
+
+    // ── Fault selector sync ──
+    const fsel = document.getElementById('fault-sel');
+    if (fsel) {
+      const cur = fsel.value;
+      fsel.innerHTML = '<option value="">Select node…</option>';
+      for (const nd of ring.nodes) {
+        const o = document.createElement('option');
+        o.value = nd.address;
+        o.textContent = `Node ${nd.node_id} (${nd.address})`;
+        fsel.appendChild(o);
+      }
+      if (cur) fsel.value = cur;
+    }
+
+    renderRing();
+    updateHeader();
+    try {
+      const statusResp = await fetch('/api/status', {cache:'no-store'});
+      const status = await statusResp.json();
+      const qdEl = document.getElementById('b-qd');
+      if (qdEl) qdEl.textContent = (status.queue_depth > 0) ? ` · queue: ${status.queue_depth}` : '';
+    } catch {}
+  } catch(e) {
+    console.error('pollRing failed:', e);
+  }
+}
+async function pollJobs() {
+  try {
+    const r = await fetch('/api/jobs', {cache:'no-store'});
+    renderJobs((await r.json()).jobs||[]);
+  } catch {}
+}
+async function pollLogs() {
+  try {
+    const r = await fetch('/api/logs', {cache:'no-store'});
+    renderLogs((await r.json()).entries||[]);
+  } catch {}
+}
+
+let _lastReqTs = 0;
+async function pollRequests() {
+  try {
+    const r    = await fetch('/api/requests', {cache:'no-store'});
+    const data = await r.json();
+    const reqs = data.requests || [];
+    renderRequests(reqs);
+    // Animate ring routing for any new request since last poll
+    if (reqs.length && reqs[0].ts > _lastReqTs) {
+      _lastReqTs = reqs[0].ts;
+      const req  = reqs[0];
+      if (req.routed_from != null && req.served_by_node != null
+          && req.routed_from !== req.served_by_node) {
+        animateRoute(req.routed_from, req.served_by_node);
+      }
+    }
+  } catch {}
+}
+
+setInterval(pollRing,     2000);
+setInterval(pollJobs,     2500);
+setInterval(pollLogs,     3000);
+setInterval(pollRequests, 2000);
+setInterval(pollMetrics,  5000);
+pollRing(); pollJobs(); pollLogs(); pollRequests();
+
+// ── Sidebar tab switching ──
+document.querySelectorAll('.s-tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.s-tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.s-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(`panel-${btn.dataset.panel}`).classList.add('active');
+  });
+});
+
+// ── Agent log also feeds the agent chart ──
+async function pollLogsAndChart() {
+  try {
+    const r       = await fetch('/api/logs', {cache:'no-store'});
+    const entries = (await r.json()).entries || [];
+    renderLogs(entries);
+    if (chartsInited) updateAgentChart(entries);
+  } catch {}
+}
+setInterval(pollLogsAndChart, 4000);
+
+// ═══════════════════════════════════════════════════════════════
+// Fault injection
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btn-crash').addEventListener('click', async () => {
+  const addr = document.getElementById('fault-sel').value;
+  if (!addr) { alert('Select a node first'); return; }
+  const nd = ring.nodes.find(n => n.address === addr);
+  if (!confirm(`Hard-crash Node ${nd?.node_id} (${addr})?\n\nThis sends SIGKILL — no data handoff.\nThe ring will heal via stabilization in ~6s.\nRecovery agent will rescue any orphaned jobs.`)) return;
+
+  addRecoveryLog(`⚡ Injecting fault → Node ${nd?.node_id} (${addr})`);
+  try {
+    await fetch(`/api/nodes/${encodeURIComponent(addr)}/crash`, { method:'POST' });
+    addRecoveryLog(`💀 SIGKILL sent to Node ${nd?.node_id}`);
+  } catch {
+    addRecoveryLog(`💀 Node ${nd?.node_id} killed (no response — expected)`);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Job submission
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('job-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('btn-submit');
+  const fb  = document.getElementById('submit-feedback');
+  const type     = document.getElementById('jtype').value;
+  const replicas = parseInt(document.getElementById('jreplicas').value)||1;
+  let payload = {};
+  try { payload = JSON.parse(document.getElementById('jpayload').value||'{}'); } catch {}
+
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  fb.textContent = ''; fb.style.color = 'var(--muted)';
+
+  try {
+    const res  = await fetch('/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type,payload,replicas}) });
+    const data = await res.json();
+    if (data.ok) {
+      fb.style.color = 'var(--green)';
+      fb.textContent = `✓ ${data.job_id?.slice(0,8)}… → node ${data.stored_at_node}`;
+      if (ring.this_node != null && data.stored_at_node != null) {
+        animateRoute(ring.this_node, data.stored_at_node);
+      }
+      setTimeout(pollJobs, 400);
+    } else {
+      fb.style.color = 'var(--red)';
+      fb.textContent = `✗ ${data.error||'unknown error'}`;
+    }
+  } catch (err) {
+    fb.style.color = 'var(--red)';
+    fb.textContent = `✗ ${err.message}`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Submit Job';
+  }
+});
+
+// Payload defaults per job type
+const payloadDefaults = { echo:'{"message":"hello"}', sleep:'{"seconds":2}', compute:'{"n":10000}' };
+document.getElementById('jtype').addEventListener('change', function() {
+  document.getElementById('jpayload').value = payloadDefaults[this.value]||'{}';
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Toggles
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('tog-fingers').addEventListener('change', function(){ showFin=this.checked; renderRing(); });
+document.getElementById('tog-ids').addEventListener('change',     function(){ showIds=this.checked; renderRing(); });
+
+// ═══════════════════════════════════════════════════════════════
+// Add-node auto-spawn
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btn-add').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-add');
+  const originalText = btn.textContent;
+  btn.textContent = '⏳ Adding...';
+  btn.disabled = true;
+  
+  try {
+    const resp = await fetch('/api/nodes/add', { method: 'POST' });
+    const data = await resp.json();
+    
+    if (data.ok) {
+      btn.textContent = `✓ Added ${data.address}`;
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }, 2000);
+    } else {
+      btn.textContent = '✗ Failed: ' + (data.error || 'Unknown error');
+      btn.disabled = false;
+    }
+  } catch (err) {
+    btn.textContent = '✗ Error: ' + err.message;
+    btn.disabled = false;
+  }
+});
+document.getElementById('btn-close-modal').addEventListener('click', ()=>document.getElementById('add-modal').classList.add('hidden'));
+document.getElementById('add-modal').addEventListener('click', e=>{ if(e.target===e.currentTarget) e.currentTarget.classList.add('hidden'); });
+
+// ═══════════════════════════════════════════════════════════════
+// Node detail modal
+// ═══════════════════════════════════════════════════════════════
+function openNodeDetail(nodeId) {
+  const nd = ring.nodes.find(n => n.node_id === nodeId);
+  if (!nd) return;
+
+  const c      = nodeColor(nodeId);
+  const isThis = nodeId === ring.this_node;
+  const m      = nd.metrics || {};
+
+  // Header
+  document.getElementById('nd-node-id').textContent   = `Node ${nodeId}`;
+  document.getElementById('nd-node-id').style.color   = c;
+  document.getElementById('nd-addr').textContent       = nd.address || '—';
+  document.getElementById('nd-color-bar').style.background = c;
+  const badge = document.getElementById('nd-self-badge');
+  badge.textContent  = isThis ? '★ This Node' : 'Peer Node';
+  badge.className    = 'nd-badge ' + (isThis ? 'nd-badge-self' : 'nd-badge-peer');
+
+  // ── Overview: metric cards ──
+  const qd    = m.queue_depth   ?? '—';
+  const done  = m.jobs_completed ?? '—';
+  const fail  = m.jobs_failed    ?? '—';
+  const keys  = (nd.data_keys || []).length;
+  document.getElementById('nd-metrics').innerHTML = `
+    <div class="nd-card">
+      <div class="nd-card-label">Queue Depth</div>
+      <div class="nd-card-val" style="color:var(--amber)">${qd}</div>
+      <div class="nd-card-sub">active jobs</div>
+    </div>
+    <div class="nd-card">
+      <div class="nd-card-label">Completed</div>
+      <div class="nd-card-val" style="color:var(--green)">${done}</div>
+      <div class="nd-card-sub">jobs finished</div>
+    </div>
+    <div class="nd-card">
+      <div class="nd-card-label">Failed</div>
+      <div class="nd-card-val" style="color:var(--red)">${fail}</div>
+      <div class="nd-card-sub">jobs failed</div>
+    </div>
+    <div class="nd-card">
+      <div class="nd-card-label">Keys Stored</div>
+      <div class="nd-card-val" style="color:${c}">${keys}</div>
+      <div class="nd-card-sub">in local DHT</div>
+    </div>`;
+
+  // ── Overview: pointers ──
+  const succ = nd.successor   || {};
+  const pred = nd.predecessor || {};
+  const sc   = nodeColor(succ.id) || c;
+  const pc   = nodeColor(pred.id) || 'var(--muted)';
+  document.getElementById('nd-pointers').innerHTML = `
+    <div class="nd-pointer">
+      <span class="nd-pointer-label">Successor</span>
+      <span class="nd-pointer-id" style="color:${sc}">Node ${succ.id ?? '—'}</span>
+      <span class="nd-pointer-addr">${succ.address || '—'}</span>
+    </div>
+    <div class="nd-pointer">
+      <span class="nd-pointer-label">Predecessor</span>
+      <span class="nd-pointer-id" style="color:${pc}">Node ${pred.id ?? 'none'}</span>
+      <span class="nd-pointer-addr">${pred.address || '—'}</span>
+    </div>`;
+
+  // ── Finger table ──
+  const rows = (nd.fingers || []).map((f, i) => {
+    const fc      = nodeColor(f.node_id) || 'var(--muted)';
+    const isDiff  = f.node_id !== nodeId;
+    return `<tr>
+      <td style="color:var(--muted)">${i}</td>
+      <td style="color:var(--muted)">${f.start}</td>
+      <td class="${isDiff?'nd-diff':''}" style="color:${fc}">Node ${f.node_id ?? '—'}</td>
+      <td style="color:var(--muted);font-size:10px">${f.node_address || '—'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('nd-finger-rows').innerHTML = rows || '<tr><td colspan="4" style="color:var(--muted);padding:12px">No finger data</td></tr>';
+
+  // ── Data store ──
+  const dataKeys = nd.data_keys || [];
+  document.getElementById('nd-key-list').innerHTML = dataKeys.length
+    ? dataKeys.map(k => {
+        const isJob = k.startsWith('job:');
+        return `<div class="nd-key">
+          <span class="nd-key-name" title="${k}">${k}</span>
+          <span class="nd-key-stat">${isJob ? 'job' : 'data'}</span>
+        </div>`;
+      }).join('')
+    : '<div style="color:var(--muted);font-size:12px;padding:8px 0">No keys stored on this node</div>';
+
+  // ── How it works ──
+  const M   = (nd.fingers||[]).length;
+  const sz  = 1 << M;
+  document.getElementById('nd-explain-body').innerHTML = `
+    <h3>What is a Chord Node?</h3>
+    <p>This node is one participant in a <strong>Chord Distributed Hash Table (DHT)</strong>. Every node is assigned an ID by hashing its address with SHA-1 and taking it modulo 2<sup>${M}</sup> = <strong>${sz}</strong>. This places it at a unique position on a virtual ring of ${sz} slots (IDs 0–${sz-1}).</p>
+
+    <h3>This Node's Position</h3>
+    <p>Node <strong style="color:${c}">${nodeId}</strong> sits at position <code>${nodeId}/${sz}</code> of the ring — roughly <strong>${((nodeId/sz)*100).toFixed(1)}%</strong> of the way around. It is responsible for all keys whose hash falls in the arc from its predecessor (Node ${pred.id ?? '?'}) up to and including its own ID.</p>
+    <div class="nd-formula">
+      Responsible range: (${pred.id ?? '?'}, ${nodeId}]  (mod ${sz})
+    </div>
+
+    <h3>Finger Table — O(log N) Routing</h3>
+    <p>Instead of knowing every node, each node keeps ${M} <em>finger table</em> entries. Entry <code>i</code> points to the first node at or after position <code>(${nodeId} + 2<sup>i</sup>) mod ${sz}</code>. This lets any lookup jump halfway across the ring each hop, guaranteeing delivery in <strong>O(log N)</strong> hops.</p>
+    <div class="nd-formula">
+      finger[i].start = (${nodeId} + 2ⁱ) mod ${sz}
+    </div>
+
+    <h3>Stabilization</h3>
+    <p>Every 2 s a background thread runs <em>stabilize</em>, <em>fix_fingers</em>, and <em>check_predecessor</em>. When a new node joins or leaves, these routines converge the ring back to a correct state without any central coordinator.</p>
+
+    <h3>Job Execution</h3>
+    <p>Jobs submitted to the ring are routed to the node responsible for the job's key. The local <em>WorkerThread</em> picks up <code>PENDING</code> jobs, atomically claims them (<code>PENDING → CLAIMED → RUNNING</code>), and marks them <code>DONE</code> or <code>FAILED</code>. The AI agent chose where to place each job based on queue depth.</p>`;
+
+  // Switch to overview tab
+  activateTab('overview');
+  document.getElementById('node-modal').classList.remove('hidden');
+}
+
+function activateTab(name) {
+  document.querySelectorAll('.nd-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === name);
+  });
+  document.querySelectorAll('.nd-body').forEach(b => {
+    b.classList.toggle('active', b.id === `nd-tab-${name}`);
+  });
+}
+
+document.querySelectorAll('.nd-tab').forEach(t => {
+  t.addEventListener('click', () => activateTab(t.dataset.tab));
+});
+document.getElementById('btn-close-nd').addEventListener('click', () => {
+  document.getElementById('node-modal').classList.add('hidden');
+});
+document.getElementById('node-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.add('hidden');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Remove node (proxied through this node to avoid CORS)
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btn-rm').addEventListener('click', async () => {
+  const addr = document.getElementById('rm-sel').value;
+  if (!addr) return;
+  const nd = ring.nodes.find(n=>n.address===addr);
+  if (!confirm(`Remove node ${nd?.node_id} (${addr}) from the ring?\n\nThis triggers a graceful leave and shuts the node process down.`)) return;
+  try {
+    await fetch(`/api/nodes/${encodeURIComponent(addr)}`, { method:'DELETE' });
+  } catch {}
+  setTimeout(()=>{ pollRing(); pollJobs(); }, 2500);
+});
+</script>
+</body>
+</html>
