@@ -82,9 +82,26 @@ class AgentLoop(threading.Thread):
                     logger.debug(f"[AgentLoop] Placement advice skipped: {e}")
 
     def _collect_ring_metrics(self) -> List[Dict]:
-        """Walk full ring to collect /metrics from ALL reachable nodes (not just finger table)."""
-        import requests
+        """Walk full ring to collect /metrics from ALL reachable nodes.
+
+        Previous behaviour: `break` on the first unreachable node, so a
+        single dead node anywhere in the successor chain silently dropped
+        all nodes behind it from analytics/placement decisions.
+
+        Fix: when a node is unreachable we still need to advance the walk.
+        We fall back to the node's finger-table entry for the midpoint of
+        the ring (finger[len//2]) so we can skip over the dead node and
+        continue collecting from healthy peers.  If no finger is available
+        we simply skip and stop (better than breaking the whole loop).
+
+        Retry policy: each individual HTTP call goes through the transport
+        layer's _get() which already has 3-attempt exponential back-off.
+        Here we apply a lightweight 1-retry directly via requests so that
+        the ring walk itself doesn't wait 0.7 s × N nodes per tick.
+        """
+        import requests as _req
         result = []
+        unreachable: List[str] = []
 
         # Always include self
         try:
@@ -94,32 +111,70 @@ class AgentLoop(threading.Thread):
         except Exception:
             seen = set()
 
-        # Full ring walk: follow successor chain to reach all nodes
+        def _fetch_with_retry(url: str, retries: int = 1, timeout: float = 2.0):
+            """One quick retry so a single packet-drop doesn't drop a node."""
+            for attempt in range(retries + 1):
+                try:
+                    r = _req.get(url, timeout=timeout)
+                    if r.status_code == 200:
+                        return r.json()
+                    return None
+                except Exception:
+                    if attempt == retries:
+                        return None
+                    time.sleep(0.1)
+
+        # Full ring walk: follow successor chain
         current = self.node.successor
         visited_count = 0
-        
-        while current and current.get("id") not in seen and visited_count < 1000:
-            seen.add(current["id"])
-            visited_count += 1
-            try:
-                # Fetch metrics from this node
-                resp = requests.get(f"http://{current['address']}/metrics", timeout=2)
-                if resp.status_code == 200:
-                    m = resp.json()
-                    result.append(m)
-                
-                # Get successor of this node to continue ring walk
-                state_resp = requests.get(f"http://{current['address']}/chord/state", timeout=2)
-                if state_resp.status_code == 200:
-                    state = state_resp.json()
-                    current = state.get("successor")
-                else:
-                    break
-            except Exception:
-                # Node unreachable, try to continue with next
-                break
 
-        logger.debug(f"[AgentLoop {self.node.node_id}] Collected metrics from {len(result)} nodes (ring walk completed in {visited_count} steps)")
+        while current and current.get("id") not in seen and visited_count < 1000:
+            node_id = current.get("id")
+            address = current.get("address")
+            seen.add(node_id)
+            visited_count += 1
+
+            # --- Metrics (best-effort, skip on failure) ---
+            metrics = _fetch_with_retry(f"http://{address}/metrics")
+            if metrics:
+                result.append(metrics)
+
+            # --- Advance walk via state (skip dead node, don't break) ---
+            state = _fetch_with_retry(f"http://{address}/chord/state")
+            if state:
+                current = state.get("successor")
+            else:
+                # Node is unreachable — log it and attempt to skip forward
+                # using our own finger table so we can still reach nodes
+                # that sit further along the ring.
+                unreachable.append(address)
+                logger.debug(
+                    "[AgentLoop %s] Node %s unreachable during ring walk — "
+                    "attempting finger-table skip", self.node.node_id, address
+                )
+                # Try to find a finger that is not in `seen` to continue
+                skipped = False
+                with self.node._lock:
+                    fingers = list(self.node.finger_table)
+                for finger in fingers:
+                    if finger and finger.get("id") not in seen:
+                        current = finger
+                        skipped = True
+                        break
+                if not skipped:
+                    # No viable finger — ring walk is exhausted
+                    break
+
+        if unreachable:
+            logger.info(
+                "[AgentLoop %s] Ring walk: %d/%d nodes reached; unreachable: %s",
+                self.node.node_id, len(result), visited_count, unreachable,
+            )
+        else:
+            logger.debug(
+                "[AgentLoop %s] Ring walk: collected metrics from %d nodes in %d steps",
+                self.node.node_id, len(result), visited_count,
+            )
         return result
 
     def _local_pending_jobs(self) -> List[Dict]:

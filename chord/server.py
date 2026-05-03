@@ -97,6 +97,13 @@ def create_app(node: ChordNode) -> Flask:
     # Low-level local data store (no routing)
     # ------------------------------------------------------------------
 
+    @app.get("/data")
+    def data_list():
+        """Return all key→value pairs stored locally on this node."""
+        with node._lock:
+            snapshot = dict(node.data_store)
+        return jsonify({"ok": True, "node_id": node.node_id, "data": snapshot})
+
     @app.post("/data/<key>")
     def data_put(key):
         value = request.get_json()
@@ -118,39 +125,89 @@ def create_app(node: ChordNode) -> Flask:
     # ------------------------------------------------------------------
     # Routed data API
     # ------------------------------------------------------------------
+    #
+    # Retry strategy for routed endpoints:
+    # When we forward to the "responsible" node and it is unreachable
+    # (the ring is mid-stabilisation because a node just joined/left),
+    # we re-resolve the successor and try once more.  Two attempts are
+    # enough: the second find_successor() call will reflect the updated
+    # finger table that stabilisation has already repaired.
+    #
+    # This is distinct from the transport-level retry (which handles
+    # transient TCP failures to a *known-good* address).  Here we
+    # handle the case where the *routing* was stale.
+    # ------------------------------------------------------------------
+
+    ROUTED_RETRIES = 2  # re-resolve + retry this many times
 
     @app.post("/put/<key>")
     def routed_put(key):
         value = request.get_json()
         key_id = sha1_id(key)
-        responsible = node.find_successor(key_id)
-        if responsible["id"] == node.node_id:
-            node.put(key, value)
-            return jsonify({"ok": True, "key": key, "stored_at": node.node_id})
-        transport = node._transport
-        try:
-            transport.put(responsible["address"], key, value)
-            return jsonify({"ok": True, "key": key, "stored_at": responsible["id"]})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 502
+        last_exc = None
+        for attempt in range(ROUTED_RETRIES + 1):
+            responsible = node.find_successor(key_id)
+            if responsible["id"] == node.node_id:
+                node.put(key, value)
+                return jsonify({"ok": True, "key": key, "stored_at": node.node_id})
+            try:
+                node._transport.put(responsible["address"], key, value)
+                return jsonify({"ok": True, "key": key, "stored_at": responsible["id"]})
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "[Server] routed PUT %s → %s failed (attempt %d/%d): %s",
+                    key, responsible["address"], attempt + 1, ROUTED_RETRIES + 1, e,
+                )
+                time.sleep(0.1 * (2 ** attempt))
+        return jsonify({"error": str(last_exc)}), 502
 
     @app.get("/get/<key>")
     def routed_get(key):
         key_id = sha1_id(key)
-        responsible = node.find_successor(key_id)
-        if responsible["id"] == node.node_id:
-            value = node.get(key)
-            if value is None:
-                return jsonify({"error": "not found"}), 404
-            return jsonify(value)
-        transport = node._transport
-        try:
-            value = transport.get(responsible["address"], key)
-            if value is None:
-                return jsonify({"error": "not found"}), 404
-            return jsonify(value)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 502
+        last_exc = None
+        for attempt in range(ROUTED_RETRIES + 1):
+            responsible = node.find_successor(key_id)
+            if responsible["id"] == node.node_id:
+                value = node.get(key)
+                if value is None:
+                    return jsonify({"error": "not found"}), 404
+                return jsonify(value)
+            try:
+                value = node._transport.get(responsible["address"], key)
+                if value is None:
+                    return jsonify({"error": "not found"}), 404
+                return jsonify(value)
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "[Server] routed GET %s → %s failed (attempt %d/%d): %s",
+                    key, responsible["address"], attempt + 1, ROUTED_RETRIES + 1, e,
+                )
+                time.sleep(0.1 * (2 ** attempt))
+        return jsonify({"error": str(last_exc)}), 502
+
+    @app.delete("/del/<key>")
+    def routed_delete(key):
+        """Routed delete: finds the responsible node and deletes the key there."""
+        key_id = sha1_id(key)
+        last_exc = None
+        for attempt in range(ROUTED_RETRIES + 1):
+            responsible = node.find_successor(key_id)
+            if responsible["id"] == node.node_id:
+                deleted = node.delete(key)
+                return jsonify({"ok": deleted, "key": key, "deleted_from": node.node_id})
+            try:
+                node._transport.delete(responsible["address"], key)
+                return jsonify({"ok": True, "key": key, "deleted_from": responsible["id"]})
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "[Server] routed DELETE %s → %s failed (attempt %d/%d): %s",
+                    key, responsible["address"], attempt + 1, ROUTED_RETRIES + 1, e,
+                )
+                time.sleep(0.1 * (2 ** attempt))
+        return jsonify({"error": str(last_exc)}), 502
 
     # ------------------------------------------------------------------
     # Job submission API — agent-orchestrated placement + replication
@@ -245,24 +302,34 @@ def create_app(node: ChordNode) -> Flask:
 
     @app.get("/jobs/<job_id>")
     def get_job(job_id):
-        """Retrieve a job by ID from whichever node holds it."""
+        """Retrieve a job by ID from whichever node holds it.
+
+        Uses the same re-resolve retry pattern as the routed data endpoints
+        so a mid-stabilisation ring doesn't surface spurious 502s.
+        """
         key = job_key(job_id)
         key_id = sha1_id(key)
-        responsible = node.find_successor(key_id)
-
-        if responsible["id"] == node.node_id:
-            value = node.get(key)
-            if value is None:
-                return jsonify({"error": "not found"}), 404
-            return jsonify(value)
-
-        try:
-            value = node._transport.get(responsible["address"], key)
-            if value is None:
-                return jsonify({"error": "not found"}), 404
-            return jsonify(value)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 502
+        last_exc = None
+        for attempt in range(ROUTED_RETRIES + 1):
+            responsible = node.find_successor(key_id)
+            if responsible["id"] == node.node_id:
+                value = node.get(key)
+                if value is None:
+                    return jsonify({"error": "not found"}), 404
+                return jsonify(value)
+            try:
+                value = node._transport.get(responsible["address"], key)
+                if value is None:
+                    return jsonify({"error": "not found"}), 404
+                return jsonify(value)
+            except Exception as e:
+                last_exc = e
+                logger.warning(
+                    "[Server] GET /jobs/%s → %s failed (attempt %d/%d): %s",
+                    job_id, responsible["address"], attempt + 1, ROUTED_RETRIES + 1, e,
+                )
+                time.sleep(0.1 * (2 ** attempt))
+        return jsonify({"error": str(last_exc)}), 502
 
     # ------------------------------------------------------------------
     # Metrics endpoint (used by AgentLoop and transport.get_metrics)
@@ -679,6 +746,8 @@ def create_app(node: ChordNode) -> Flask:
             except Exception:
                 pass
 
+        jobs_running = sum(node_loads.values())
+
         return jsonify({
             "ts":             now,
             "req_per_min":    len(recent_60s),
@@ -688,6 +757,7 @@ def create_app(node: ChordNode) -> Flask:
             "total_requests": len(all_reqs),
             "jobs_completed": jobs_completed,
             "jobs_failed":    jobs_failed,
+            "jobs_running":   jobs_running,
             "ring_size":      len(seen),
         })
 
@@ -748,6 +818,18 @@ def create_app(node: ChordNode) -> Flask:
         except TaskValidationError as e:
             return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
 
+    @app.patch("/tasks/<task_id>")
+    def patch_task(task_id):
+        """Partially update a task (status, result, error, payload, priority)."""
+        patch = request.get_json() or {}
+        try:
+            result = task_service.update_task(task_id, patch)
+            return jsonify({"ok": True, "data": result})
+        except TaskNotFoundError as e:
+            return jsonify({"ok": False, "error": {"code": "TASK_NOT_FOUND", "message": str(e)}}), 404
+        except TaskValidationError as e:
+            return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
+
     @app.get("/tasks")
     def query_tasks():
         job_id = request.args.get("job_id")
@@ -770,6 +852,28 @@ def create_app(node: ChordNode) -> Flask:
             return jsonify({"ok": True, "data": result})
         except TaskValidationError as e:
             return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
+
+    @app.get("/chord/key-owner/<path:key>")
+    def key_owner(key):
+        """
+        General-purpose Chord key owner lookup — hashes `key` as-is (no prefix).
+
+        Unlike /ring/lookup/<task_id>, this endpoint does NOT add a 'task:'
+        prefix.  Use it from the DHT Store tab to find which node owns any
+        arbitrary DHT key (plain strings, filenames, task:xxx, job:xxx, etc.)
+        """
+        key_id = sha1_id(key)
+        primary = node.find_successor(key_id)
+        chain = task_service.replication.get_successor_chain(primary)
+        return jsonify({
+            "ok": True,
+            "data": {
+                "key": key,
+                "key_id": key_id,
+                "primary": primary,
+                "replicas": chain[1:],
+            },
+        })
 
     @app.get("/nodes/self")
     def node_self():

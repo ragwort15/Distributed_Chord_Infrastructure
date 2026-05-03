@@ -315,6 +315,17 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 .btn-xs{padding:3px 8px;font-size:10.5px;border-radius:5px}
 .btn-icon{padding:7px;border-radius:var(--r-sm)}
 .btn-row{display:flex;gap:8px;align-items:center}
+/* Inline copy button — appears next to truncated IDs */
+.btn-copy{
+  display:inline-flex;align-items:center;justify-content:center;
+  padding:2px 4px;margin-left:5px;
+  background:transparent;border:1px solid var(--b2);border-radius:4px;
+  color:var(--tx-3);cursor:pointer;vertical-align:middle;
+  transition:color .15s,border-color .15s,background .15s;
+  line-height:1;
+}
+.btn-copy:hover{color:var(--accent-light);border-color:var(--accent);background:var(--accent-glow)}
+.btn-copy.copied{color:var(--ok);border-color:var(--ok)}
 
 /* ─────────────────────────────────────────────────────────────
    STATUS BADGES
@@ -377,10 +388,11 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 ───────────────────────────────────────────────────────────── */
 .chart-card{
   background:var(--bg-2);border:1px solid var(--b1);
-  border-radius:var(--r-lg);padding:18px 20px;
+  border-radius:var(--r-lg);padding:18px 20px 20px;
   display:flex;flex-direction:column;gap:4px;
+  overflow:hidden; /* prevent canvas from painting outside card bounds */
 }
-.chart-card canvas{margin-top:12px;flex:1}
+.chart-card canvas{margin-top:10px;flex:1;min-height:0}
 .chart-title{font-size:13px;font-weight:700;color:var(--tx-1)}
 .chart-sub{font-size:11px;color:var(--tx-3)}
 
@@ -819,31 +831,54 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 
     <!-- ══════════════ PAGE: ANALYTICS ══════════════ -->
     <div class="page" id="page-analytics">
-      <div class="grid g4" style="margin-bottom:16px">
-        <div class="stat-card info"><div class="stat-label">Total Requests</div><div class="stat-value" id="an-reqs">—</div></div>
-        <div class="stat-card warn"><div class="stat-label">Avg Hops</div><div class="stat-value" id="an-hops">—</div></div>
-        <div class="stat-card ok"><div class="stat-label">Jobs Done</div><div class="stat-value" id="an-done">—</div></div>
-        <div class="stat-card danger"><div class="stat-label">Jobs Failed</div><div class="stat-value" id="an-fail">—</div></div>
+      <!-- 4 stat cards — spaced comfortably -->
+      <div class="grid g4" style="margin-bottom:20px">
+        <div class="stat-card info">
+          <div class="stat-label">Total Requests</div>
+          <div class="stat-value" id="an-reqs">—</div>
+          <div style="font-size:10px;color:var(--tx-3);margin-top:4px">File routing calls since start</div>
+        </div>
+        <div class="stat-card warn">
+          <div class="stat-label">Avg Hops</div>
+          <div class="stat-value" id="an-hops">—</div>
+          <div style="font-size:10px;color:var(--tx-3);margin-top:4px">Last 30 requests · target O(log N)</div>
+        </div>
+        <div class="stat-card ok">
+          <div class="stat-label">Jobs Completed</div>
+          <div class="stat-value" id="an-done">—</div>
+          <div style="font-size:10px;color:var(--tx-3);margin-top:4px">Across all ring nodes</div>
+        </div>
+        <div class="stat-card danger">
+          <div class="stat-label">Jobs Failed</div>
+          <div class="stat-value" id="an-fail">—</div>
+          <div style="font-size:10px;color:var(--tx-3);margin-top:4px">Across all ring nodes</div>
+        </div>
       </div>
-      <div class="grid g2" style="gap:16px">
-        <div class="chart-card" style="height:240px">
+
+      <!-- 2×2 chart grid — gap:28px gives enough breathing room between rows -->
+      <div class="grid g2" style="gap:28px 20px">
+        <!-- Throughput -->
+        <div class="chart-card" style="height:300px">
           <div class="chart-title">Request Throughput</div>
-          <div class="chart-sub">Requests / min · rolling 2-min window</div>
+          <div class="chart-sub">Requests routed per minute · rolling 60-second window</div>
           <canvas id="chart-throughput"></canvas>
         </div>
-        <div class="chart-card" style="height:240px">
+        <!-- Hop distribution -->
+        <div class="chart-card" style="height:300px">
           <div class="chart-title">Hop Count Distribution</div>
-          <div class="chart-sub">O(log N) target — expect ≤ 3 hops</div>
+          <div class="chart-sub">O(log N) routing efficiency — green = 1 hop ideal</div>
           <canvas id="chart-hops"></canvas>
         </div>
-        <div class="chart-card" style="height:240px">
-          <div class="chart-title">Node Load (Queue Depth)</div>
-          <div class="chart-sub">Pending jobs per node</div>
+        <!-- Node queue depth -->
+        <div class="chart-card" style="height:300px">
+          <div class="chart-title">Node Queue Depth</div>
+          <div class="chart-sub">Jobs pending per node right now — spot load imbalances</div>
           <canvas id="chart-load"></canvas>
         </div>
-        <div class="chart-card" style="height:240px">
+        <!-- Agent strategy -->
+        <div class="chart-card" style="height:300px">
           <div class="chart-title">Agent Strategy Mix</div>
-          <div class="chart-sub">LLM vs heuristic placement decisions</div>
+          <div class="chart-sub" id="agent-chart-sub">LLM vs heuristic vs fallback placement decisions</div>
           <canvas id="chart-agent"></canvas>
         </div>
       </div>
@@ -913,43 +948,68 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
           </div>
           <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
             <div class="field">
-              <label class="field-label">Task ID</label>
+              <label class="field-label">Task ID <span style="color:var(--tx-3);font-weight:400">(optional)</span></label>
               <input class="inp inp-mono" id="task-reg-id" placeholder="Leave blank to auto-generate">
             </div>
             <div class="field">
-              <label class="field-label">Job ID (optional)</label>
-              <input class="inp inp-mono" id="task-reg-jobid" placeholder="Link to a job">
+              <label class="field-label">Job ID <span style="color:var(--tx-3);font-weight:400">(optional)</span></label>
+              <input class="inp inp-mono" id="task-reg-jobid" placeholder="Link to a job (or leave blank)">
+            </div>
+            <div class="field">
+              <label class="field-label">Type <span style="color:var(--danger);font-size:10px">required</span></label>
+              <input class="inp" id="task-reg-type" placeholder="e.g. compute, inference, etl…" value="compute">
             </div>
             <div class="field">
               <label class="field-label">Payload (JSON)</label>
               <textarea class="inp inp-mono" id="task-reg-payload" rows="3">{"name":"my-task","priority":"normal"}</textarea>
             </div>
-            <div style="display:grid;grid-template-columns:1fr auto;gap:10px">
+            <div style="display:grid;grid-template-columns:1fr 80px auto;gap:8px;align-items:end">
               <button class="btn btn-primary" id="btn-register-task" style="justify-content:center">Register Task</button>
-              <input type="number" class="inp" id="task-reg-replicas" value="1" min="1" max="5" style="width:60px;text-align:center" title="Replicas">
+              <div class="field" style="margin:0">
+                <label class="field-label" style="font-size:10px">Priority</label>
+                <input type="number" class="inp" id="task-reg-priority" value="0" min="0" max="10" style="text-align:center">
+              </div>
+              <div class="field" style="margin:0">
+                <label class="field-label" style="font-size:10px">Replicas</label>
+                <input type="number" class="inp" id="task-reg-replicas" value="1" min="1" max="5" style="width:56px;text-align:center" title="Replicas">
+              </div>
             </div>
             <div class="feedback info" id="task-reg-fb"></div>
           </div>
         </div>
 
-        <!-- Lookup task -->
+        <!-- Lookup + Update task -->
         <div class="card">
           <div class="card-header">
-            <div class="card-title">Lookup Task Owner</div>
-            <div class="card-sub">GET /ring/lookup/:task_id — find responsible node</div>
+            <div class="card-title">Lookup &amp; Manage Task</div>
+            <div class="card-sub">GET /ring/lookup · PATCH /tasks · DELETE /tasks</div>
           </div>
           <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
             <div class="field">
               <label class="field-label">Task ID</label>
-              <input class="inp inp-mono" id="task-lookup-id" placeholder="Enter task ID to locate…">
+              <input class="inp inp-mono" id="task-lookup-id" placeholder="Enter task ID…">
             </div>
             <div class="btn-row">
               <button class="btn btn-ghost" id="btn-task-lookup" style="flex:1;justify-content:center">Find Owner</button>
               <button class="btn btn-ghost" id="btn-task-get" style="flex:1;justify-content:center">Get Task</button>
             </div>
             <div class="dht-result-box" id="task-lookup-result">Result will appear here…</div>
+
+            <!-- Status update -->
+            <div style="border-top:1px solid var(--bd);padding-top:10px;display:flex;gap:8px;align-items:center">
+              <select class="inp" id="task-update-status" style="flex:1">
+                <option value="">Set status…</option>
+                <option value="QUEUED">QUEUED</option>
+                <option value="RUNNING">RUNNING</option>
+                <option value="COMPLETED">COMPLETED</option>
+                <option value="FAILED">FAILED</option>
+                <option value="CANCELLED">CANCELLED</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" id="btn-task-update" style="white-space:nowrap">Update Status</button>
+            </div>
+
             <div class="btn-row">
-              <button class="btn btn-danger btn-sm" id="btn-task-delete" style="flex:1;justify-content:center">Delete Task</button>
+              <button class="btn btn-danger btn-sm" id="btn-task-delete" style="flex:1;justify-content:center">Soft Delete</button>
               <button class="btn btn-warn btn-sm" id="btn-task-hard-delete" style="flex:1;justify-content:center">Hard Delete</button>
             </div>
             <div class="feedback info" id="task-lookup-fb"></div>
@@ -961,24 +1021,27 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
       <div class="card">
         <div class="card-header">
           <div class="card-title">Local Tasks</div>
-          <div class="card-sub">GET /tasks — tasks on this node</div>
+          <div class="card-sub">GET /tasks — tasks stored on this node</div>
           <div class="card-action btn-row">
             <input class="inp" id="task-filter-jobid" placeholder="Filter by job ID…" style="width:200px">
-            <select class="inp" id="task-filter-status" style="width:130px">
+            <select class="inp" id="task-filter-status" style="width:140px">
               <option value="">All statuses</option>
-              <option value="pending">pending</option>
-              <option value="running">running</option>
-              <option value="done">done</option>
-              <option value="failed">failed</option>
+              <option value="REGISTERED">REGISTERED</option>
+              <option value="QUEUED">QUEUED</option>
+              <option value="RUNNING">RUNNING</option>
+              <option value="COMPLETED">COMPLETED</option>
+              <option value="FAILED">FAILED</option>
+              <option value="CANCELLED">CANCELLED</option>
+              <option value="DELETED">DELETED</option>
             </select>
             <button class="btn btn-ghost btn-sm" id="btn-refresh-tasks">↻ Refresh</button>
           </div>
         </div>
         <div style="overflow-y:auto;max-height:400px">
           <table class="data-table">
-            <thead><tr><th>Task ID</th><th>Job ID</th><th>Status</th><th>Node</th><th>Replicas</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Task ID</th><th>Job ID</th><th>Type</th><th>Status</th><th>Node</th><th>Ver</th><th>Actions</th></tr></thead>
             <tbody id="tasks-tbody">
-              <tr><td colspan="6"><div class="empty-state"><div class="icon">🗂</div><p>No tasks yet</p></div></td></tr>
+              <tr><td colspan="7"><div class="empty-state"><div class="icon">🗂</div><p>No tasks yet</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -1104,7 +1167,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
         </div>
         <div style="overflow-y:auto;max-height:300px">
           <table class="data-table">
-            <thead><tr><th>Key</th><th>Type</th><th>Size</th></tr></thead>
+            <thead><tr><th>Key</th><th>Type</th><th>Preview</th><th style="text-align:right">Actions</th></tr></thead>
             <tbody id="local-keys-tbody">
               <tr><td colspan="3"><div class="empty-state" style="padding:24px"><div class="icon">🗃</div><p>No keys yet</p></div></td></tr>
             </tbody>
@@ -1781,7 +1844,12 @@ function renderJobs(){
     const dotCls={pending:'jdot-pending',claimed:'jdot-claimed',running:'jdot-running',done:'jdot-done',failed:'jdot-failed'}[j.status]||'';
     return`<tr>
       <td><div class="jdot ${dotCls}"></div></td>
-      <td class="mono" title="${j.job_id}">${sid}…</td>
+      <td class="mono" title="${j.job_id}" style="white-space:nowrap">
+        <span>${sid}…</span>
+        <button class="btn-copy" onclick="copyJobId(this,'${j.job_id}')" title="Copy full Job ID">
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="9" height="10" rx="1.5"/><path d="M3 3V2a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>
+        </button>
+      </td>
       <td><span class="badge badge-neutral">${j.type||'?'}</span></td>
       <td><span class="badge ${stCls}">${j.status}</span></td>
       <td class="mono muted" style="color:${nc(nd?.node_id)||'var(--tx-3)'}">${nodeStr}</td>
@@ -1900,61 +1968,149 @@ function initCharts(){
   Chart.defaults.color='#64748b';Chart.defaults.font.size=10;
   const c=id=>document.getElementById(id).getContext('2d');
 
+  // Throughput — line chart
   chartTP=new Chart(c('chart-throughput'),{
     type:'line',
-    data:{labels:[],datasets:[{label:'Req/min',data:[],borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.1)',fill:true,tension:.4,pointRadius:3,pointBackgroundColor:'#6366f1'}]},
-    options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
-      plugins:{legend:{display:false}},
-      scales:{x:{grid:GRID_C,ticks:{...TICK_C,maxTicksLimit:6}},y:{grid:GRID_C,ticks:TICK_C,beginAtZero:true}}}
+    data:{
+      labels:[],
+      datasets:[{
+        label:'Req/min',data:[],
+        borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.12)',
+        fill:true,tension:.4,pointRadius:3,pointHoverRadius:5,
+        pointBackgroundColor:'#6366f1',borderWidth:2
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:200},
+      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false}},
+      scales:{
+        x:{grid:GRID_C,ticks:{...TICK_C,maxTicksLimit:6}},
+        y:{grid:GRID_C,ticks:TICK_C,beginAtZero:true,
+           title:{display:true,text:'req / min',color:'#475569',font:{size:9}}}
+      }
+    }
   });
+
+  // Hop distribution — bar chart
   chartHops=new Chart(c('chart-hops'),{
     type:'bar',
-    data:{labels:['1','2','3','4+'],datasets:[{data:[0,0,0,0],backgroundColor:['#10b981','#3b82f6','#f59e0b','#ef4444'],borderRadius:5}]},
-    options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
-      plugins:{legend:{display:false}},
-      scales:{x:{grid:GRID_C,ticks:TICK_C},y:{grid:GRID_C,ticks:TICK_C,beginAtZero:true}}}
+    data:{
+      labels:['1 hop','2 hops','3 hops','4+ hops'],
+      datasets:[{
+        data:[0,0,0,0],
+        backgroundColor:['#10b981','#3b82f6','#f59e0b','#ef4444'],
+        borderRadius:6,borderSkipped:false
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:200},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.parsed.y} requests`}}},
+      scales:{
+        x:{grid:GRID_C,ticks:TICK_C},
+        y:{grid:GRID_C,ticks:{...TICK_C,stepSize:1},beginAtZero:true,
+           title:{display:true,text:'requests',color:'#475569',font:{size:9}}}
+      }
+    }
   });
+
+  // Node queue depth — bar chart
   chartLoad=new Chart(c('chart-load'),{
     type:'bar',
-    data:{labels:[],datasets:[{label:'Queue',data:[],backgroundColor:[],borderRadius:5}]},
-    options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
-      plugins:{legend:{display:false}},
-      scales:{x:{grid:GRID_C,ticks:TICK_C},y:{grid:GRID_C,ticks:TICK_C,beginAtZero:true}}}
+    data:{labels:[],datasets:[{label:'Queue depth',data:[],backgroundColor:[],borderRadius:6,borderSkipped:false}]},
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:200},
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.parsed.y} jobs queued`}}},
+      scales:{
+        x:{grid:GRID_C,ticks:TICK_C},
+        y:{grid:GRID_C,ticks:{...TICK_C,stepSize:1},beginAtZero:true,
+           title:{display:true,text:'jobs',color:'#475569',font:{size:9}}}
+      }
+    }
   });
+
+  // Agent strategy mix — doughnut
   chartAgent=new Chart(c('chart-agent'),{
     type:'doughnut',
-    data:{labels:['LLM','Heuristic','None'],datasets:[{data:[0,0,0],backgroundColor:['#10b981','#f59e0b','#1e293b'],borderWidth:2,borderColor:'#0d1117'}]},
-    options:{responsive:true,maintainAspectRatio:false,animation:{duration:200},
-      plugins:{legend:{display:true,position:'bottom',labels:{color:'#64748b',font:{size:10},padding:10}}}}
+    data:{
+      labels:['LLM','Heuristic','Fallback'],
+      datasets:[{
+        data:[0,0,0],
+        backgroundColor:['#10b981','#f59e0b','#334155'],
+        borderWidth:2,borderColor:'#0d1117',hoverOffset:6
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:{duration:300},
+      cutout:'60%',
+      plugins:{
+        legend:{display:true,position:'bottom',labels:{color:'#64748b',font:{size:10},padding:12,usePointStyle:true}},
+        tooltip:{callbacks:{label:ctx=>{
+          const total=ctx.dataset.data.reduce((a,b)=>a+b,0);
+          const pct=total?Math.round(ctx.parsed/total*100):0;
+          return ` ${ctx.label}: ${ctx.parsed} (${pct}%)`;
+        }}}
+      }
+    }
   });
+
+  // Immediately fetch so charts aren't blank for 5.5 s
+  pollMetrics();
+}
+
+function _pushTimePoint(chart,ts,val){
+  const lbl=new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  chart.data.labels.push(lbl);
+  chart.data.datasets[0].data.push(val);
+  if(chart.data.labels.length>30){chart.data.labels.shift();chart.data.datasets[0].data.shift();}
 }
 
 function updateCharts(snap){
   analyticsHist.push(snap);
-  if(analyticsHist.length>24)analyticsHist.shift();
-  chartTP.data.labels=analyticsHist.map(s=>new Date(s.ts*1000).toLocaleTimeString());
-  chartTP.data.datasets[0].data=analyticsHist.map(s=>s.req_per_min);
+  if(analyticsHist.length>30)analyticsHist.shift();
+
+  // Throughput
+  _pushTimePoint(chartTP,snap.ts,snap.req_per_min||0);
   chartTP.update('none');
+
+  // Hop distribution (cumulative all-time buckets)
   const hd=snap.hop_dist||{};
-  chartHops.data.datasets[0].data=[hd['1']||0,hd['2']||0,hd['3']||0,Object.entries(hd).filter(([k])=>+k>=4).reduce((s,[,v])=>s+v,0)];
+  chartHops.data.datasets[0].data=[
+    hd['1']||0, hd['2']||0, hd['3']||0,
+    Object.entries(hd).filter(([k])=>+k>=4).reduce((s,[,v])=>s+v,0)
+  ];
   chartHops.update('none');
+
+  // Node queue depth
   const loads=snap.node_loads||{};
   const nids=Object.keys(loads).sort((a,b)=>+a-+b);
   chartLoad.data.labels=nids.map(id=>`N${id}`);
-  chartLoad.data.datasets[0].data=nids.map(id=>loads[id]);
+  chartLoad.data.datasets[0].data=nids.map(id=>loads[id]||0);
   chartLoad.data.datasets[0].backgroundColor=nids.map(id=>colorMap[+id]||'#6366f1');
   chartLoad.update('none');
-  document.getElementById('an-reqs').textContent=snap.total_requests;
-  document.getElementById('an-hops').textContent=snap.avg_hops.toFixed(1);
-  document.getElementById('an-done').textContent=snap.jobs_completed;
-  document.getElementById('an-fail').textContent=snap.jobs_failed;
+
+  // Stat cards — only the 4 we kept
+  document.getElementById('an-reqs').textContent=snap.total_requests??'—';
+  document.getElementById('an-hops').textContent=snap.avg_hops!=null?snap.avg_hops.toFixed(2):'—';
+  document.getElementById('an-done').textContent=snap.jobs_completed??'—';
+  document.getElementById('an-fail').textContent=snap.jobs_failed??'—';
 }
 
 function updateAgentChart(entries){
-  let llm=0,h=0,none=0;
-  entries.forEach(e=>{const s=e.strategy||'';if(s==='llm')llm++;else if(s.startsWith('heuristic'))h++;else none++;});
-  chartAgent.data.datasets[0].data=[llm,h,none];
+  if(!chartsInited)return;
+  let llm=0,h=0,fallback=0;
+  entries.forEach(e=>{
+    const s=(e.strategy||'').toLowerCase();
+    if(s==='llm'||s==='claude')llm++;
+    else if(s.startsWith('heuristic')||s==='rule-based')h++;
+    else fallback++;
+  });
+  chartAgent.data.datasets[0].data=[llm,h,fallback];
   chartAgent.update('none');
+  const total=llm+h+fallback;
+  const sub=document.getElementById('agent-chart-sub');
+  if(sub)sub.textContent=total
+    ?`${total} decisions — LLM: ${llm} · Heuristic: ${h} · Fallback: ${fallback}`
+    :'No agent decisions yet — submit jobs to populate';
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2032,17 +2188,37 @@ document.getElementById('btn-add-node').addEventListener('click',async()=>{
 const rmSel=document.getElementById('rm-sel');
 const rmBtn=document.getElementById('btn-rm');
 rmSel.addEventListener('change',()=>rmBtn.disabled=!rmSel.value);
+// Helper: optimistically remove a node from the local ring state and
+// schedule a few server polls to stay in sync as stabilization completes.
+function optimisticRemove(addr){
+  intentionallyRemoved.add(addr);
+  // Strip from local ring immediately so the SVG updates without waiting
+  ring.nodes=ring.nodes.filter(n=>n.address!==addr);
+  prevIds=new Set(ring.nodes.map(n=>n.node_id));
+  // Remove from dropdowns
+  for(const sel of[rmSel,document.getElementById('crash-sel'),document.getElementById('leave-sel')]){
+    const opt=[...sel.options].find(o=>o.value===addr);
+    if(opt)opt.remove();
+  }
+  renderRing();
+  updateSidebar();
+  // Re-sync with server after stabilization (1s, 3s, 7s)
+  [1000,3000,7000].forEach(t=>setTimeout(pollRing,t));
+}
+
 rmBtn.addEventListener('click',async()=>{
   const addr=rmSel.value;if(!addr)return;
   const nd=ring.nodes.find(n=>n.address===addr);
   if(!confirm(`Remove Node ${nd?.node_id} (${addr})?\n\nThis will gracefully shut down the node.`))return;
   rmBtn.disabled=true;
-  intentionallyRemoved.add(addr); // mark before fetch so pollRing skips ghost
   try{
     await fetch(`/api/nodes/${encodeURIComponent(addr)}`,{method:'DELETE'});
     addFaultEvent(`🗑 Removed Node ${nd?.node_id} (${addr})`);
-    setTimeout(pollRing,2000);
-  }catch(e){alert(`Error: ${e.message}`);}
+    optimisticRemove(addr);
+  }catch(e){
+    intentionallyRemoved.delete(addr);
+    alert(`Error: ${e.message}`);
+  }
   finally{rmBtn.disabled=false;}
 });
 
@@ -2070,12 +2246,13 @@ document.getElementById('btn-crash').addEventListener('click',async()=>{
   if(!addr){alert('Select a node first');return;}
   const nd=ring.nodes.find(n=>n.address===addr);
   if(!confirm(`Send SIGKILL to Node ${nd?.node_id} (${addr})?\n\nNo data handoff — ring heals in ~6 s.`))return;
-  intentionallyRemoved.add(addr); // mark before fetch so pollRing skips ghost
   addFaultEvent(`⚡ SIGKILL → Node ${nd?.node_id} (${addr})`);
   try{
     await fetch(`/api/nodes/${encodeURIComponent(addr)}/crash`,{method:'POST'});
     addFaultEvent(`💀 Node ${nd?.node_id} killed`);
   }catch{addFaultEvent(`💀 Node ${nd?.node_id} killed (no reply — expected)`);}
+  // Crash is fire-and-forget; optimistically remove regardless of response
+  optimisticRemove(addr);
 });
 
 document.getElementById('btn-leave').addEventListener('click',async()=>{
@@ -2083,13 +2260,12 @@ document.getElementById('btn-leave').addEventListener('click',async()=>{
   if(!addr){alert('Select a node first');return;}
   const nd=ring.nodes.find(n=>n.address===addr);
   if(!confirm(`Graceful leave for Node ${nd?.node_id} (${addr})?\n\nData will be transferred to successor.`))return;
-  intentionallyRemoved.add(addr); // mark before fetch so pollRing skips ghost
   addFaultEvent(`🚪 Leave signal → Node ${nd?.node_id} (${addr})`);
   try{
     await fetch(`/api/nodes/${encodeURIComponent(addr)}`,{method:'DELETE'});
     addFaultEvent(`✅ Leave initiated for Node ${nd?.node_id}`);
   }catch{addFaultEvent(`✅ Node ${nd?.node_id} leaving (no reply — expected)`);}
-  setTimeout(pollRing,2000);
+  optimisticRemove(addr);
 });
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2115,53 +2291,126 @@ document.getElementById('btn-dht-put').addEventListener('click',async()=>{
   const key=document.getElementById('dht-put-key').value.trim();
   const raw=document.getElementById('dht-put-val').value.trim();
   if(!key||!raw)return;
-  let value=raw;try{value=JSON.parse(raw);}catch{}
+  // Parse if valid JSON, otherwise wrap the bare string so the body is always valid JSON
+  let value;
+  try{value=JSON.parse(raw);}catch{value=raw;}
   setDht('dht-put-result','Storing…','');
   try{
-    const r=await fetch(`/put/${encodeURIComponent(key)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value})});
+    // Send `value` directly — NOT wrapped in {value:...} — so what the user
+    // types is exactly what gets stored and retrieved.
+    const r=await fetch(`/put/${encodeURIComponent(key)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
     setDht('dht-put-result',await r.json(),'ok');
   }catch(e){setDht('dht-put-result',`Error: ${e.message}`,'error');}
 });
 
 document.getElementById('btn-dht-del').addEventListener('click',async()=>{
   const key=document.getElementById('dht-put-key').value.trim();if(!key)return;
-  if(!confirm(`Delete key "${key}" from DHT?`))return;
+  if(!confirm(`Delete key "${key}" from the ring?\n\nThis routes to the responsible node and removes it there.`))return;
   setDht('dht-put-result','Deleting…','');
   try{
-    const r=await fetch(`/data/${encodeURIComponent(key)}`,{method:'DELETE'});
-    setDht('dht-put-result',await r.json(),'ok');
+    // Use routed DELETE so the key is removed from whichever node owns it
+    const r=await fetch(`/del/${encodeURIComponent(key)}`,{method:'DELETE'});
+    const d=await r.json();
+    setDht('dht-put-result',d,'ok');
+    loadLocalKeys(); // refresh the local snapshot
   }catch(e){setDht('dht-put-result',`Error: ${e.message}`,'error');}
 });
 
 document.getElementById('btn-ring-lookup').addEventListener('click',async()=>{
   const id=document.getElementById('dht-lookup-id').value.trim();if(!id)return;
   try{
-    const r=await fetch(`/ring/lookup/${encodeURIComponent(id)}`,{cache:'no-store'});
+    // Use /chord/key-owner/ — hashes the key as-is without the task: prefix
+    // that /ring/lookup/<id> adds (that endpoint is for task registry only)
+    const r=await fetch(`/chord/key-owner/${encodeURIComponent(id)}`,{cache:'no-store'});
     if(!r.ok)throw new Error(`HTTP ${r.status}`);
     const d=await r.json();
     const data=d.data||d;
+    const primary=data.primary||{};
+    const nodeId=primary.id??'—';
+    const addr=primary.address??'—';
+    // replicas is inside data.data (the inner payload), parse correctly
+    const replicaList=(data.replicas||[]).map(n=>n.id??n).join(', ')||'none';
     document.getElementById('dht-lookup-result').style.display='grid';
-    document.getElementById('lr-node').textContent=data.primary_node_id??data.node_id??'—';
-    document.getElementById('lr-addr').textContent=data.primary_address??data.node_address??data.address??'—';
-    document.getElementById('lr-replicas').textContent=data.replica_nodes?.join(', ')||data.replicas?.join(', ')||'none';
+    document.getElementById('lr-node').textContent=nodeId;
+    document.getElementById('lr-addr').textContent=addr;
+    document.getElementById('lr-replicas').textContent=replicaList;
   }catch(e){alert(`Lookup failed: ${e.message}`);}
 });
 
 async function loadLocalKeys(){
   const tbody=document.getElementById('local-keys-tbody');if(!tbody)return;
   try{
-    const r=await fetch('/chord/state',{cache:'no-store'});
+    // GET /data returns {ok, node_id, data: {key: value, ...}} for ALL local keys+values
+    const r=await fetch('/data',{cache:'no-store'});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
     const st=await r.json();
-    const keys=Object.entries(st.data_store||st.data||{});
-    if(!keys.length){tbody.innerHTML='<tr><td colspan="3"><div class="empty-state" style="padding:20px"><div class="icon">🗃</div><p>No keys</p></div></td></tr>';return;}
-    tbody.innerHTML=keys.map(([k,v])=>{
-      const t=Array.isArray(v)?'array':typeof v;
-      const sz=JSON.stringify(v).length;
-      return`<tr><td class="mono">${k}</td><td><span class="badge badge-neutral">${t}</span></td><td class="mono muted">${sz} chars</td></tr>`;
+    const entries=Object.entries(st.data||{});
+    if(!entries.length){
+      tbody.innerHTML='<tr><td colspan="4"><div class="empty-state" style="padding:20px"><div class="icon">🗃</div><p>No keys on this node</p></div></td></tr>';
+      return;
+    }
+    tbody.innerHTML=entries.map(([k,v])=>{
+      const t=Array.isArray(v)?'array':v===null?'null':typeof v;
+      const preview=JSON.stringify(v);
+      const displayPrev=preview.length>60?preview.slice(0,57)+'…':preview;
+      const isTask=typeof v==='object'&&v?.kind==='task';
+      const isJob=typeof v==='object'&&v?.job_id&&v?.status;
+      const badge=isTask?'badge-info':isJob?'badge-ok':'badge-neutral';
+      const label=isTask?'task':isJob?'job':t;
+      return`<tr>
+        <td class="mono" style="word-break:break-all">${k}</td>
+        <td><span class="badge ${badge}">${label}</span></td>
+        <td class="mono muted" style="font-size:11px">${displayPrev}</td>
+        <td style="text-align:right">
+          <button class="btn btn-ghost btn-xs" onclick="quickGet(${JSON.stringify(k)})">Get</button>
+          <button class="btn btn-danger btn-xs" onclick="quickDel(${JSON.stringify(k)})">Del</button>
+        </td>
+      </tr>`;
     }).join('');
-  }catch(e){tbody.innerHTML=`<tr><td colspan="3" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
+  }catch(e){
+    const hint=e.message.includes('404')?` — restart the server (GET /data endpoint not loaded)`:'';
+    tbody.innerHTML=`<tr><td colspan="4" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}${hint}</td></tr>`;
+  }
 }
 document.getElementById('btn-refresh-keys').addEventListener('click',loadLocalKeys);
+
+/* ─── Copy helper — used by Job ID copy buttons ─────────────────── */
+function copyJobId(btn, fullId){
+  navigator.clipboard.writeText(fullId).then(()=>{
+    // Swap icon to a checkmark tick temporarily
+    btn.innerHTML=`<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="2 9 6 13 14 4"/></svg>`;
+    btn.classList.add('copied');
+    setTimeout(()=>{
+      btn.innerHTML=`<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="9" height="10" rx="1.5"/><path d="M3 3V2a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v1"/></svg>`;
+      btn.classList.remove('copied');
+    },1500);
+  }).catch(()=>{
+    // Clipboard API blocked (non-HTTPS) — fallback to selection
+    const el=document.createElement('textarea');
+    el.value=fullId;el.style.position='fixed';el.style.opacity='0';
+    document.body.appendChild(el);el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+    btn.classList.add('copied');
+    setTimeout(()=>btn.classList.remove('copied'),1500);
+  });
+}
+
+// Quick-fill the GET input and trigger lookup from local keys table
+function quickGet(key){
+  document.getElementById('dht-get-key').value=key;
+  document.getElementById('btn-dht-get').click();
+}
+// Quick-fill the PUT key field and trigger routed delete from local keys table
+async function quickDel(key){
+  if(!confirm(`Delete key "${key}" from the ring?\n\nThis routes to the responsible node.`))return;
+  try{
+    const r=await fetch(`/del/${encodeURIComponent(key)}`,{method:'DELETE'});
+    const d=await r.json();
+    setDht('dht-put-result',d,'ok');
+    loadLocalKeys();
+  }catch(e){setDht('dht-put-result',`Error: ${e.message}`,'error');}
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    FILE REQUEST SIMULATION
@@ -2184,22 +2433,52 @@ document.getElementById('btn-simulate-req').addEventListener('click',async()=>{
 /* ═══════════════════════════════════════════════════════════════════
    TASK REGISTRY
 ═══════════════════════════════════════════════════════════════════ */
+
+// Status → badge class (uppercase keys match backend)
+const TASK_STATUS_CLS={
+  REGISTERED:'badge-neutral',
+  QUEUED:'badge-warn',
+  RUNNING:'badge-info',
+  COMPLETED:'badge-ok',
+  FAILED:'badge-danger',
+  CANCELLED:'badge-neutral',
+  DELETED:'badge-neutral',
+};
+
 document.getElementById('btn-register-task').addEventListener('click',async()=>{
-  let payload={};
-  try{payload=JSON.parse(document.getElementById('task-reg-payload').value||'{}');}
-  catch{setFb('task-reg-fb','✗ Invalid JSON payload','err');return;}
+  // Validate payload JSON
+  let payloadObj={};
+  try{payloadObj=JSON.parse(document.getElementById('task-reg-payload').value||'{}');}
+  catch{setFb('task-reg-fb','✗ Invalid JSON in Payload field','err');return;}
+
+  const typeVal=document.getElementById('task-reg-type').value.trim();
+  if(!typeVal){setFb('task-reg-fb','✗ Type is required','err');return;}
+
   const taskId=document.getElementById('task-reg-id').value.trim();
-  const jobId=document.getElementById('task-reg-jobid').value.trim();
-  const replicas=parseInt(document.getElementById('task-reg-replicas').value)||1;
-  const body={...payload,replicas};
-  if(taskId)body.task_id=taskId;
-  if(jobId)body.job_id=jobId;
+  const jobId=document.getElementById('task-reg-jobid').value.trim()||'_unlinked';
+  const priority=parseInt(document.getElementById('task-reg-priority').value)||0;
+
+  // Build body with the exact fields the backend schema requires:
+  // { job_id, type, payload, priority, task_id? }
+  const body={
+    job_id: jobId,
+    type:   typeVal,
+    payload: payloadObj,
+    priority,
+  };
+  if(taskId) body.task_id=taskId;
+
   setFb('task-reg-fb','Registering…','info');
   try{
     const r=await fetch('/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const d=await r.json();
-    if(d.ok){setFb('task-reg-fb',`✓ Task registered: ${d.data?.task_id?.slice(0,14)||'done'}…`,'ok');loadTasks();}
-    else setFb('task-reg-fb',`✗ ${d.error?.message||JSON.stringify(d.error)}`,'err');
+    if(d.ok){
+      const tid=d.data?.task?.task_id||d.data?.task_id||'done';
+      setFb('task-reg-fb',`✓ Registered: ${tid.slice(0,18)}…`,'ok');
+      loadTasks();
+    } else {
+      setFb('task-reg-fb',`✗ ${d.error?.message||JSON.stringify(d.error)}`,'err');
+    }
   }catch(e){setFb('task-reg-fb',`✗ ${e.message}`,'err');}
 });
 
@@ -2227,24 +2506,49 @@ document.getElementById('btn-task-get').addEventListener('click',async()=>{
   }catch(e){box.className='dht-result-box error';box.textContent=`Error: ${e.message}`;}
 });
 
+document.getElementById('btn-task-update').addEventListener('click',async()=>{
+  const id=document.getElementById('task-lookup-id').value.trim();
+  const status=document.getElementById('task-update-status').value;
+  if(!id){setFb('task-lookup-fb','✗ Enter a Task ID first','err');return;}
+  if(!status){setFb('task-lookup-fb','✗ Select a status to set','err');return;}
+  try{
+    const r=await fetch(`/tasks/${encodeURIComponent(id)}`,{
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({status}),
+    });
+    const d=await r.json();
+    if(d.ok){
+      setFb('task-lookup-fb',`✓ Status updated → ${status}`,'ok');
+      // Refresh the result box with the updated task
+      const box=document.getElementById('task-lookup-result');
+      box.className='dht-result-box result';
+      box.textContent=JSON.stringify(d.data?.task||d.data,null,2);
+      loadTasks();
+    } else {
+      setFb('task-lookup-fb',`✗ ${d.error?.message||JSON.stringify(d.error)}`,'err');
+    }
+  }catch(e){setFb('task-lookup-fb',`✗ ${e.message}`,'err');}
+});
+
 document.getElementById('btn-task-delete').addEventListener('click',async()=>{
   const id=document.getElementById('task-lookup-id').value.trim();if(!id)return;
-  if(!confirm(`Soft-delete task ${id}?`))return;
+  if(!confirm(`Soft-delete task ${id}?\n\nStatus will be set to DELETED; data is retained.`))return;
   try{
     const r=await fetch(`/tasks/${encodeURIComponent(id)}`,{method:'DELETE'});
     const d=await r.json();
-    setFb('task-lookup-fb',d.ok?`✓ Task deleted`:`✗ ${d.error?.message}`,'ok');
+    setFb('task-lookup-fb',d.ok?`✓ Task soft-deleted`:`✗ ${d.error?.message}`,'ok');
     loadTasks();
   }catch(e){setFb('task-lookup-fb',`✗ ${e.message}`,'err');}
 });
 
 document.getElementById('btn-task-hard-delete').addEventListener('click',async()=>{
   const id=document.getElementById('task-lookup-id').value.trim();if(!id)return;
-  if(!confirm(`HARD-delete task ${id}? This removes all replicas permanently.`))return;
+  if(!confirm(`HARD-delete task ${id}?\n\nThis permanently removes all replicas. Cannot be undone.`))return;
   try{
     const r=await fetch(`/tasks/${encodeURIComponent(id)}?hard=true`,{method:'DELETE'});
     const d=await r.json();
-    setFb('task-lookup-fb',d.ok?`✓ Task hard-deleted`:`✗ ${d.error?.message}`,'ok');
+    setFb('task-lookup-fb',d.ok?`✓ Task hard-deleted from all replicas`:`✗ ${d.error?.message}`,'ok');
     loadTasks();
   }catch(e){setFb('task-lookup-fb',`✗ ${e.message}`,'err');}
 });
@@ -2262,23 +2566,32 @@ async function loadTasks(){
     const tasks=(d.data?.tasks||d.tasks||[]);
     const cnt=document.getElementById('badge-tasks');
     if(tasks.length){cnt.textContent=tasks.length;cnt.classList.add('show');}else cnt.classList.remove('show');
-    if(!tasks.length){tbody.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="icon">🗂</div><p>No tasks</p></div></td></tr>';return;}
+    if(!tasks.length){
+      tbody.innerHTML='<tr><td colspan="7"><div class="empty-state"><div class="icon">🗂</div><p>No tasks on this node</p></div></td></tr>';
+      return;
+    }
     tbody.innerHTML=tasks.map(t=>{
-      const stCls={pending:'badge-warn',running:'badge-info',done:'badge-ok',complete:'badge-ok',failed:'badge-danger',deleted:'badge-neutral'}[t.status]||'badge-neutral';
-      const nd=ring.nodes.find(n=>n.address===t.node);
-      const nodeStr=nd?`Node ${nd.node_id}`:(t.node||'—');
-      const tid=(t.task_id||'?').slice(0,14);
+      const stCls=TASK_STATUS_CLS[t.status]||'badge-neutral';
+      // Primary node address is stored in placement.primary_node.address
+      const primaryAddr=t.placement?.primary_node?.address;
+      const nd=ring.nodes.find(n=>n.address===primaryAddr);
+      const nodeStr=nd?`N${nd.node_id}`:(primaryAddr||'—');
+      const tid=(t.task_id||'?');
+      const tidShort=tid.slice(0,12)+'…';
       const jid=(t.job_id||'').slice(0,10);
+      const replCount=(t.placement?.replica_nodes?.length||0)+1;
+      const ver=t.version||1;
       return`<tr>
-        <td class="mono">${tid}…</td>
-        <td class="mono muted">${jid?jid+'…':'—'}</td>
+        <td class="mono" title="${tid}">${tidShort}</td>
+        <td class="mono muted" title="${t.job_id||''}">${jid?jid+'…':'—'}</td>
+        <td class="muted">${t.type||'—'}</td>
         <td><span class="badge ${stCls}">${t.status||'?'}</span></td>
         <td class="mono" style="color:${nc(nd?.node_id)||'var(--tx-3)'}">${nodeStr}</td>
-        <td class="muted">${t.replicas||1}</td>
-        <td><button class="btn btn-ghost btn-xs" onclick="document.getElementById('task-lookup-id').value='${t.task_id||''}';navigate('tasks')">View</button></td>
+        <td class="muted" style="text-align:center">${ver}</td>
+        <td><button class="btn btn-ghost btn-xs" onclick="document.getElementById('task-lookup-id').value='${tid}';document.getElementById('btn-task-get').click()">View</button></td>
       </tr>`;
     }).join('');
-  }catch(e){tbody.innerHTML=`<tr><td colspan="6" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
+  }catch(e){tbody.innerHTML=`<tr><td colspan="7" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
 }
 document.getElementById('btn-refresh-tasks').addEventListener('click',loadTasks);
 document.getElementById('task-filter-jobid').addEventListener('input',loadTasks);
