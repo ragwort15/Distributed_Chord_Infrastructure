@@ -1,3 +1,5 @@
+import logging
+import time
 from typing import List, Dict, Optional
 from chord.node import sha1_id
 from storage.replication import ReplicationManager
@@ -8,8 +10,17 @@ from storage.schema import (
     is_task_record,
     mark_task_deleted,
     set_replica_nodes,
+    update_task_record,
     validate_task_record,
 )
+
+logger = logging.getLogger(__name__)
+
+# Retries for primary-node writes (transport already retries internally,
+# but if the *routing* itself pointed to the wrong node due to a ring
+# change mid-flight, we re-resolve the owner and retry the whole operation)
+PRIMARY_WRITE_RETRIES = 2
+PRIMARY_WRITE_DELAY = 0.2
 
 
 class TaskNotFoundError(Exception):
@@ -31,10 +42,38 @@ class TaskService:
         return self.node.find_successor(key_id)
 
     def _put_on_node(self, node_ref: dict, key: str, value: dict):
+        """
+        Write a key-value pair to the given node.
+
+        If the target is a remote node and the put fails (e.g. the node
+        crashed after we resolved it as primary), re-resolve the owner and
+        retry.  This handles the window where the ring is mid-stabilisation
+        and the successor table has not yet updated.
+        """
         if node_ref["id"] == self.node.node_id:
             self.node.put(key, value)
             return
-        self.transport.put(node_ref["address"], key, value)
+
+        last_exc = None
+        for attempt in range(PRIMARY_WRITE_RETRIES + 1):
+            try:
+                self.transport.put(node_ref["address"], key, value)
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt < PRIMARY_WRITE_RETRIES:
+                    # Re-resolve: ring may have stabilised to a new primary
+                    key_id = sha1_id(key)
+                    new_primary = self.node.find_successor(key_id)
+                    logger.warning(
+                        "[TaskService] Primary write to %s failed (attempt %d/%d): %s"
+                        " — re-resolving primary (was %s, now %s)",
+                        node_ref["address"], attempt + 1, PRIMARY_WRITE_RETRIES + 1,
+                        exc, node_ref["id"], new_primary["id"],
+                    )
+                    node_ref = new_primary
+                    time.sleep(PRIMARY_WRITE_DELAY * (2 ** attempt))
+        raise last_exc
 
     def _get_on_node(self, node_ref: dict, key: str) -> Optional[dict]:
         if node_ref["id"] == self.node.node_id:
@@ -81,10 +120,35 @@ class TaskService:
         }
 
     def get_task(self, task_id: str, allow_replica_read: bool = True) -> Optional[dict]:
+        """
+        Fetch a task record.
+
+        Fallback chain:
+          1. Try the primary node (Chord-routed owner of the key).
+          2. If primary is unreachable OR returns None, fall back to
+             reading from replica nodes (successor chain).
+
+        Previously the fallback only triggered when the primary returned
+        None (key not found).  It did NOT trigger when the primary threw
+        a network exception — so a crashed primary made the task
+        invisible even if replicas held a good copy.
+
+        Fix: wrap the primary fetch in a try/except; on any exception
+        treat it the same as a None return and consult replicas.
+        """
         task_key = build_task_key(task_id)
         primary = self._owner_for_key(task_key)
 
-        value = self._get_on_node(primary, task_key)
+        value = None
+        try:
+            value = self._get_on_node(primary, task_key)
+        except Exception as exc:
+            logger.warning(
+                "[TaskService] Primary read failed for %s on %s: %s — "
+                "falling back to replicas",
+                task_key, primary.get("address"), exc,
+            )
+
         if value is None and allow_replica_read:
             value = self.replication.read_from_replicas(task_key, primary)
 
@@ -123,6 +187,28 @@ class TaskService:
             "task": deleted_record,
             "task_key": task_key,
             "hard_delete": False,
+            "storage": replication_result,
+        }
+
+    def update_task(self, task_id: str, patch: dict) -> dict:
+        """Apply a partial update (status, result, error, payload, priority) to a task."""
+        task_key = build_task_key(task_id)
+        primary = self._owner_for_key(task_key)
+
+        existing = self.get_task(task_id, allow_replica_read=True)
+        if existing is None:
+            raise TaskNotFoundError(f"task not found: {task_id}")
+
+        if existing.get("status") == "DELETED":
+            raise TaskValidationError("cannot update a deleted task")
+
+        updated_record = update_task_record(existing, patch)
+        self._put_on_node(primary, task_key, updated_record)
+        replication_result = self.replication.replicate_write(task_key, updated_record, primary)
+
+        return {
+            "task": updated_record,
+            "task_key": task_key,
             "storage": replication_result,
         }
 

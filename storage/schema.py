@@ -140,3 +140,46 @@ def mark_task_deleted(record: dict) -> dict:
     updated["version"] = int(updated.get("version", 1)) + 1
     validate_task_record(updated)
     return updated
+
+
+def update_task_record(record: dict, patch: dict) -> dict:
+    """Apply a partial update to a task record.
+
+    Allowed fields: status, result, error, payload, priority.
+    Bumps version and updated_at automatically.
+    """
+    ALLOWED = {"status", "result", "error", "payload", "priority"}
+    updated = copy.deepcopy(record)
+
+    for field, value in patch.items():
+        if field not in ALLOWED:
+            raise TaskValidationError(f"field '{field}' cannot be updated via PATCH")
+
+    if "status" in patch:
+        new_status = patch["status"]
+        if new_status not in TASK_STATUSES:
+            raise TaskValidationError(f"unsupported status: {new_status}")
+        updated["status"] = new_status
+        if new_status == "DELETED":
+            updated["deleted"] = True
+
+    if "result" in patch:
+        updated["result"] = patch["result"]
+
+    if "error" in patch:
+        updated["error"] = patch["error"]
+
+    if "payload" in patch:
+        if not isinstance(patch["payload"], dict):
+            raise TaskValidationError("payload must be a JSON object")
+        updated["payload"] = copy.deepcopy(patch["payload"])
+
+    if "priority" in patch:
+        if not isinstance(patch["priority"], int):
+            raise TaskValidationError("priority must be an integer")
+        updated["priority"] = patch["priority"]
+
+    updated["updated_at"] = utc_now_iso()
+    updated["version"] = int(updated.get("version", 1)) + 1
+    validate_task_record(updated)
+    return updated

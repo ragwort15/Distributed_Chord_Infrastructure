@@ -3,6 +3,14 @@ HTTP/REST transport layer for Chord inter-node RPCs.
 
 All node-to-node calls go through this class, keeping the core
 ChordNode logic completely decoupled from networking.
+
+Retry policy (2025 update):
+  - RPC_RETRIES = 3   (was 1 — too few for a single transient blip)
+  - Exponential back-off: delay = RPC_RETRY_DELAY * 2**attempt
+    e.g. 0.1 s → 0.2 s → 0.4 s before giving up (max ~0.7 s total wait)
+  - All four HTTP verbs (GET, POST, DELETE, PATCH) share the same
+    retry logic via `_request()`.  The old code called raw
+    `requests.delete()` directly (no retry at all) — that is fixed.
 """
 
 import time
@@ -14,29 +22,61 @@ logger = logging.getLogger(__name__)
 
 # Timeout for all inter-node HTTP calls (seconds)
 RPC_TIMEOUT = 3
-# Retries for transient failures (network blip, node briefly busy)
-RPC_RETRIES = 1
-RPC_RETRY_DELAY = 0.3
+# Number of retry attempts after first failure (3 = 4 total tries)
+RPC_RETRIES = 3
+# Base delay (seconds); each retry doubles it (exponential back-off)
+RPC_RETRY_DELAY = 0.1
+
+
+def _request(method: str, url: str, **kwargs):
+    """
+    Unified retry wrapper for all HTTP verbs.
+
+    Why exponential back-off instead of a flat delay?
+    A flat 0.3 s delay retries too quickly for a node that is
+    restarting (needs a moment to bind its socket) and wastes time
+    with a second attempt that fails for the same transient reason.
+    Doubling the delay gives the remote node progressively more time
+    to recover while keeping total wait small for short blips.
+    """
+    last_exc = None
+    for attempt in range(RPC_RETRIES + 1):
+        try:
+            resp = requests.request(method, url, **kwargs)
+            return resp
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt < RPC_RETRIES:
+                delay = RPC_RETRY_DELAY * (2 ** attempt)
+                logger.debug(
+                    "[transport] %s %s failed (attempt %d/%d): %s — retry in %.2fs",
+                    method, url, attempt + 1, RPC_RETRIES + 1, exc, delay,
+                )
+                time.sleep(delay)
+    # All attempts exhausted — re-raise the last exception
+    raise last_exc
 
 
 def _get(url, **kwargs):
-    for attempt in range(RPC_RETRIES + 1):
-        try:
-            return requests.get(url, **kwargs)
-        except requests.RequestException:
-            if attempt == RPC_RETRIES:
-                raise
-            time.sleep(RPC_RETRY_DELAY)
+    return _request("GET", url, **kwargs)
 
 
 def _post(url, **kwargs):
-    for attempt in range(RPC_RETRIES + 1):
-        try:
-            return requests.post(url, **kwargs)
-        except requests.RequestException:
-            if attempt == RPC_RETRIES:
-                raise
-            time.sleep(RPC_RETRY_DELAY)
+    return _request("POST", url, **kwargs)
+
+
+def _delete(url, **kwargs):
+    """
+    DELETE with the same exponential-backoff retry as GET/POST.
+    Previously `transport.delete()` and `transport.delete_task_replica()`
+    called `requests.delete()` directly — zero retries.  One transient
+    network hiccup would silently skip deletion entirely.
+    """
+    return _request("DELETE", url, **kwargs)
+
+
+def _patch(url, **kwargs):
+    return _request("PATCH", url, **kwargs)
 
 
 class HttpTransport:
@@ -121,7 +161,10 @@ class HttpTransport:
         return r.json()
 
     def delete(self, address: str, key: str) -> bool:
-        r = requests.delete(
+        # Previously: raw requests.delete() — no retry on transient failures.
+        # Now routed through _delete() so it gets the same 3-retry
+        # exponential-backoff treatment as GET and POST calls.
+        r = _delete(
             f"http://{address}/data/{key}",
             timeout=RPC_TIMEOUT,
         )
@@ -174,7 +217,9 @@ class HttpTransport:
         return data.get("task")
 
     def delete_task_replica(self, address: str, task_key: str) -> bool:
-        r = requests.delete(
+        # Previously: raw requests.delete() — no retry.
+        # Now uses _delete() for consistent retry behaviour across all verbs.
+        r = _delete(
             f"http://{address}/internal/tasks/replica/{task_key}",
             timeout=RPC_TIMEOUT,
         )

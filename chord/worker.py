@@ -12,7 +12,9 @@ from chord.job import PENDING, CLAIMED, RUNNING, DONE, FAILED, job_key
 logger = logging.getLogger(__name__)
 
 
-JOB_TIMEOUT = 120  # seconds before a RUNNING job is declared stuck and failed
+JOB_TIMEOUT = 120   # seconds before a RUNNING job is declared stuck and failed
+MAX_JOB_RETRIES = 3  # max automatic retries for transient job failures
+JOB_RETRY_DELAY = 2  # seconds to wait before re-queuing a failed job
 
 
 class WorkerThread(threading.Thread):
@@ -41,7 +43,13 @@ class WorkerThread(threading.Thread):
             self._stop_event.wait(self.interval)
 
     def _reap_timed_out_jobs(self):
-        """Mark RUNNING jobs that exceeded JOB_TIMEOUT as FAILED."""
+        """Mark RUNNING jobs that exceeded JOB_TIMEOUT as FAILED.
+
+        Previously timed-out jobs were immediately hard-failed with no
+        consideration of retry_count.  Now we re-queue them (reset to
+        PENDING) if they have remaining retry budget, consistent with
+        how _run_job() handles transient execution errors.
+        """
         now = time.time()
         with self.node._lock:
             for k, v in self.node.data_store.items():
@@ -50,12 +58,36 @@ class WorkerThread(threading.Thread):
                 if v.get("status") == RUNNING:
                     started = v.get("started_at") or now
                     if now - started > JOB_TIMEOUT:
-                        v["status"] = FAILED
-                        v["finished_at"] = now
-                        v["error"] = f"timed out after {JOB_TIMEOUT}s"
-                        self.node.data_store[k] = v
-                        self.node.jobs_failed += 1
-                        logger.warning(f"[Worker {self.node.node_id}] Job {k} timed out")
+                        retry_count = v.get("retry_count", 0)
+                        if retry_count < MAX_JOB_RETRIES:
+                            # Re-queue so the worker picks it up again
+                            v["status"] = PENDING
+                            v["retry_count"] = retry_count + 1
+                            v["started_at"] = None
+                            v["error"] = (
+                                f"timed out after {JOB_TIMEOUT}s "
+                                f"(retry {retry_count + 1}/{MAX_JOB_RETRIES})"
+                            )
+                            self.node.data_store[k] = v
+                            logger.warning(
+                                "[Worker %s] Job %s timed out — re-queuing "
+                                "(attempt %d/%d)",
+                                self.node.node_id, k,
+                                retry_count + 1, MAX_JOB_RETRIES,
+                            )
+                        else:
+                            v["status"] = FAILED
+                            v["finished_at"] = now
+                            v["error"] = (
+                                f"timed out after {JOB_TIMEOUT}s "
+                                f"(exhausted {MAX_JOB_RETRIES} retries)"
+                            )
+                            self.node.data_store[k] = v
+                            self.node.jobs_failed += 1
+                            logger.warning(
+                                "[Worker %s] Job %s timed out — no retries left, marking FAILED",
+                                self.node.node_id, k,
+                            )
 
     def stop(self):
         self._stop_event.set()
@@ -111,20 +143,56 @@ class WorkerThread(threading.Thread):
             except Exception:
                 pass
         except Exception as e:
+            # Previous behaviour: immediately mark FAILED on first exception.
+            # Fix: check retry_count; re-queue with a short delay if budget
+            # remains.  Only genuinely exhausted jobs are marked FAILED.
+            #
+            # "Transient" here means any exception from _execute() — network
+            # hiccup, downstream service blip, temporary resource contention.
+            # Permanent failures (e.g. unknown job type) will also exhaust
+            # retries, but that is acceptable: three fast attempts take < 10 s
+            # and the job lands in FAILED with a clear error message.
             with node._lock:
                 entry = node.data_store.get(key)
-                if entry:
-                    entry["status"] = FAILED
-                    entry["finished_at"] = time.time()
-                    entry["error"] = str(e)
-                    node.data_store[key] = entry
-            node.jobs_failed += 1
-            logger.warning(f"[Worker {node.node_id}] Failed {key}: {e}")
-            try:
-                from chord.metrics_registry import JOBS_TOTAL
-                JOBS_TOTAL.labels(node_id=str(node.node_id), status="failed").inc()
-            except Exception:
-                pass
+                retry_count = entry.get("retry_count", 0) if entry else MAX_JOB_RETRIES
+
+            if retry_count < MAX_JOB_RETRIES:
+                next_retry = retry_count + 1
+                logger.warning(
+                    "[Worker %s] Job %s failed (attempt %d/%d): %s — "
+                    "re-queuing in %ds",
+                    node.node_id, key, next_retry, MAX_JOB_RETRIES, e,
+                    JOB_RETRY_DELAY,
+                )
+                time.sleep(JOB_RETRY_DELAY)
+                with node._lock:
+                    entry = node.data_store.get(key)
+                    if entry:
+                        entry["status"] = PENDING
+                        entry["retry_count"] = next_retry
+                        entry["started_at"] = None
+                        entry["error"] = (
+                            f"attempt {next_retry} failed: {e}"
+                        )
+                        node.data_store[key] = entry
+            else:
+                with node._lock:
+                    entry = node.data_store.get(key)
+                    if entry:
+                        entry["status"] = FAILED
+                        entry["finished_at"] = time.time()
+                        entry["error"] = str(e)
+                        node.data_store[key] = entry
+                node.jobs_failed += 1
+                logger.warning(
+                    "[Worker %s] Job %s permanently failed after %d retries: %s",
+                    node.node_id, key, MAX_JOB_RETRIES, e,
+                )
+                try:
+                    from chord.metrics_registry import JOBS_TOTAL
+                    JOBS_TOTAL.labels(node_id=str(node.node_id), status="failed").inc()
+                except Exception:
+                    pass
 
 
 def _execute(job: dict):
