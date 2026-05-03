@@ -28,6 +28,8 @@ from storage.task_service import (
     TaskService,
     TaskValidationError,
 )
+from chord.worker_registry import WorkerRegistry
+from chord.conversation_agent import ConversationAgent, ScriptedAgent
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,28 @@ def create_app(node: ChordNode) -> Flask:
     app = Flask(__name__)
     app.config["node"] = node
     task_service = TaskService(node=node, transport=node._transport)
+
+    # Phase 2: live worker registry + conversational agent.  Storage is
+    # stubbed in this phase — actual DHT writes land in Phase 3.
+    # HEARTBEAT_TIMEOUT_S env var controls expiration; <=0 disables it entirely.
+    _hb_timeout = float(os.environ.get("HEARTBEAT_TIMEOUT_S", "10"))
+    worker_registry = WorkerRegistry(heartbeat_timeout_s=_hb_timeout)
+    app.config["worker_registry"] = worker_registry
+    _conv_agent_holder: Dict[str, ConversationAgent] = {}
+
+    def _get_conversation_agent():
+        if "agent" not in _conv_agent_holder:
+            base_url = f"http://{node.address}"
+            api_key = app.config.get("agent_key") or os.environ.get("ANTHROPIC_API_KEY")
+            mode = (os.environ.get("CONVERSATION_AGENT_MODE") or "").lower()
+            if mode == "scripted" or not api_key:
+                logger.info("[ConversationAgent] using ScriptedAgent (no API key set or mode=scripted)")
+                _conv_agent_holder["agent"] = ScriptedAgent(base_url=base_url)
+            else:
+                _conv_agent_holder["agent"] = ConversationAgent(
+                    api_key=api_key, base_url=base_url,
+                )
+        return _conv_agent_holder["agent"]
 
     # ------------------------------------------------------------------
     # Chord internal RPC endpoints
@@ -372,6 +396,10 @@ def create_app(node: ChordNode) -> Flask:
     @app.get("/")
     def dashboard():
         return send_from_directory(_STATIC_DIR, "index.html")
+
+    @app.get("/chat")
+    def chat_ui():
+        return send_from_directory(_STATIC_DIR, "chat.html")
 
     # ------------------------------------------------------------------
     # Dashboard API — ring topology
@@ -913,6 +941,108 @@ def create_app(node: ChordNode) -> Flask:
         deleted = task_service.delete_replica_local(task_key)
         return jsonify({"ok": True, "deleted": deleted, "task_key": task_key})
 
+    # ------------------------------------------------------------------
+    # Phase 2 — Frontend / Conversational Agent endpoints
+    #
+    # These are additive and DO NOT touch the existing /tasks/* routes.
+    # Storage for /createTask and /getStatus is stubbed in this phase;
+    # actual DHT writes land in Phase 3.
+    # ------------------------------------------------------------------
+
+    _VALID_TASK_TYPES = {"SCRIPT", "BINARY"}
+
+    @app.post("/workers/heartbeat")
+    def workers_heartbeat():
+        body = request.get_json(silent=True) or {}
+        worker_id = body.get("worker_id")
+        if not worker_id:
+            return jsonify({"ok": False, "error": "worker_id required"}), 422
+        worker_registry.heartbeat(worker_id)
+        return jsonify({"ok": True})
+
+    @app.get("/workers/live")
+    def workers_live():
+        return jsonify({"live_workers": worker_registry.live_workers()})
+
+    @app.post("/createTask")
+    def create_task_v2():
+        body = request.get_json(silent=True) or {}
+        task_id = body.get("task_id")
+        task_details = body.get("task_details") or {}
+        provided_worker = body.get("worker_id")
+
+        if not task_id:
+            return jsonify({"message": "Task rejected", "reason": "task_id required"}), 422
+
+        task_type = task_details.get("task_type")
+        if task_type not in _VALID_TASK_TYPES:
+            return jsonify({
+                "message": "Task rejected",
+                "reason": f"task_details.task_type must be one of {sorted(_VALID_TASK_TYPES)}",
+            }), 422
+        if not isinstance(task_details, dict):
+            return jsonify({"message": "Task rejected", "reason": "task_details must be an object"}), 422
+
+        if provided_worker:
+            worker_id = provided_worker
+            assigned_by = "user"
+        else:
+            worker_id = worker_registry.round_robin_assign()
+            if worker_id is None:
+                return jsonify({
+                    "message": "Task rejected",
+                    "reason": "no live workers available for auto-assignment",
+                }), 503
+            assigned_by = "frontend"
+
+        # Phase 2: storage is stubbed.  Log the would-be writes; do NOT touch
+        # the DHT.  Phase 3 wires this to HT1 + HT2 with atomic acceptance.
+        logger.info(
+            "[createTask][stub] task_id=%s worker_id=%s assigned_by=%s "
+            "task_type=%s path=%s",
+            task_id, worker_id, assigned_by,
+            task_type, task_details.get("path", ""),
+        )
+
+        return jsonify({
+            "message": "Task accepted",
+            "task_id": task_id,
+            "worker_id": worker_id,
+            "assigned_by": assigned_by,
+        })
+
+    @app.get("/getStatus/<task_id>")
+    def get_status_v2(task_id):
+        # Phase 2 stub: always return PENDING.  Phase 5 wires the real lookup.
+        return jsonify({
+            "task_id": task_id,
+            "status": "PENDING",
+            "result": None,
+        })
+
+    @app.post("/agent/chat")
+    def agent_chat():
+        body = request.get_json(silent=True) or {}
+        message = body.get("message")
+        history = body.get("history") or []
+        session_id = body.get("session_id")
+
+        if not message:
+            return jsonify({"ok": False, "error": "message required"}), 422
+        if not isinstance(history, list):
+            return jsonify({"ok": False, "error": "history must be an array"}), 422
+
+        try:
+            agent = _get_conversation_agent()
+            result = agent.chat(history=history, message=message, session_id=session_id)
+            return jsonify(result)
+        except RuntimeError as exc:
+            # Anthropic key missing or similar config error
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        except Exception as exc:
+            logger.exception("[agent/chat] failed")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
     return app
 
 
@@ -1214,6 +1344,7 @@ def start_node(host: str, port: int, known_address: str = None,
 
     app = create_app(node)
     app.config["agent"] = agent
+    app.config["agent_key"] = agent_key  # used by Phase 2 ConversationAgent
 
     node.join(known_address)
 
