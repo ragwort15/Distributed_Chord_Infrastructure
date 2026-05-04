@@ -347,9 +347,14 @@ class ScriptedAgent:
             r = requests.post(f"{self.base_url}/createTask", json=payload, timeout=5)
             body = r.json()
             action = {"type": "create_task", "input": payload, "result": body}
-            if r.status_code == 200 and body.get("message") == "Task accepted":
+            # Phase 3: /createTask returns 201 for new tasks, 200 for idempotent
+            # duplicates ("Task already exists"). Treat both as success.
+            if r.status_code in (200, 201) and body.get("message") in (
+                "Task accepted", "Task already exists",
+            ):
+                verb = "Task accepted" if body["message"] == "Task accepted" else "Task already existed"
                 reply = (
-                    f"✓ Task accepted. ID: {body['task_id']}, "
+                    f"✓ {verb}. ID: {body['task_id']}, "
                     f"assigned to {body['worker_id']} (by {body['assigned_by']})."
                 )
             else:

@@ -225,3 +225,71 @@ class HttpTransport:
         )
         r.raise_for_status()
         return True
+
+    # Phase 3: HT1 result_details replica RPCs
+    def put_result_replica(self, address: str, task_id: str, record: dict) -> bool:
+        r = _post(
+            f"http://{address}/internal/results/replica/{task_id}",
+            json=record,
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return True
+
+    def get_result_replica(self, address: str, task_id: str) -> Optional[dict]:
+        r = _get(
+            f"http://{address}/internal/results/replica/{task_id}",
+            timeout=RPC_TIMEOUT,
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json()
+        return data.get("record")
+
+    def delete_result_replica(self, address: str, task_id: str) -> bool:
+        r = _delete(
+            f"http://{address}/internal/results/replica/{task_id}",
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return True
+
+    # Phase 3: HT2 worker_assignment replica RPCs
+    def put_worker_replica(self, address: str, worker_id: str, record: dict) -> bool:
+        r = _post(
+            f"http://{address}/internal/workers/replica/{worker_id}",
+            json=record,
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return True
+
+    def get_worker_replica(self, address: str, worker_id: str) -> Optional[dict]:
+        r = _get(
+            f"http://{address}/internal/workers/replica/{worker_id}",
+            timeout=RPC_TIMEOUT,
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        data = r.json()
+        return data.get("record")
+
+    def delete_worker_replica(self, address: str, worker_id: str) -> bool:
+        r = _delete(
+            f"http://{address}/internal/workers/replica/{worker_id}",
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return True
+
+    # Phase 3: locked append RPC for HT2 (read-modify-write on primary)
+    def append_worker_assignment(self, address: str, worker_id: str, task_id: str) -> dict:
+        r = _post(
+            f"http://{address}/internal/workers/append/{worker_id}",
+            json={"task_id": task_id},
+            timeout=RPC_TIMEOUT,
+        )
+        r.raise_for_status()
+        return r.json()
