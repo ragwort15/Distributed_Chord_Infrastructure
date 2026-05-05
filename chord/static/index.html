@@ -766,7 +766,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
         <!-- Ring canvas -->
         <div class="ring-panel">
           <div class="ring-toolbar">
-            <label class="check-label"><input type="checkbox" id="tog-fingers"> Finger table</label>
+            <label class="check-label" title="Each Chord node keeps an M-entry routing table where finger[i] = successor(n + 2ⁱ mod 2ᴹ). These shortcuts let lookups jump across the ring in O(log N) hops."><input type="checkbox" id="tog-fingers"> Finger table</label>
             <label class="check-label"><input type="checkbox" id="tog-ids" checked> Node IDs</label>
             <label class="check-label"><input type="checkbox" id="tog-ports"> Port labels</label>
             <div style="flex:1"></div>
@@ -811,109 +811,45 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
             <div class="leg"><div class="leg-dot" style="background:var(--ok)"></div>Successor</div>
             <div class="leg"><div class="leg-dot" style="background:var(--warn)"></div>Routing hop</div>
             <div class="leg"><div class="leg-dot" style="background:var(--danger)"></div>Failed</div>
-            <div class="leg"><div class="leg-dot" style="background:#8b5cf6"></div>Finger</div>
+            <div class="leg" title="finger[i] = successor(n + 2ⁱ mod 2ᴹ)"><div class="leg-dot" style="background:#a78bfa"></div>Finger</div>
             <div class="leg"><div class="leg-dot" style="border:2px solid #fff;background:transparent;width:10px;height:10px"></div>This node</div>
             <div class="hop-badge hidden" id="hop-badge">⇢ <span id="hop-path">—</span> · <b id="hop-cnt">0</b> hop(s)</div>
+          </div>
+          <div id="finger-help" style="display:none;margin:6px 14px 10px;padding:8px 12px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.25);border-left:3px solid #a78bfa;border-radius:6px;font-size:11.5px;line-height:1.6;color:var(--tx-2)">
+            <b style="color:#a78bfa">Finger table:</b> each Chord node keeps an <i>M</i>-entry routing table where
+            <code style="font-family:var(--mono);background:var(--bg-1);padding:1px 5px;border-radius:3px;color:var(--warn)">finger[i] = successor(n + 2ⁱ mod 2ᴹ)</code>.
+            These purple shortcuts let lookups jump across the ring in <b>O(log N)</b> hops instead of walking the successor chain one node at a time.
           </div>
         </div>
 
         <!-- Right sidebar: submit + stats -->
         <div class="ring-sidebar" style="overflow-y:auto;padding-bottom:8px">
 
-          <!-- Quick stats -->
-          <div class="grid g2" style="gap:10px">
-            <div class="stat-card ok">
-              <div class="stat-label">Ring Size</div>
-              <div class="stat-value" id="rs-ring-size">—</div>
-              <div class="stat-meta">active nodes</div>
-            </div>
-            <div class="stat-card info">
-              <div class="stat-label">Queue Depth</div>
-              <div class="stat-value" id="rs-queue">—</div>
-              <div class="stat-meta">pending jobs</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-label">Jobs Done</div>
-              <div class="stat-value" id="rs-done">—</div>
-              <div class="stat-meta">total completed</div>
-            </div>
-            <div class="stat-card danger">
-              <div class="stat-label">Failed</div>
-              <div class="stat-value" id="rs-fail">—</div>
-              <div class="stat-meta">total failed</div>
-            </div>
-          </div>
+          <!-- Quick stats — single button opens popup -->
+          <button type="button" class="btn btn-primary" id="btn-stats"
+            style="width:100%;justify-content:center;gap:8px;font-weight:600">
+            📊 View Stats
+            <span style="opacity:.75;font-weight:500;font-size:11.5px"
+              id="btn-stats-summary">— · —</span>
+          </button>
 
-          <!-- Workers panel -->
+          <!-- Workers panel (single toggle button — status + scores) -->
           <div class="card">
-            <div class="card-header">
-              <div class="card-icon" style="background:rgba(16,185,129,.15)">👷</div>
-              <div>
-                <div class="card-title">Workers</div>
-                <div class="card-sub" id="wk-summary">— live · — idle · — dead</div>
+            <button type="button" id="wk-toggle" aria-expanded="false"
+              style="width:100%;background:none;border:none;padding:0;cursor:pointer;text-align:left;color:inherit;font:inherit">
+              <div class="card-header" style="cursor:pointer">
+                <div class="card-icon" style="background:rgba(16,185,129,.15)">👷</div>
+                <div style="flex:1">
+                  <div class="card-title">Workers</div>
+                  <div class="card-sub" id="wk-summary">click to view status & scores</div>
+                </div>
+                <span id="wk-caret" style="font-size:14px;color:var(--tx-3);transition:transform .15s">▸</span>
               </div>
-            </div>
-            <div class="card-body" style="padding:8px 12px">
-              <div id="wk-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto">
+            </button>
+            <div class="card-body" id="wk-body" style="padding:8px 12px;display:none">
+              <div id="wk-list" style="display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto">
                 <div class="empty-state" style="padding:16px"><div class="icon">👷</div><p>No workers yet</p></div>
               </div>
-            </div>
-          </div>
-
-          <!-- Submit job -->
-          <div class="card">
-            <div class="card-header">
-              <div class="card-icon" style="background:rgba(99,102,241,.15)">▶</div>
-              <div>
-                <div class="card-title">Submit Job</div>
-                <div class="card-sub">Routed by AI placement agent</div>
-              </div>
-            </div>
-            <div class="card-body">
-              <form id="job-form" autocomplete="off" style="display:flex;flex-direction:column;gap:10px">
-                <div class="field">
-                  <label class="field-label">Job Type</label>
-                  <select class="inp" id="jtype">
-                    <option value="echo">echo — reflect payload</option>
-                    <option value="sleep">sleep — delay N seconds</option>
-                    <option value="compute">compute — sum 0..N (CPU)</option>
-                  </select>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr auto;gap:10px">
-                  <div class="field">
-                    <label class="field-label">Target Node</label>
-                    <select class="inp" id="jtarget">
-                      <option value="">Auto (AI agent)</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label class="field-label" title="Hint to the agent — how many copies to place across different nodes. Not stored on the job itself.">Replicas ⓘ</label>
-                    <input type="number" class="inp" id="jreplicas" value="1" min="1" max="10" style="width:64px;text-align:center">
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">Payload JSON</label>
-                  <textarea class="inp inp-mono" id="jpayload" rows="2">{"message":"hello"}</textarea>
-                </div>
-                <button type="submit" class="btn btn-primary" id="btn-submit" style="width:100%;justify-content:center">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                  Submit Job
-                </button>
-                <div class="feedback info" id="submit-fb"></div>
-              </form>
-            </div>
-          </div>
-
-          <!-- Recent jobs mini list -->
-          <div class="card" style="flex:1">
-            <div class="card-header">
-              <div class="card-title">Recent Jobs</div>
-              <div class="card-action">
-                <button class="btn btn-ghost btn-xs" onclick="navigate('jobs')">View all →</button>
-              </div>
-            </div>
-            <div id="mini-jobs-list">
-              <div class="empty-state" style="padding:24px"><div class="icon">📋</div><p>No jobs yet</p></div>
             </div>
           </div>
 
@@ -1422,6 +1358,42 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 </div>
 
 <!-- ═══════════════════════ ADD NODE MODAL ═══════════════════════ -->
+<div class="overlay hidden" id="stats-modal-overlay">
+  <div class="modal" style="width:min(560px,95vw)">
+    <div class="modal-head">
+      <h3>Cluster Stats</h3>
+      <button class="btn btn-ghost btn-icon" id="btn-close-stats" style="margin-left:auto">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="grid g2" style="gap:10px">
+        <div class="stat-card ok">
+          <div class="stat-label">Ring Size</div>
+          <div class="stat-value" id="rs-ring-size">—</div>
+          <div class="stat-meta">active nodes</div>
+        </div>
+        <div class="stat-card info">
+          <div class="stat-label">Queue Depth</div>
+          <div class="stat-value" id="rs-queue">—</div>
+          <div class="stat-meta">pending jobs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Jobs Done</div>
+          <div class="stat-value" id="rs-done">—</div>
+          <div class="stat-meta">total completed</div>
+        </div>
+        <div class="stat-card danger">
+          <div class="stat-label">Failed</div>
+          <div class="stat-value" id="rs-fail">—</div>
+          <div class="stat-meta">total failed</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="btn-close-stats2">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay hidden" id="add-modal-overlay">
   <div class="modal" style="width:440px">
     <div class="modal-head">
@@ -1644,11 +1616,11 @@ function renderRing(){
 
     // Finger lines
     if(showFin){
-      const g=se('g',{opacity:.18});
+      const g=se('g',{opacity:.65});
       for(const n of nodes){
         for(const f of(n.fingers||[])){
           if(f.node_id==null||f.node_id===n.node_id)continue;
-          g.appendChild(se('path',{d:lineD(n.node_id,f.node_id),fill:'none',stroke:'#8b5cf6','stroke-width':1,'stroke-dasharray':'5,4'}));
+          g.appendChild(se('path',{d:lineD(n.node_id,f.node_id),fill:'none',stroke:'#a78bfa','stroke-width':1.75,'stroke-dasharray':'6,4','stroke-linecap':'round'}));
         }
       }
       svg.appendChild(g);
@@ -2271,7 +2243,7 @@ function updateAgentChart(entries){
    JOB SUBMISSION
 ═══════════════════════════════════════════════════════════════════ */
 const payloadDefaults={echo:'{"message":"hello"}',sleep:'{"seconds":2}',compute:'{"n":10000}'};
-document.getElementById('jtype').addEventListener('change',function(){
+document.getElementById('jtype')?.addEventListener('change',function(){
   document.getElementById('jpayload').value=payloadDefaults[this.value]||'{}';
 });
 
@@ -2289,10 +2261,17 @@ function setFb(id,msg,type='info'){
   const closeBtn= document.getElementById('btn-close-job-modal');
 
   function openModal(){
-    // Sync target-node options from the ring sidebar select
-    const src = document.getElementById('jtarget');
+    // Populate target-node options directly from the ring (sidebar form was removed)
     const dst = document.getElementById('jtarget-modal');
-    dst.innerHTML = src.innerHTML;
+    const cur = dst.value;
+    dst.innerHTML = '<option value="">Auto (AI agent)</option>';
+    for(const nd of (ring.nodes||[])){
+      const o = document.createElement('option');
+      o.value = nd.address;
+      o.textContent = `Node ${nd.node_id} — ${nd.address}`;
+      dst.appendChild(o);
+    }
+    if(cur) dst.value = cur;
     modal.classList.remove('hidden');
   }
   function closeModal(){ modal.classList.add('hidden'); }
@@ -2342,7 +2321,7 @@ function setFb(id,msg,type='info'){
   });
 })();
 
-document.getElementById('job-form').addEventListener('submit',async e=>{
+document.getElementById('job-form')?.addEventListener('submit',async e=>{
   e.preventDefault();
   const btn=document.getElementById('btn-submit');
   const type=document.getElementById('jtype').value;
@@ -2460,7 +2439,7 @@ rmBtn.addEventListener('click',async()=>{
 });
 
 // Toggles
-document.getElementById('tog-fingers').addEventListener('change',function(){showFin=this.checked;renderRing();});
+document.getElementById('tog-fingers').addEventListener('change',function(){showFin=this.checked;document.getElementById('finger-help').style.display=this.checked?'block':'none';renderRing();});
 document.getElementById('tog-ids').addEventListener('change',function(){showIds=this.checked;renderRing();});
 document.getElementById('tog-ports').addEventListener('change',function(){showPorts=this.checked;renderRing();});
 
@@ -2968,34 +2947,113 @@ document.getElementById('node-modal-overlay').addEventListener('click',e=>{if(e.
 document.getElementById('add-modal-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.classList.add('hidden');});
 
 /* ═══════════════════════════════════════════════════════════════════
-   WORKERS PANEL  (Phase 2/4 worker registry — live/idle/busy/dead)
+   STATS MODAL  (Ring Size · Queue Depth · Jobs Done · Failed)
 ═══════════════════════════════════════════════════════════════════ */
+(function(){
+  const overlay = document.getElementById('stats-modal-overlay');
+  const open = ()=>overlay.classList.remove('hidden');
+  const close = ()=>overlay.classList.add('hidden');
+  document.getElementById('btn-stats')?.addEventListener('click',open);
+  document.getElementById('btn-close-stats')?.addEventListener('click',close);
+  document.getElementById('btn-close-stats2')?.addEventListener('click',close);
+  overlay.addEventListener('click',e=>{if(e.target===e.currentTarget)close();});
+})();
+function refreshStatsButton(){
+  const sum = document.getElementById('btn-stats-summary'); if(!sum) return;
+  const ring = document.getElementById('rs-ring-size')?.textContent || '—';
+  const queue = document.getElementById('rs-queue')?.textContent || '—';
+  const done = document.getElementById('rs-done')?.textContent || '—';
+  const fail = document.getElementById('rs-fail')?.textContent || '—';
+  sum.textContent = `ring ${ring} · queue ${queue} · done ${done} · fail ${fail}`;
+}
+setInterval(refreshStatsButton, 2000);
+
+/* ═══════════════════════════════════════════════════════════════════
+   WORKERS PANEL  (status + Phase 6 score breakdown — single toggle)
+═══════════════════════════════════════════════════════════════════ */
+(function(){
+  const btn = document.getElementById('wk-toggle');
+  const body = document.getElementById('wk-body');
+  const caret = document.getElementById('wk-caret');
+  if(btn) btn.addEventListener('click',()=>{
+    const open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : 'block';
+    caret.style.transform = open ? 'rotate(0deg)' : 'rotate(90deg)';
+    btn.setAttribute('aria-expanded', String(!open));
+    if(!open) pollWorkers();
+  });
+})();
+
 async function pollWorkers(){
   try{
-    const r = await fetch('/workers/status', {cache:'no-store'});
-    if(!r.ok) return;
-    const d = await r.json();
-    const c = d.counts || {};
+    const [sRes, mRes] = await Promise.all([
+      fetch('/workers/status', {cache:'no-store'}),
+      fetch('/debug/worker-metrics', {cache:'no-store'}),
+    ]);
+    if(!sRes.ok) return;
+    const status = await sRes.json();
+    const metrics = mRes.ok ? await mRes.json() : {weights:{},workers:[]};
+    const c = status.counts || {};
     document.getElementById('wk-summary').textContent =
       `${c.live||0} live · ${c.idle||0} idle · ${c.busy||0} busy · ${c.dead||0} dead`;
+
     const list = document.getElementById('wk-list');
-    if(!d.workers || !d.workers.length){
+    if(!status.workers || !status.workers.length){
       list.innerHTML = '<div class="empty-state" style="padding:16px"><div class="icon">👷</div><p>No workers yet</p></div>';
       return;
     }
+
+    const w = metrics.weights || {load:0.5, latency:0.3, availability:0.2, latency_normalization_ms:100};
+    const byId = Object.fromEntries((metrics.workers||[]).map(x=>[x.worker_id,x]));
+    const liveSorted = (metrics.workers||[]).filter(x=>x.is_live);  // already sorted desc by score
+    const bestId = liveSorted.length ? liveSorted[0].worker_id : null;
+
     const colorFor = s => s==='busy' ? '#10b981' : s==='idle' ? '#6366f1' : '#ef4444';
-    list.innerHTML = d.workers.map(w => {
-      const col = colorFor(w.status);
-      const right = w.status === 'dead'
-        ? `dead · last seen ${Math.round(w.last_seen_seconds_ago)}s ago`
-        : `${w.pending} pending · ${w.task_count} total`;
-      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,.025);border-radius:6px;font-size:12px;border-left:2px solid ${col}">
-        <div style="display:flex;align-items:center;gap:8px;min-width:0">
-          <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${col};flex-shrink:0"></span>
-          <span style="font-family:monospace;color:var(--tx-1);overflow:hidden;text-overflow:ellipsis">${w.worker_id}</span>
-          <span style="color:${col};text-transform:uppercase;font-size:9.5px;font-weight:700;letter-spacing:.5px">${w.status}</span>
+    const fmt = n => (n>=0?'+':'') + n.toFixed(4);
+    const scoreRow = (label,val,col) =>
+      `<div style="display:flex;justify-content:space-between;font-family:monospace;font-size:11px;color:var(--tx-2)">
+         <span>${label}</span><span style="color:${col}">${fmt(val)}</span>
+       </div>`;
+
+    list.innerHTML = status.workers.map(wk => {
+      const col = colorFor(wk.status);
+      const meta = byId[wk.worker_id];
+      const isBest = wk.worker_id === bestId;
+      const border = isBest ? '#10b981' : 'rgba(255,255,255,.08)';
+      const bg     = isBest ? 'rgba(16,185,129,.06)' : 'rgba(255,255,255,.025)';
+      const badge  = isBest
+        ? '<span style="background:#10b981;color:#000;font-size:9.5px;font-weight:700;letter-spacing:.5px;padding:2px 6px;border-radius:4px">BEST CHOICE</span>'
+        : '';
+      const right = wk.status === 'dead'
+        ? `last seen ${Math.round(wk.last_seen_seconds_ago)}s ago`
+        : `${wk.pending} pending · ${wk.task_count} total`;
+      let scoreBlock = '';
+      if(meta && meta.is_live){
+        const loadC  = -meta.pending_tasks * w.load;
+        const latC   = -(meta.latency_ms / w.latency_normalization_ms) * w.latency;
+        const availC = meta.success_rate * w.availability;
+        scoreBlock = `
+          <div style="margin-top:8px;padding-top:8px;border-top:1px dashed rgba(255,255,255,.08)">
+            ${scoreRow(`pending ${meta.pending_tasks} × ${w.load}`, loadC, loadC<0?'#ef4444':'var(--tx-2)')}
+            ${scoreRow(`latency ${meta.latency_ms.toFixed(1)}ms / ${w.latency_normalization_ms} × ${w.latency}`, latC, latC<0?'#ef4444':'var(--tx-2)')}
+            ${scoreRow(`success ${(meta.success_rate*100).toFixed(0)}% × ${w.availability}`, availC, '#10b981')}
+            <div style="display:flex;justify-content:space-between;margin-top:6px;font-family:monospace;font-size:12px;font-weight:700">
+              <span style="color:var(--tx-1)">TOTAL SCORE</span>
+              <span style="color:${isBest?'#10b981':'var(--tx-1)'}">${fmt(meta.score)}</span>
+            </div>
+          </div>`;
+      }
+      return `<div style="padding:10px;background:${bg};border:1px solid ${border};border-left:3px solid ${col};border-radius:6px;font-size:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px;min-width:0">
+            <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${col};flex-shrink:0"></span>
+            <span style="font-family:monospace;color:var(--tx-1);font-weight:700">${wk.worker_id}</span>
+            <span style="color:${col};text-transform:uppercase;font-size:9.5px;font-weight:700;letter-spacing:.5px">${wk.status}</span>
+          </div>
+          ${badge}
         </div>
-        <span style="font-size:10.5px;color:var(--tx-3);font-family:monospace;flex-shrink:0">${right}</span>
+        <div style="margin-top:4px;font-size:10.5px;color:var(--tx-3);font-family:monospace">${right}</div>
+        ${scoreBlock}
       </div>`;
     }).join('');
   }catch(_){}
