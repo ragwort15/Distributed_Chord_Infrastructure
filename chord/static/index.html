@@ -570,6 +570,49 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 .jdot-claimed,.jdot-running{background:var(--info);animation:pulse-ring .8s infinite}
 .jdot-done{background:var(--ok)}
 .jdot-failed{background:var(--danger)}
+
+/* ─────────────────────────────────────────────────────────────
+   CHAT NAV ITEM
+───────────────────────────────────────────────────────────── */
+
+
+/* ─────────────────────────────────────────────────────────────
+   FLOATING CHAT BUTTON
+───────────────────────────────────────────────────────────── */
+.chat-fab{
+  position:fixed;bottom:28px;right:28px;z-index:9999;
+  width:52px;height:52px;border-radius:50%;
+  background:linear-gradient(135deg,var(--accent) 0%,var(--accent-dark) 100%);
+  box-shadow:0 4px 20px var(--accent-glow),0 2px 8px rgba(0,0,0,.5);
+  border:none;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:transform .2s,box-shadow .2s;
+  text-decoration:none;
+  animation:fab-breathe 3s ease-in-out infinite;
+}
+.chat-fab:hover{
+  transform:scale(1.12) translateY(-2px);
+  box-shadow:0 8px 28px var(--accent-glow),0 4px 12px rgba(0,0,0,.6);
+  animation:none;
+}
+.chat-fab svg{width:24px;height:24px;color:#fff;flex-shrink:0}
+.chat-fab-tooltip{
+  position:absolute;right:60px;
+  white-space:nowrap;
+  background:var(--bg-3);color:var(--tx-1);
+  font-size:11.5px;font-weight:600;
+  padding:5px 10px;border-radius:var(--r-sm);
+  border:1px solid var(--b2);
+  opacity:0;pointer-events:none;
+  transform:translateX(4px);
+  transition:opacity .18s,transform .18s;
+  box-shadow:var(--shadow-card);
+}
+.chat-fab:hover .chat-fab-tooltip{opacity:1;transform:translateX(0)}
+@keyframes fab-breathe{
+  0%,100%{box-shadow:0 4px 20px var(--accent-glow),0 2px 8px rgba(0,0,0,.5)}
+  50%{box-shadow:0 4px 28px rgba(99,102,241,.55),0 2px 8px rgba(0,0,0,.5)}
+}
 </style>
 </head>
 <body>
@@ -645,6 +688,20 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
       Fault Lab
       <span class="nav-badge" id="badge-faults"></span>
     </div>
+  </div>
+
+  <div class="nav-section">
+    <div class="nav-section-label">Assistant</div>
+    <a class="nav-item-chat" href="/chat" target="_blank" rel="noopener" title="Open AI Task Chat in new tab">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        <circle cx="9" cy="10" r=".8" fill="currentColor" stroke="none"/>
+        <circle cx="12" cy="10" r=".8" fill="currentColor" stroke="none"/>
+        <circle cx="15" cy="10" r=".8" fill="currentColor" stroke="none"/>
+      </svg>
+      AI Task Chat
+      <span class="nav-chat-badge">new</span>
+    </a>
   </div>
 
   <div class="sidebar-footer">
@@ -2713,5 +2770,16 @@ pollJobs();
 pollRequests();
 pollLogs();
 </script>
+
+<!-- ═══════════════════════ FLOATING CHAT BUTTON ═══════════════════════ -->
+<a class="chat-fab" href="/chat" target="_blank" rel="noopener" title="Open AI Task Chat">
+  <span class="chat-fab-tooltip">AI Task Chat</span>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+    <circle cx="9" cy="10" r=".9" fill="white" stroke="none"/>
+    <circle cx="12" cy="10" r=".9" fill="white" stroke="none"/>
+    <circle cx="15" cy="10" r=".9" fill="white" stroke="none"/>
+  </svg>
+</a>
 </body>
 </html>
