@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Chord Ring — Auto Demo</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #FAFAF5;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  padding: 12px 14px 8px;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+#ctrl-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+.phase-label-text {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  color: #9ca3af;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#phase-badges {
+  display: flex;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+.pbadge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1.5px solid #7c3aed;
+  color: #7c3aed;
+  background: transparent;
+  letter-spacing: 0.03em;
+  transition: background .2s, color .2s;
+  white-space: nowrap;
+  cursor: default;
+  flex-shrink: 0;
+}
+.pbadge.active {
+  background: #7c3aed;
+  color: #fff;
+}
+#pause-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1.5px solid #059669;
+  background: transparent;
+  color: #059669;
+  transition: all .18s;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#pause-btn:hover { background: #f0fdf4; }
+#pause-btn.paused { border-color: #dc2626; color: #dc2626; }
+#pause-btn.paused:hover { background: #fef2f2; }
+#canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+#info-panel {
+  flex-shrink: 0;
+  margin-top: 7px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: #f3f4f6;
+  border: 1.5px solid #e5e7eb;
+  min-height: 56px;
+  transition: background 0.4s;
+}
+.ip-tag {
+  display: inline-block;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 20px;
+  margin-bottom: 4px;
+}
+#info-body {
+  font-size: 11px;
+  color: #1f2937;
+  line-height: 1.55;
+}
+#info-body code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  background: #e5e7eb;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #111827;
+}
+.hop-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: #374151;
+  opacity: 0;
+  transition: opacity .3s;
+}
+.hop-row.show { opacity: 1; }
+.hop-num {
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 7.5px; font-weight: 700; color: #fff;
+  flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<div id="ctrl-bar">
+  <span class="phase-label-text">PHASE →</span>
+  <div id="phase-badges">
+    <span class="pbadge" data-idx="0">Finger Tables</span>
+    <span class="pbadge" data-idx="1">key: 55</span>
+    <span class="pbadge" data-idx="2">key: 142</span>
+    <span class="pbadge" data-idx="3">key: 175</span>
+    <span class="pbadge" data-idx="4">⟳ Heal</span>
+  </div>
+  <button id="pause-btn" onclick="togglePause()">⏸ Pause</button>
+</div>
+
+<div id="canvas-wrap">
+  <svg id="ring-svg" viewBox="-285 -220 590 430" preserveAspectRatio="xMidYMid meet"></svg>
+</div>
+
+<div id="info-panel">
+  <div class="ip-tag" id="ip-tag" style="background:#dbeafe;color:#1e40af">CHORD RING</div>
+  <div id="info-body">5 nodes · SHA-1 consistent hashing · O(log N) routing · self-healing</div>
+</div>
+
+<script>
+// ── Constants ────────────────────────────────────────────────────────────
+const M = 8, RING_MAX = 256, R = 175, NR = 23;
+const NODES = [
+  { id: 10,  label: 'Node A', color: '#2563eb' },
+  { id: 80,  label: 'Node B', color: '#7c3aed' },
+  { id: 142, label: 'Node C', color: '#db2777' },
+  { id: 160, label: 'Node D', color: '#d97706' },
+  { id: 200, label: 'Node E', color: '#059669' },
+];
+
+// ── Ring math ─────────────────────────────────────────────────────────────
+function findSuccessor(key, nodes) {
+  nodes = nodes || NODES;
+  var s = nodes.slice().sort(function(a,b){ return a.id-b.id; });
+  return s.find(function(n){ return n.id >= key; }) || s[0];
+}
+function buildFingers(node, nodes) {
+  nodes = nodes || NODES;
+  var f = [];
+  for (var i = 0; i < M; i++) {
+    var start = (node.id + Math.pow(2, i)) % RING_MAX;
+    f.push({ i: i, start: Math.round(start), succ: findSuccessor(start, nodes) });
+  }
+  return f;
+}
+function chordLookup(startNode, key, nodes) {
+  nodes = nodes || NODES;
+  var owner = findSuccessor(key, nodes);
+  var hops = [startNode];
+  if (startNode.id === owner.id) return hops;
+  var cur = startNode;
+  var visited = new Set([startNode.id]);
+  for (var step = 0; step < nodes.length + 3; step++) {
+    var fingers = buildFingers(cur, nodes);
+    var dk = (key - cur.id + RING_MAX) % RING_MAX;
+    var best = null, bestDist = 0;
+    fingers.forEach(function(f) {
+      var s = f.succ;
+      if (visited.has(s.id)) return;
+      var ds = (s.id - cur.id + RING_MAX) % RING_MAX;
+      if (ds > 0 && ds <= dk && ds > bestDist) { best = s; bestDist = ds; }
+    });
+    var nxt = best || findSuccessor((cur.id + 1) % RING_MAX, nodes);
+    if (!visited.has(nxt.id)) { hops.push(nxt); visited.add(nxt.id); }
+    cur = nxt;
+    if (cur.id === owner.id) break;
+  }
+  if (hops[hops.length - 1].id !== owner.id) hops.push(owner);
+  return hops;
+}
+NODES.forEach(function(n) { n.fingers = buildFingers(n); });
+
+// ── Geometry ──────────────────────────────────────────────────────────────
+function ang(id) { return (id / RING_MAX) * 2 * Math.PI - Math.PI / 2; }
+function npos(id) { var a = ang(id); return { x: R * Math.cos(a), y: R * Math.sin(a) }; }
+function edgePts(a, b) {
+  var pa = npos(a.id), pb = npos(b.id);
+  var dx = pb.x - pa.x, dy = pb.y - pa.y, d = Math.sqrt(dx*dx + dy*dy);
+  if (d < 1) return { x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y };
+  return { x1: pa.x+(dx/d)*NR, y1: pa.y+(dy/d)*NR,
+           x2: pb.x-(dx/d)*NR, y2: pb.y-(dy/d)*NR };
+}
+function hexRgba(hex, a) {
+  var r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return 'rgba('+r+','+g+','+b+','+a+')';
+}
+
+// ── SVG Setup ─────────────────────────────────────────────────────────────
+var svg = d3.select('#ring-svg');
+var defs = svg.append('defs');
+
+function mkArrow(id, color) {
+  defs.append('marker').attr('id', id)
+    .attr('viewBox','0 0 10 10').attr('refX',8).attr('refY',5)
+    .attr('markerWidth',6).attr('markerHeight',6).attr('orient','auto')
+    .append('path').attr('d','M 0 0 L 10 5 L 0 10 z').attr('fill', color);
+}
+mkArrow('arr-blue',   '#2563eb');
+mkArrow('arr-green',  '#16a34a');
+mkArrow('arr-red',    '#dc2626');
+mkArrow('arr-purple', '#8b5cf6');
+mkArrow('arr-cyan',   '#0891b2');
+
+var tickL   = svg.append('g');
+var fingerL = svg.append('g');
+var arrowL  = svg.append('g');
+var keyL    = svg.append('g');
+var nodeL   = svg.append('g');
+var overL   = svg.append('g');
+
+// Ring circle
+svg.append('circle').attr('r', R).attr('fill','none')
+  .attr('stroke','#d1d5db').attr('stroke-width',1.5).attr('stroke-dasharray','6 4');
+
+// Tick marks every 16 positions
+for (var k = 0; k < RING_MAX; k += 16) {
+  var a = ang(k), r1 = R+5, r2 = R-5;
+  tickL.append('line')
+    .attr('x1',r1*Math.cos(a)).attr('y1',r1*Math.sin(a))
+    .attr('x2',r2*Math.cos(a)).attr('y2',r2*Math.sin(a))
+    .attr('stroke','#e5e7eb').attr('stroke-width',1);
+  if (k % 64 === 0) {
+    tickL.append('text')
+      .attr('x',(R+18)*Math.cos(a)).attr('y',(R+18)*Math.sin(a))
+      .attr('text-anchor','middle').attr('dominant-baseline','middle')
+      .attr('font-size','8px').attr('fill','#9ca3af').text(k);
+  }
+}
+
+// Center label
+svg.append('text').attr('y','-11').attr('text-anchor','middle')
+  .attr('font-size','9px').attr('font-weight','700').attr('letter-spacing','0.1em')
+  .attr('fill','#6b7280').text('CHORD RING');
+svg.append('text').attr('y','4').attr('text-anchor','middle')
+  .attr('font-size','7.5px').attr('fill','#9ca3af').text('8-bit · 0..255');
+
+// ── Draw nodes ────────────────────────────────────────────────────────────
+function renderNodes() {
+  nodeL.selectAll('.node-g').remove();
+  NODES.forEach(function(n) {
+    var p = npos(n.id);
+    var g = nodeL.append('g').attr('class','node-g').attr('data-id', n.id);
+    g.append('circle').attr('class','ng').attr('cx',p.x).attr('cy',p.y).attr('r',NR+8)
+      .attr('fill',n.color).attr('opacity',0);
+    g.append('circle').attr('class','nb').attr('cx',p.x).attr('cy',p.y).attr('r',NR)
+      .attr('fill','#ffffff').attr('stroke',n.color).attr('stroke-width',2.5);
+    g.append('text').attr('x',p.x).attr('y',p.y-4)
+      .attr('text-anchor','middle').attr('dominant-baseline','middle')
+      .attr('font-size','10.5px').attr('font-weight','700').attr('fill','#1f2937')
+      .attr('pointer-events','none').text(n.id);
+    g.append('text').attr('x',p.x).attr('y',p.y+8)
+      .attr('text-anchor','middle').attr('dominant-baseline','middle')
+      .attr('font-size','8.5px').attr('fill','#4b5563')
+      .attr('pointer-events','none').text(n.label);
+    var ta = ang(n.id);
+    nodeL.append('line')
+      .attr('x1',(R+7)*Math.cos(ta)).attr('y1',(R+7)*Math.sin(ta))
+      .attr('x2',(R-7)*Math.cos(ta)).attr('y2',(R-7)*Math.sin(ta))
+      .attr('stroke',n.color).attr('stroke-width',2).attr('opacity',0.5);
+  });
+}
+renderNodes();
+
+// ── Highlight / reset nodes ───────────────────────────────────────────────
+var MODE_COLOR = { entry:'#dc2626', transit:'#2563eb', owner:'#16a34a', finger:'#7c3aed' };
+
+function hiNode(node, mode) {
+  var c = MODE_COLOR[mode] || node.color;
+  var g = svg.select('.node-g[data-id="'+node.id+'"]');
+  g.select('.ng').transition().duration(200).attr('opacity',0.16).attr('fill',c);
+  g.select('.nb').transition().duration(200)
+    .attr('fill', hexRgba(c, 0.14)).attr('stroke',c).attr('stroke-width',3.5);
+}
+function rstNode(node) {
+  var g = svg.select('.node-g[data-id="'+node.id+'"]');
+  g.select('.ng').transition().duration(300).attr('opacity',0);
+  g.select('.nb').transition().duration(300)
+    .attr('fill','#ffffff').attr('stroke',node.color).attr('stroke-width',2.5);
+}
+function resetAll() {
+  arrowL.selectAll('*').remove();
+  fingerL.selectAll('*').remove();
+  keyL.selectAll('*').remove();
+  overL.selectAll('*').remove();
+  nodeL.selectAll('.temp-node').remove();
+  NODES.forEach(rstNode);
+}
+
+// ── Arrow helpers ─────────────────────────────────────────────────────────
+function drawDash(from, to, color) {
+  var e = edgePts(from, to);
+  var sel = arrowL.append('line')
+    .attr('x1',e.x1).attr('y1',e.y1).attr('x2',e.x2).attr('y2',e.y2)
+    .attr('stroke',color).attr('stroke-width',2.5)
+    .attr('stroke-dasharray','8 5').attr('opacity',0);
+  sel.transition().duration(300).attr('opacity',0.9);
+  return sel;
+}
+function drawArr(from, to, color, mid) {
+  var e = edgePts(from, to);
+  arrowL.append('line')
+    .attr('x1',e.x1).attr('y1',e.y1).attr('x2',e.x2).attr('y2',e.y2)
+    .attr('stroke',color).attr('stroke-width',2.5)
+    .attr('marker-end','url(#'+mid+')').attr('opacity',0)
+    .transition().duration(300).attr('opacity',1);
+}
+
+// ── Finger curves (dashed shortcut lines) ──────────────────────────────────
+function showFingerLines(node) {
+  var p = npos(node.id);
+  var seen = new Set();
+  node.fingers.forEach(function(f) {
+    var s = f.succ;
+    if (s.id === node.id || seen.has(s.id)) return;
+    seen.add(s.id);
+    var sp = npos(s.id);
+    var mx = (p.x+sp.x)/2*0.5, my = (p.y+sp.y)/2*0.5;
+    fingerL.append('path')
+      .attr('d','M'+p.x+','+p.y+'Q'+mx+','+my+','+sp.x+','+sp.y)
+      .attr('fill','none').attr('stroke','#8b5cf6').attr('stroke-width',1.5)
+      .attr('stroke-dasharray','5 3').attr('marker-end','url(#arr-purple)')
+      .attr('opacity',0).transition().duration(350).attr('opacity',0.6);
+  });
+}
+
+// ── Finger table box next to each node ────────────────────────────────────
+// Side per node: right = box to the right, left = box to the left, above = box above
+var FT_SIDE = { 10:'right', 80:'right', 142:'left', 160:'left', 200:'above' };
+var FT_BW   = { 10:108,    80:108,     142:112,    160:112,    200:108 };
+
+function drawFTBox(node) {
+  var p   = npos(node.id);
+  var side = FT_SIDE[node.id] || 'right';
+  var bw   = FT_BW[node.id]  || 108;
+  var pad  = 7, lh = 12;
+
+  // Unique successors
+  var seen = new Set(), entries = [];
+  node.fingers.forEach(function(f) {
+    if (!seen.has(f.succ.id)) {
+      seen.add(f.succ.id);
+      entries.push(f);
+    }
+  });
+
+  var bh = pad + 12 + 3 + entries.length * lh + pad; // top-pad+title+sep+rows+bot-pad
+  var gap = NR + 10;
+  var bx, by;
+
+  if (side === 'right') {
+    bx = p.x + gap;
+    by = p.y - bh / 2;
+  } else if (side === 'left') {
+    bx = p.x - gap - bw;
+    by = p.y - bh / 2;
+  } else { // above
+    bx = p.x - bw / 2;
+    by = p.y - gap - bh;
+  }
+
+  var g = fingerL.append('g').attr('class','ft-box').attr('opacity', 0);
+
+  // Shadow / background rect
+  g.append('rect')
+    .attr('x', bx).attr('y', by).attr('width', bw).attr('height', bh)
+    .attr('rx', 5).attr('fill', '#faf5ff')
+    .attr('stroke', '#8b5cf6').attr('stroke-width', 1.5);
+
+  // Connector line from box edge to node circle
+  var lx1, ly1, lx2, ly2;
+  if (side === 'right') {
+    lx1 = bx; ly1 = by + bh/2; lx2 = p.x + NR + 2; ly2 = p.y;
+  } else if (side === 'left') {
+    lx1 = bx + bw; ly1 = by + bh/2; lx2 = p.x - NR - 2; ly2 = p.y;
+  } else {
+    lx1 = p.x; ly1 = by + bh; lx2 = p.x; ly2 = p.y - NR - 2;
+  }
+  g.append('line')
+    .attr('x1',lx1).attr('y1',ly1).attr('x2',lx2).attr('y2',ly2)
+    .attr('stroke','#8b5cf6').attr('stroke-width',1)
+    .attr('stroke-dasharray','3 2').attr('opacity',0.7);
+
+  // Title
+  g.append('text')
+    .attr('x', bx + pad).attr('y', by + pad + 9)
+    .attr('font-size','8px').attr('font-weight','700')
+    .attr('fill','#5b21b6').attr('letter-spacing','0.06em')
+    .text('FINGER TABLE');
+
+  // Separator
+  g.append('line')
+    .attr('x1', bx + pad).attr('y1', by + pad + 13)
+    .attr('x2', bx + bw - pad).attr('y2', by + pad + 13)
+    .attr('stroke','#ddd6fe').attr('stroke-width',0.75);
+
+  // Entry rows
+  entries.forEach(function(f, j) {
+    var ty = by + pad + 13 + 4 + j * lh + 9;
+    var shortLabel = f.succ.label.replace('Node ','');
+    g.append('text')
+      .attr('x', bx + pad).attr('y', ty)
+      .attr('font-size','8px').attr('fill','#374151')
+      .style('font-family','monospace')
+      .text('2^​' + f.i + ' → ' + shortLabel + ' (' + f.succ.id + ')');
+  });
+
+  g.transition().duration(350).attr('opacity', 1);
+  return g;
+}
+
+// ── Key marker ────────────────────────────────────────────────────────────
+function drawKey(key) {
+  keyL.selectAll('*').remove();
+  var a = ang(key), kx = R*Math.cos(a), ky = R*Math.sin(a), ds = 9;
+  keyL.append('polygon')
+    .attr('points',kx+','+(ky-ds)+' '+(kx+ds)+','+ky+' '+kx+','+(ky+ds)+' '+(kx-ds)+','+ky)
+    .attr('fill','#7c3aed').attr('stroke','white').attr('stroke-width',1.5)
+    .attr('opacity',0).transition().duration(400).attr('opacity',1);
+  var lx = (R+25)*Math.cos(a), ly = (R+25)*Math.sin(a);
+  keyL.append('text')
+    .attr('x',lx).attr('y',ly).attr('text-anchor','middle').attr('dominant-baseline','middle')
+    .attr('font-size','9.5px').attr('font-weight','700').attr('fill','#7c3aed')
+    .attr('opacity',0).text('key:'+key)
+    .transition().duration(400).attr('opacity',1);
+}
+
+// ── Info panel helpers ────────────────────────────────────────────────────
+function setPanel(tagText, tagBg, tagColor, bodyHTML, panelBg) {
+  document.getElementById('info-panel').style.background = panelBg || '#f3f4f6';
+  var tag = document.getElementById('ip-tag');
+  tag.textContent = tagText; tag.style.background = tagBg; tag.style.color = tagColor;
+  document.getElementById('info-body').innerHTML = bodyHTML;
+}
+
+var hopBox = null;
+function startHopBox(header) {
+  document.getElementById('info-body').innerHTML = header;
+  var d = document.createElement('div');
+  d.style.marginTop = '3px';
+  document.getElementById('info-body').appendChild(d);
+  hopBox = d;
+}
+function addHop(num, node, label, color) {
+  if (!hopBox) return;
+  var el = document.createElement('div');
+  el.className = 'hop-row';
+  el.innerHTML = '<div class="hop-num" style="background:'+color+'">'+num+'</div>'
+    + '<span><strong>'+node.label+'</strong> ('+node.id+') — '+label+'</span>';
+  hopBox.appendChild(el);
+  requestAnimationFrame(function(){ el.classList.add('show'); });
+}
+
+// ── Phase badge ───────────────────────────────────────────────────────────
+function setActiveBadge(idx) {
+  document.querySelectorAll('.pbadge').forEach(function(b, i) {
+    b.classList.toggle('active', i === idx);
+  });
+}
+
+// ── Pause system ──────────────────────────────────────────────────────────
+var paused = false, pendFn = null, pendTimer = null;
+
+function wait(ms, fn) {
+  if (paused) { pendFn = fn; return; }
+  pendTimer = setTimeout(fn, ms);
+}
+function togglePause() {
+  paused = !paused;
+  var btn = document.getElementById('pause-btn');
+  if (paused) {
+    clearTimeout(pendTimer);
+    btn.textContent = '▶ Resume'; btn.classList.add('paused');
+  } else {
+    btn.textContent = '⏸ Pause'; btn.classList.remove('paused');
+    if (pendFn) { var f = pendFn; pendFn = null; f(); }
+  }
+}
+
+// ── Phase: Finger Tables ──────────────────────────────────────────────────
+function fingerPhase(idx, done) {
+  if (idx >= NODES.length) {
+    fingerL.selectAll('*').remove();
+    wait(400, done);
+    return;
+  }
+  var node = NODES[idx];
+
+  var seen = new Set(), uniq = [];
+  node.fingers.forEach(function(f) {
+    if (f.succ.id !== node.id && !seen.has(f.succ.id)) {
+      seen.add(f.succ.id); uniq.push(f);
+    }
+  });
+  var reachText = uniq.map(function(f) {
+    return '<code>'+f.succ.label+' ('+f.succ.id+')</code>';
+  }).join(', ');
+
+  setPanel(
+    'FINGER TABLE', '#ede9fe', '#5b21b6',
+    '<strong>'+node.label+'</strong> (ID:'+node.id+') shortcuts → '+reachText+
+    '<br><small style="color:#6b7280">Each entry: id + 2<sup>i</sup> → successor node</small>',
+    '#faf5ff'
+  );
+  hiNode(node, 'finger');
+  showFingerLines(node);
+  drawFTBox(node);
+
+  wait(2000, function() {
+    fingerL.selectAll('*').remove();
+    rstNode(node);
+    wait(180, function() { fingerPhase(idx + 1, done); });
+  });
+}
+
+// ── Phase: Route a key ───────────────────────────────────────────────────
+function routePhase(key, done) {
+  var owner = findSuccessor(key);
+  var hops  = chordLookup(NODES[0], key);
+  var nhops = hops.length - 1;
+
+  drawKey(key);
+  setPanel(
+    'KEY LOOKUP', '#dbeafe', '#1e40af',
+    'Routing <code>key:'+key+'</code> → owner is <strong>'+owner.label+' (ID:'+owner.id+')</strong>',
+    '#eff6ff'
+  );
+
+  wait(700, function() {
+    startHopBox(
+      'Route: <code>key:'+key+'</code> · <strong>'+nhops+' hop'+(nhops!==1?'s':'')+
+      '</strong> · max O(log '+NODES.length+') ≈ '+Math.ceil(Math.log2(NODES.length))
+    );
+    addHop(0, hops[0], 'Entry point', '#dc2626');
+    hiNode(hops[0], 'entry');
+    hopSeq(hops, key, 0, function() {
+      wait(1200, function() { resetAll(); wait(300, done); });
+    });
+  });
+}
+
+function hopSeq(hops, key, i, done) {
+  if (i >= hops.length - 1) { done(); return; }
+  var from = hops[i], to = hops[i+1];
+  var isFinal = (i === hops.length - 2);
+  var color = isFinal ? '#16a34a' : '#2563eb';
+  var mid   = isFinal ? 'arr-green' : 'arr-blue';
+
+  var dLine = drawDash(from, to, color);
+  wait(700, function() {
+    dLine.transition().duration(200).attr('opacity',0).remove();
+    drawArr(from, to, color, mid);
+    hiNode(to, isFinal ? 'owner' : 'transit');
+    addHop(i+1, to, isFinal ? 'Owner — '+to.id+' ≥ key:'+key : 'Hop via finger table', color);
+    wait(580, function() { hopSeq(hops, key, i+1, done); });
+  });
+}
+
+// ── Phase: Self-healing ───────────────────────────────────────────────────
+function healPhase(done) {
+  resetAll();
+  var nodeF = { id: 120, label: 'Node F', color: '#0891b2' };
+  var pF = npos(nodeF.id);
+
+  setPanel(
+    'NODE JOINS', '#fef9c3', '#92400e',
+    '<strong>Node F</strong> (ID:120) is joining the ring<br>'
+    +'<small style="color:#6b7280">Contacts bootstrap → finds successor → announces itself</small>',
+    '#fefce8'
+  );
+
+  wait(700, function() {
+    var gF = nodeL.append('g').attr('class','node-g temp-node').attr('data-id',120);
+    var ta = ang(nodeF.id);
+    gF.append('circle').attr('cx',pF.x).attr('cy',pF.y).attr('r',NR)
+      .attr('fill','#e0f2fe').attr('stroke','#0891b2').attr('stroke-width',2.5)
+      .attr('stroke-dasharray','6 3').attr('opacity',0)
+      .transition().duration(600).attr('opacity',1);
+    gF.append('text').attr('x',pF.x).attr('y',pF.y-4)
+      .attr('text-anchor','middle').attr('dominant-baseline','middle')
+      .attr('font-size','10.5px').attr('font-weight','700').attr('fill','#0e7490')
+      .attr('opacity',0).text('120').transition().duration(600).attr('opacity',1);
+    gF.append('text').attr('x',pF.x).attr('y',pF.y+8)
+      .attr('text-anchor','middle').attr('dominant-baseline','middle')
+      .attr('font-size','8.5px').attr('fill','#4b5563')
+      .attr('opacity',0).text('Node F').transition().duration(600).attr('opacity',1);
+    nodeL.append('line').attr('class','temp-node')
+      .attr('x1',(R+7)*Math.cos(ta)).attr('y1',(R+7)*Math.sin(ta))
+      .attr('x2',(R-7)*Math.cos(ta)).attr('y2',(R-7)*Math.sin(ta))
+      .attr('stroke','#0891b2').attr('stroke-width',2).attr('opacity',0)
+      .transition().duration(600).attr('opacity',0.5);
+
+    wait(750, function() {
+      var pA = npos(NODES[0].id);
+      var lA = overL.append('line')
+        .attr('x1',pF.x).attr('y1',pF.y).attr('x2',pA.x).attr('y2',pA.y)
+        .attr('stroke','#0891b2').attr('stroke-width',1.5).attr('stroke-dasharray','6 3')
+        .attr('marker-end','url(#arr-cyan)').attr('opacity',0);
+      lA.transition().duration(400).attr('opacity',0.85);
+      setPanel(
+        'NODE JOINS', '#fef9c3', '#92400e',
+        'Node F → <strong>Node A</strong> (bootstrap): <code>find_successor(120)?</code><br>'
+        +'<small style="color:#6b7280">Asking: who is responsible for ID 120?</small>',
+        '#fefce8'
+      );
+
+      wait(1100, function() {
+        lA.transition().duration(250).attr('opacity',0).remove();
+        var pC = npos(NODES[2].id);
+        var lC = overL.append('line')
+          .attr('x1',pF.x).attr('y1',pF.y).attr('x2',pC.x).attr('y2',pC.y)
+          .attr('stroke','#16a34a').attr('stroke-width',2)
+          .attr('marker-end','url(#arr-green)').attr('opacity',0);
+        lC.transition().duration(400).attr('opacity',1);
+        hiNode(NODES[2], 'owner');
+        setPanel(
+          'STABILIZING', '#dcfce7', '#14532d',
+          'Node A replies: <strong>Node C (142)</strong> is your successor<br>'
+          +'Node B updates predecessor pointer → Node F<br>'
+          +'<small style="color:#6b7280">Stabilization runs every 2s · heals ring automatically</small>',
+          '#f0fdf4'
+        );
+        gF.select('circle').transition().duration(600).attr('stroke-dasharray','0');
+
+        wait(2000, function() {
+          lC.transition().duration(250).attr('opacity',0).remove();
+          rstNode(NODES[2]);
+
+          setPanel(
+            'NODE LEAVES', '#fef2f2', '#991b1b',
+            '<code>kill -9 Node F</code> — process terminated<br>'
+            +'Node B\'s <code>check_predecessor()</code> times out in ~2s…',
+            '#fff7f7'
+          );
+
+          wait(700, function() {
+            var circ = gF.select('circle');
+            circ
+              .transition().duration(210).attr('stroke','#dc2626').attr('stroke-width',3.5)
+              .transition().duration(210).attr('stroke','#0891b2').attr('stroke-width',2.5)
+              .transition().duration(210).attr('stroke','#dc2626').attr('stroke-width',3.5)
+              .transition().duration(210).attr('stroke','#0891b2').attr('stroke-width',2.5)
+              .transition().duration(210).attr('stroke','#dc2626').attr('stroke-width',3.5)
+              .on('end', function() {
+                var xs = 10;
+                overL.append('line')
+                  .attr('x1',pF.x-xs).attr('y1',pF.y-xs).attr('x2',pF.x+xs).attr('y2',pF.y+xs)
+                  .attr('stroke','#dc2626').attr('stroke-width',3).attr('stroke-linecap','round')
+                  .attr('opacity',0).transition().duration(250).attr('opacity',1);
+                overL.append('line')
+                  .attr('x1',pF.x+xs).attr('y1',pF.y-xs).attr('x2',pF.x-xs).attr('y2',pF.y+xs)
+                  .attr('stroke','#dc2626').attr('stroke-width',3).attr('stroke-linecap','round')
+                  .attr('opacity',0).transition().duration(250).attr('opacity',1);
+
+                wait(800, function() {
+                  gF.transition().duration(600).attr('opacity',0).remove();
+                  nodeL.selectAll('.temp-node').transition().duration(600).attr('opacity',0).remove();
+                  overL.selectAll('*').transition().duration(300).attr('opacity',0).remove();
+
+                  wait(750, function() {
+                    setPanel(
+                      'HEALED', '#dcfce7', '#14532d',
+                      'Ring healed in <strong>~2 seconds</strong> · No data lost<br>'
+                      +'Node B routes directly → Node C (predecessor updated)<br>'
+                      +'<small style="color:#6b7280">O(log N) routing restored · Jobs redistributed</small>',
+                      '#f0fdf4'
+                    );
+                    var pB = npos(NODES[1].id), pCh = npos(NODES[2].id);
+                    overL.append('line')
+                      .attr('x1',pB.x).attr('y1',pB.y).attr('x2',pCh.x).attr('y2',pCh.y)
+                      .attr('stroke','#16a34a').attr('stroke-width',2)
+                      .attr('marker-end','url(#arr-green)').attr('opacity',0)
+                      .transition().duration(400).attr('opacity',0.85);
+                    hiNode(NODES[1], 'owner');
+                    hiNode(NODES[2], 'owner');
+
+                    wait(2200, function() {
+                      overL.selectAll('*').remove();
+                      NODES.forEach(rstNode);
+                      wait(400, done);
+                    });
+                  });
+                });
+              });
+          });
+        });
+      });
+    });
+  });
+}
+
+// ── Main loop ─────────────────────────────────────────────────────────────
+var PHASES = [
+  function(done) { fingerPhase(0, done); },
+  function(done) { routePhase(55,  done); },
+  function(done) { routePhase(142, done); },
+  function(done) { routePhase(175, done); },
+  function(done) { healPhase(done); },
+];
+var pIdx = 0;
+
+function runLoop() {
+  resetAll();
+  setActiveBadge(pIdx);
+  PHASES[pIdx](function() {
+    pIdx = (pIdx + 1) % PHASES.length;
+    wait(600, runLoop);
+  });
+}
+
+setTimeout(function() {
+  setPanel(
+    'CHORD RING', '#dbeafe', '#1e40af',
+    '5 nodes · SHA-1 consistent hashing · O(log N) routing · self-healing',
+    '#eff6ff'
+  );
+  wait(800, runLoop);
+}, 400);
+</script>
+</body>
+</html>
