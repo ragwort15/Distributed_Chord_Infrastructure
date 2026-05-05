@@ -407,12 +407,19 @@ def create_app(node: ChordNode) -> Flask:
     # Dashboard (served from chord/static/index.html)
     # ------------------------------------------------------------------
 
+    # Landing page is the chatbot (user-facing surface).
+    # The dashboard lives at /dashboard. /chat kept as alias for old links.
+
     @app.get("/")
+    def landing():
+        return send_from_directory(_STATIC_DIR, "chat.html")
+
+    @app.get("/dashboard")
     def dashboard():
         return send_from_directory(_STATIC_DIR, "index.html")
 
     @app.get("/chat")
-    def chat_ui():
+    def chat_alias():
         return send_from_directory(_STATIC_DIR, "chat.html")
 
     # ------------------------------------------------------------------
@@ -1006,6 +1013,57 @@ def create_app(node: ChordNode) -> Flask:
     @app.get("/workers/live")
     def workers_live():
         return jsonify({"live_workers": worker_registry.live_workers()})
+
+    @app.get("/workers/status")
+    def workers_status():
+        """
+        Phase 5-ish dashboard endpoint.
+
+        For every worker ever heartbeated, classify as:
+          - busy: alive AND has at least one PENDING task in HT1
+          - idle: alive AND no PENDING tasks
+          - dead: not heartbeated within HEARTBEAT_TIMEOUT_S
+
+        Returns counts + per-worker rows. Reads HT2 + HT1 per worker; this
+        is O(workers × tasks) per call, fine for the dashboard's poll rate.
+        """
+        all_workers = worker_registry.all_workers()
+        live_set = set(worker_registry.live_workers())
+
+        rows = []
+        counts = {"live": 0, "idle": 0, "busy": 0, "dead": 0}
+
+        for wid, _ts, age_s in all_workers:
+            try:
+                tids = worker_assignment_service.get(wid)
+            except Exception:
+                tids = []
+            pending = 0
+            for tid in tids:
+                try:
+                    rec = result_service.get(tid)
+                    if rec and rec.get("status") == "PENDING":
+                        pending += 1
+                except Exception:
+                    pass
+
+            if wid in live_set:
+                status = "idle" if pending == 0 else "busy"
+                counts["live"] += 1
+                counts[status] += 1
+            else:
+                status = "dead"
+                counts["dead"] += 1
+
+            rows.append({
+                "worker_id": wid,
+                "status": status,
+                "task_count": len(tids),
+                "pending": pending,
+                "last_seen_seconds_ago": round(age_s, 1),
+            })
+
+        return jsonify({"counts": counts, "workers": rows})
 
     @app.post("/createTask")
     def create_task_v2():

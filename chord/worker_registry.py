@@ -55,3 +55,22 @@ class WorkerRegistry:
             w for w, t in self._workers.items()
             if now - t <= self._timeout
         )
+
+    def dead_workers(self) -> List[tuple]:
+        """Workers ever seen but no longer live. Returns [(worker_id, age_s)]."""
+        with self._lock:
+            if self._timeout <= 0:
+                return []
+            now = time.time()
+            return sorted(
+                (w, now - t) for w, t in self._workers.items()
+                if now - t > self._timeout
+            )
+
+    def all_workers(self) -> List[tuple]:
+        """All workers ever seen. Returns [(worker_id, last_ts, age_s)] sorted by id."""
+        with self._lock:
+            now = time.time()
+            return sorted(
+                (w, t, now - t) for w, t in self._workers.items()
+            )

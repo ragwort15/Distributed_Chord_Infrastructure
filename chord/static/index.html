@@ -844,6 +844,22 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
             </div>
           </div>
 
+          <!-- Workers panel -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-icon" style="background:rgba(16,185,129,.15)">👷</div>
+              <div>
+                <div class="card-title">Workers</div>
+                <div class="card-sub" id="wk-summary">— live · — idle · — dead</div>
+              </div>
+            </div>
+            <div class="card-body" style="padding:8px 12px">
+              <div id="wk-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto">
+                <div class="empty-state" style="padding:16px"><div class="icon">👷</div><p>No workers yet</p></div>
+              </div>
+            </div>
+          </div>
+
           <!-- Submit job -->
           <div class="card">
             <div class="card-header">
@@ -2834,6 +2850,40 @@ document.getElementById('node-modal-overlay').addEventListener('click',e=>{if(e.
 document.getElementById('add-modal-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.classList.add('hidden');});
 
 /* ═══════════════════════════════════════════════════════════════════
+   WORKERS PANEL  (Phase 2/4 worker registry — live/idle/busy/dead)
+═══════════════════════════════════════════════════════════════════ */
+async function pollWorkers(){
+  try{
+    const r = await fetch('/workers/status', {cache:'no-store'});
+    if(!r.ok) return;
+    const d = await r.json();
+    const c = d.counts || {};
+    document.getElementById('wk-summary').textContent =
+      `${c.live||0} live · ${c.idle||0} idle · ${c.busy||0} busy · ${c.dead||0} dead`;
+    const list = document.getElementById('wk-list');
+    if(!d.workers || !d.workers.length){
+      list.innerHTML = '<div class="empty-state" style="padding:16px"><div class="icon">👷</div><p>No workers yet</p></div>';
+      return;
+    }
+    const colorFor = s => s==='busy' ? '#10b981' : s==='idle' ? '#6366f1' : '#ef4444';
+    list.innerHTML = d.workers.map(w => {
+      const col = colorFor(w.status);
+      const right = w.status === 'dead'
+        ? `dead · last seen ${Math.round(w.last_seen_seconds_ago)}s ago`
+        : `${w.pending} pending · ${w.task_count} total`;
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,.025);border-radius:6px;font-size:12px;border-left:2px solid ${col}">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${col};flex-shrink:0"></span>
+          <span style="font-family:monospace;color:var(--tx-1);overflow:hidden;text-overflow:ellipsis">${w.worker_id}</span>
+          <span style="color:${col};text-transform:uppercase;font-size:9.5px;font-weight:700;letter-spacing:.5px">${w.status}</span>
+        </div>
+        <span style="font-size:10.5px;color:var(--tx-3);font-family:monospace;flex-shrink:0">${right}</span>
+      </div>`;
+    }).join('');
+  }catch(_){}
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    BOOT
 ═══════════════════════════════════════════════════════════════════ */
 setInterval(pollRing,     2000);
@@ -2841,10 +2891,12 @@ setInterval(pollJobs,     2500);
 setInterval(pollRequests, 2200);
 setInterval(pollLogs,     4000);
 setInterval(pollMetrics,  5500);
+setInterval(pollWorkers,  3000);
 
 pollRing();
 pollJobs();
 pollRequests();
+pollWorkers();
 pollLogs();
 </script>
 
