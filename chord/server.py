@@ -28,6 +28,12 @@ from storage.task_service import (
     TaskService,
     TaskValidationError,
 )
+from chord.worker_registry import WorkerRegistry
+from chord.conversation_agent import ConversationAgent, ScriptedAgent
+from chord.retry import with_timeout_and_retry
+from storage.result_record import build_result_record, ResultValidationError
+from storage.result_service import ResultService
+from storage.worker_assignment import WorkerAssignmentService
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,37 @@ def create_app(node: ChordNode) -> Flask:
     app = Flask(__name__)
     app.config["node"] = node
     task_service = TaskService(node=node, transport=node._transport)
+
+    # Phase 2: live worker registry + conversational agent.  Storage is
+    # stubbed in this phase — actual DHT writes land in Phase 3.
+    # HEARTBEAT_TIMEOUT_S env var controls expiration; <=0 disables it entirely.
+    _hb_timeout = float(os.environ.get("HEARTBEAT_TIMEOUT_S", "10"))
+    worker_registry = WorkerRegistry(heartbeat_timeout_s=_hb_timeout)
+    app.config["worker_registry"] = worker_registry
+
+    # Phase 3: HT1 (result:<task_id>) and HT2 (worker:<worker_id>) services.
+    # Both replicate k=3 quorum like Phase 1's task_service, on the same ring.
+    result_service = ResultService(node=node, transport=node._transport, replication_k=3)
+    worker_assignment_service = WorkerAssignmentService(
+        node=node, transport=node._transport, replication_k=3,
+    )
+    app.config["result_service"] = result_service
+    app.config["worker_assignment_service"] = worker_assignment_service
+    _conv_agent_holder: Dict[str, ConversationAgent] = {}
+
+    def _get_conversation_agent():
+        if "agent" not in _conv_agent_holder:
+            base_url = f"http://{node.address}"
+            api_key = app.config.get("agent_key") or os.environ.get("ANTHROPIC_API_KEY")
+            mode = (os.environ.get("CONVERSATION_AGENT_MODE") or "").lower()
+            if mode == "scripted" or not api_key:
+                logger.info("[ConversationAgent] using ScriptedAgent (no API key set or mode=scripted)")
+                _conv_agent_holder["agent"] = ScriptedAgent(base_url=base_url)
+            else:
+                _conv_agent_holder["agent"] = ConversationAgent(
+                    api_key=api_key, base_url=base_url,
+                )
+        return _conv_agent_holder["agent"]
 
     # ------------------------------------------------------------------
     # Chord internal RPC endpoints
@@ -372,6 +409,10 @@ def create_app(node: ChordNode) -> Flask:
     @app.get("/")
     def dashboard():
         return send_from_directory(_STATIC_DIR, "index.html")
+
+    @app.get("/chat")
+    def chat_ui():
+        return send_from_directory(_STATIC_DIR, "chat.html")
 
     # ------------------------------------------------------------------
     # Dashboard API — ring topology
@@ -913,6 +954,326 @@ def create_app(node: ChordNode) -> Flask:
         deleted = task_service.delete_replica_local(task_key)
         return jsonify({"ok": True, "deleted": deleted, "task_key": task_key})
 
+    # ------------------------------------------------------------------
+    # Phase 2 — Frontend / Conversational Agent endpoints
+    #
+    # These are additive and DO NOT touch the existing /tasks/* routes.
+    # Storage for /createTask and /getStatus is stubbed in this phase;
+    # actual DHT writes land in Phase 3.
+    # ------------------------------------------------------------------
+
+    _VALID_TASK_TYPES = {"SCRIPT", "BINARY"}
+
+    @app.post("/workers/heartbeat")
+    def workers_heartbeat():
+        body = request.get_json(silent=True) or {}
+        worker_id = body.get("worker_id")
+        if not worker_id:
+            return jsonify({"ok": False, "error": "worker_id required"}), 422
+        worker_registry.heartbeat(worker_id)
+        return jsonify({"ok": True})
+
+    @app.get("/workers/live")
+    def workers_live():
+        return jsonify({"live_workers": worker_registry.live_workers()})
+
+    @app.post("/createTask")
+    def create_task_v2():
+        """
+        Phase 3 atomic-acceptance protocol.
+
+        1. Idempotency check on result:<task_id>
+        2. Determine worker (provided or round-robin)
+        3. Write HT1 (result:<task_id>) with timeout + retries
+        4. Append HT2 (worker:<worker_id>) with timeout + retries
+           - on failure: rollback HT1 (best-effort) and 503
+        5. Return 201 on success
+
+        Test hook: PHASE3_FORCE_FAIL=ht1|ht2 injects a failure at the
+        named step so rollback paths can be exercised end-to-end.
+        """
+        body = request.get_json(silent=True) or {}
+        task_id = body.get("task_id")
+        task_details = body.get("task_details") or {}
+        provided_worker = body.get("worker_id")
+
+        # ---- validation ----
+        if not task_id:
+            return jsonify({"message": "Task rejected", "reason": "task_id required"}), 422
+        if not isinstance(task_details, dict):
+            return jsonify({"message": "Task rejected", "reason": "task_details must be an object"}), 422
+        task_type = task_details.get("task_type")
+        if task_type not in _VALID_TASK_TYPES:
+            return jsonify({
+                "message": "Task rejected",
+                "reason": f"task_details.task_type must be one of {sorted(_VALID_TASK_TYPES)}",
+            }), 422
+
+        # ---- Step 0: idempotency ----
+        try:
+            existing = result_service.get(task_id)
+        except Exception as exc:
+            logger.warning("[createTask] idempotency check failed: %s", exc)
+            existing = None
+        if existing is not None:
+            return jsonify({
+                "message": "Task already exists",
+                "task_id": task_id,
+                "status": existing["status"],
+                "worker_id": existing["worker_id"],
+                "assigned_by": existing["assigned_by"],
+            }), 200
+
+        # ---- Step 1: determine worker ----
+        if provided_worker:
+            worker_id = provided_worker
+            assigned_by = "user"
+        else:
+            worker_id = worker_registry.round_robin_assign()
+            if worker_id is None:
+                return jsonify({
+                    "message": "Task rejected",
+                    "reason": "no live workers available for auto-assignment",
+                }), 503
+            assigned_by = "frontend"
+
+        # ---- Step 2: build the result record ----
+        try:
+            record = build_result_record(
+                task_id=task_id,
+                task_type=task_type,
+                path=task_details.get("path", ""),
+                script=task_details.get("script", ""),
+                worker_id=worker_id,
+                assigned_by=assigned_by,
+                status="PENDING",
+                result=None,
+            )
+        except ResultValidationError as exc:
+            return jsonify({"message": "Task rejected", "reason": str(exc)}), 422
+
+        # Test hook: ?PHASE3_FORCE_FAIL=ht1|ht2 (read once per request)
+        _inject = (os.environ.get("PHASE3_FORCE_FAIL") or "").lower()
+
+        def _ht1_op():
+            if _inject == "ht1":
+                raise RuntimeError("injected HT1 failure")
+            return result_service.put(task_id, record)
+
+        def _ht2_op():
+            if _inject == "ht2":
+                raise RuntimeError("injected HT2 failure")
+            return worker_assignment_service.append(worker_id, task_id)
+
+        # ---- Step 3: HT1 write ----
+        try:
+            with_timeout_and_retry(_ht1_op, op_name=f"HT1.put({task_id})")
+        except Exception as exc:
+            logger.error("[createTask] HT1 write failed for %s: %s", task_id, exc)
+            return jsonify({
+                "message": "Task rejected",
+                "reason": "Failed to persist task record",
+            }), 503
+
+        # ---- Step 4: HT2 append, with rollback on failure ----
+        try:
+            with_timeout_and_retry(
+                _ht2_op, op_name=f"HT2.append({worker_id},{task_id})",
+            )
+        except Exception as exc:
+            # ROLLBACK: remove the HT1 record so the system stays consistent.
+            # Best-effort: a failed rollback leaves a "ghost" HT1 record;
+            # log loudly and accept it (per spec, janitor in a future phase).
+            logger.error(
+                "[createTask] HT2 append failed for %s/%s: %s — rolling back HT1",
+                task_id, worker_id, exc,
+            )
+            try:
+                result_service.delete(task_id)
+                logger.info("[createTask] rollback HT1.delete(%s) succeeded", task_id)
+            except Exception as rb_exc:
+                logger.error(
+                    "[createTask] rollback HT1.delete(%s) FAILED: %s — ghost record left behind",
+                    task_id, rb_exc,
+                )
+            return jsonify({
+                "message": "Task rejected",
+                "reason": "Failed to persist worker assignment",
+            }), 503
+
+        # ---- Step 5: success ----
+        return jsonify({
+            "message": "Task accepted",
+            "task_id": task_id,
+            "worker_id": worker_id,
+            "assigned_by": assigned_by,
+        }), 201
+
+    @app.get("/getStatus/<task_id>")
+    def get_status_v2(task_id):
+        """Phase 3: real HT1 read with replica fallback (in result_service.get)."""
+        try:
+            record = result_service.get(task_id)
+        except Exception as exc:
+            logger.exception("[getStatus] read failed for %s", task_id)
+            return jsonify({"error": "lookup failed", "details": str(exc)}), 500
+        if record is None:
+            return jsonify({"error": "task not found", "task_id": task_id}), 404
+        return jsonify({
+            "task_id": task_id,
+            "status": record["status"],
+            "result": record["result"],
+            "worker_id": record["worker_id"],
+            "assigned_by": record["assigned_by"],
+        }), 200
+
+    # ------------------------------------------------------------------
+    # Phase 3 — internal HT1/HT2 RPCs
+    #
+    # These power cross-node replication and the locked HT2 append. They
+    # operate directly on this node's local store; routing is the
+    # caller's responsibility (the service classes resolve the primary
+    # via Chord first, then call these endpoints).
+    # ------------------------------------------------------------------
+
+    @app.post("/internal/results/replica/<task_id>")
+    def result_replica_put(task_id):
+        record = request.get_json()
+        node.put(f"result:{task_id}", record)
+        return jsonify({"ok": True, "stored_at": node.node_id})
+
+    @app.get("/internal/results/replica/<task_id>")
+    def result_replica_get(task_id):
+        value = node.get(f"result:{task_id}")
+        if value is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"record": value})
+
+    @app.delete("/internal/results/replica/<task_id>")
+    def result_replica_delete(task_id):
+        deleted = node.delete(f"result:{task_id}")
+        return jsonify({"ok": deleted})
+
+    @app.post("/internal/workers/replica/<worker_id>")
+    def worker_replica_put(worker_id):
+        record = request.get_json()
+        node.put(f"worker:{worker_id}", record)
+        return jsonify({"ok": True, "stored_at": node.node_id})
+
+    @app.get("/internal/workers/replica/<worker_id>")
+    def worker_replica_get(worker_id):
+        value = node.get(f"worker:{worker_id}")
+        if value is None:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"record": value})
+
+    @app.delete("/internal/workers/replica/<worker_id>")
+    def worker_replica_delete(worker_id):
+        deleted = node.delete(f"worker:{worker_id}")
+        return jsonify({"ok": deleted})
+
+    @app.post("/internal/workers/append/<worker_id>")
+    def workers_append(worker_id):
+        """
+        Locked, primary-side append-to-list RPC. The lock is acquired
+        inside append_local() (per-key, in worker_assignment._per_key_locks)
+        and held for the entire read-modify-write+replicate cycle.
+        """
+        body = request.get_json(silent=True) or {}
+        task_id = body.get("task_id")
+        if not task_id:
+            return jsonify({"ok": False, "error": "task_id required"}), 422
+        try:
+            result = worker_assignment_service.append_local(worker_id, task_id)
+            return jsonify({"ok": True, **result})
+        except Exception as exc:
+            logger.exception("[workers/append] failed for %s/%s", worker_id, task_id)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    # ------------------------------------------------------------------
+    # Phase 3 — debug endpoints (testing aids; safe to remove later)
+    # ------------------------------------------------------------------
+
+    @app.get("/debug/worker-tasks/<worker_id>")
+    def debug_worker_tasks(worker_id):
+        return jsonify({
+            "worker_id": worker_id,
+            "tasks": worker_assignment_service.get(worker_id),
+        })
+
+    @app.get("/debug/result-record/<task_id>")
+    def debug_result_record(task_id):
+        record = result_service.get(task_id)
+        if record is None:
+            return jsonify({"error": "not found", "task_id": task_id}), 404
+        return jsonify(record)
+
+    # ------------------------------------------------------------------
+    # Phase 4 — worker → frontend completion endpoint
+    #
+    # Workers POST here when they finish executing a task.  The server
+    # reads the existing HT1 record, patches status/result/updated_at,
+    # and writes back via result_service.put() (k=3 quorum replication).
+    # ------------------------------------------------------------------
+
+    @app.post("/internal/results/<task_id>/complete")
+    def result_complete(task_id):
+        from datetime import datetime, timezone
+        body = request.get_json(silent=True) or {}
+        status = body.get("status")
+        result_payload = body.get("result")
+        if status not in {"SUCCESS", "FAILURE"}:
+            return jsonify({
+                "ok": False,
+                "error": "status must be 'SUCCESS' or 'FAILURE'",
+            }), 422
+
+        existing = result_service.get(task_id)
+        if existing is None:
+            return jsonify({
+                "ok": False, "error": "task not found", "task_id": task_id,
+            }), 404
+
+        updated = dict(existing)
+        updated["status"] = status
+        updated["result"] = result_payload
+        updated["updated_at"] = (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+
+        try:
+            result_service.put(task_id, updated)
+        except Exception as exc:
+            logger.exception("[results/complete] write failed for %s", task_id)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+        return jsonify({
+            "ok": True, "task_id": task_id, "status": status,
+        }), 200
+
+    @app.post("/agent/chat")
+    def agent_chat():
+        body = request.get_json(silent=True) or {}
+        message = body.get("message")
+        history = body.get("history") or []
+        session_id = body.get("session_id")
+
+        if not message:
+            return jsonify({"ok": False, "error": "message required"}), 422
+        if not isinstance(history, list):
+            return jsonify({"ok": False, "error": "history must be an array"}), 422
+
+        try:
+            agent = _get_conversation_agent()
+            result = agent.chat(history=history, message=message, session_id=session_id)
+            return jsonify(result)
+        except RuntimeError as exc:
+            # Anthropic key missing or similar config error
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        except Exception as exc:
+            logger.exception("[agent/chat] failed")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
     return app
 
 
@@ -1214,6 +1575,7 @@ def start_node(host: str, port: int, known_address: str = None,
 
     app = create_app(node)
     app.config["agent"] = agent
+    app.config["agent_key"] = agent_key  # used by Phase 2 ConversationAgent
 
     node.join(known_address)
 
