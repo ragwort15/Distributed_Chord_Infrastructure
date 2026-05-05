@@ -1160,6 +1160,12 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
               <label class="field-label">Filename</label>
               <input class="inp" id="req-filename" placeholder="e.g. report.pdf or dataset.csv">
             </div>
+            <div style="display:flex;gap:8px">
+              <select class="inp" id="req-filename-select" style="flex:1">
+                <option value="">— Pick a file —</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" id="btn-pick-random" style="padding:6px 12px">🎲 Random</button>
+            </div>
             <div class="field">
               <label class="field-label">Client Tag</label>
               <input class="inp" id="req-client" value="dashboard" placeholder="client identifier">
@@ -2036,6 +2042,7 @@ function renderMiniJobs(){
 ═══════════════════════════════════════════════════════════════════ */
 const FILE_ICONS={pdf:'📄',csv:'📊',bin:'⚙️',yaml:'⚙️',gz:'🗜',zip:'🗜',pptx:'📊',png:'🖼',jpg:'🖼',mp4:'🎬',tar:'🗜',md:'📝',sql:'🗄',json:'📋',txt:'📝',sh:'⚡',parquet:'📊'};
 function ficon(name){const ext=(name.includes('.')?name.split('.').pop():'').toLowerCase();return FILE_ICONS[ext]||'📁';}
+const DUMMY_FILES=['report_q1.pdf','report_q2.pdf','report_q3.pdf','report_q4.pdf','dataset_train.csv','dataset_test.csv','model_weights.bin','config.yaml','logs_2024.tar.gz','backup_jan.zip','invoice_001.pdf','invoice_002.pdf','presentation.pptx','image_001.png','image_002.jpg','video_demo.mp4','source_code.tar','readme.md','schema.sql','users.json','audit_log.txt','metrics.parquet','pipeline.json','deploy.sh'];
 
 const FILE_TYPE_CLS={
   document:'badge-info',slides:'badge-info',text:'badge-neutral',
@@ -2661,6 +2668,16 @@ async function quickDel(key){
 /* ═══════════════════════════════════════════════════════════════════
    FILE REQUEST SIMULATION
 ═══════════════════════════════════════════════════════════════════ */
+function initFileSelector(){
+  const select=document.getElementById('req-filename-select');
+  select.innerHTML='<option value="">— Pick a file —</option>'+DUMMY_FILES.map(f=>`<option value="${f}">${f}</option>`).join('');
+  select.addEventListener('change',(e)=>{if(e.target.value)document.getElementById('req-filename').value=e.target.value;});
+  document.getElementById('btn-pick-random').addEventListener('click',()=>{
+    const file=DUMMY_FILES[Math.floor(Math.random()*DUMMY_FILES.length)];
+    select.value=file;
+    document.getElementById('req-filename').value=file;
+  });
+}
 document.getElementById('btn-simulate-req').addEventListener('click',async()=>{
   const fn=document.getElementById('req-filename').value.trim();
   if(!fn){alert('Enter a filename');return;}
@@ -3020,6 +3037,7 @@ setInterval(pollLogs,     4000);
 setInterval(pollMetrics,  5500);
 setInterval(pollWorkers,  3000);
 
+initFileSelector();
 pollRing();
 pollJobs();
 pollRequests();
