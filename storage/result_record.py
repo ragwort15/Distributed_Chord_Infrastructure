@@ -16,7 +16,7 @@ from typing import Optional
 RESULT_SCHEMA_VERSION = 1
 RESULT_KIND = "result_details"
 
-VALID_STATUSES = {"PENDING", "SUCCESS", "FAILURE"}
+VALID_STATUSES = {"PENDING", "RUNNING", "SUCCESS", "FAILURE"}
 VALID_TASK_TYPES = {"SCRIPT", "BINARY"}
 VALID_ASSIGNED_BY = {"user", "frontend", "intelligence"}
 
@@ -48,6 +48,15 @@ def build_result_record(
     assigned_by: str,
     status: str = "PENDING",
     result: Optional[str] = None,
+    # Phase 7 — recovery tracking fields
+    attempt_count: int = 0,
+    max_attempts: int = 3,
+    last_failure_reason: Optional[str] = None,
+    retry_on_failure: bool = False,
+    recovery_history: Optional[list] = None,
+    recovery_status: Optional[str] = None,
+    retry_at: Optional[float] = None,
+    timed_out: bool = False,
 ) -> dict:
     if not task_id or not isinstance(task_id, str):
         raise ResultValidationError("task_id required")
@@ -80,6 +89,15 @@ def build_result_record(
         "result": result,
         "created_at": now,
         "updated_at": now,
+        # Phase 7 recovery fields
+        "attempt_count": int(attempt_count),
+        "max_attempts": int(max_attempts),
+        "last_failure_reason": last_failure_reason,
+        "retry_on_failure": bool(retry_on_failure),
+        "recovery_history": list(recovery_history) if recovery_history is not None else [],
+        "recovery_status": recovery_status,
+        "retry_at": retry_at,
+        "timed_out": bool(timed_out),
     }
 
 

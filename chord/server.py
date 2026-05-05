@@ -35,6 +35,7 @@ from chord.retry import with_timeout_and_retry
 from storage.result_record import build_result_record, ResultValidationError
 from storage.result_service import ResultService
 from storage.worker_assignment import WorkerAssignmentService
+from chord.recovery import RecoveryManager
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,11 @@ def create_app(node: ChordNode) -> Flask:
     )
     app.config["result_service"] = result_service
     app.config["worker_assignment_service"] = worker_assignment_service
+
+    # Phase 7: recovery manager (started later in start_node after join)
+    recovery_manager = RecoveryManager(result_service, worker_assignment_service, worker_registry)
+    app.config["recovery_manager"] = recovery_manager
+
     _conv_agent_holder: Dict[str, ConversationAgent] = {}
 
     def _get_conversation_agent():
@@ -1101,6 +1107,13 @@ def create_app(node: ChordNode) -> Flask:
         task_id = body.get("task_id")
         task_details = body.get("task_details") or {}
         provided_worker = body.get("worker_id")
+        # Phase 7 — per-task recovery policy (body fields, not query params)
+        max_attempts_raw = body.get("max_attempts", 3)
+        try:
+            max_attempts = max(1, int(max_attempts_raw))
+        except (TypeError, ValueError):
+            max_attempts = 3
+        retry_on_failure = bool(body.get("retry_on_failure", False))
 
         # ---- validation ----
         if not task_id:
@@ -1168,6 +1181,9 @@ def create_app(node: ChordNode) -> Flask:
                 assigned_by=assigned_by,
                 status="PENDING",
                 result=None,
+                # Phase 7
+                max_attempts=max_attempts,
+                retry_on_failure=retry_on_failure,
             )
         except ResultValidationError as exc:
             return jsonify({"message": "Task rejected", "reason": str(exc)}), 422
@@ -1235,12 +1251,31 @@ def create_app(node: ChordNode) -> Flask:
     WAIT_POLL_INTERVAL_S = 0.5
 
     def _format_status_response(task_id, record):
+        attempt_count   = record.get("attempt_count", 0)
+        recovery_history = record.get("recovery_history") or []
+        status          = record["status"]
+
+        # Phase 7 natural-language recovery note
+        if attempt_count > 0 and status == "PENDING":
+            recovery_note = f"Retrying (attempt {attempt_count})"
+        elif attempt_count > 0 and status == "FAILURE" and recovery_history:
+            recovery_note = f"Permanently failed after {attempt_count} attempt(s)"
+        elif attempt_count > 0:
+            recovery_note = f"Recovered after {attempt_count} attempt(s)"
+        else:
+            recovery_note = None
+
         return {
-            "task_id": task_id,
-            "status": record["status"],
-            "result": record["result"],
-            "worker_id": record["worker_id"],
-            "assigned_by": record["assigned_by"],
+            "task_id":              task_id,
+            "status":               status,
+            "result":               record["result"],
+            "worker_id":            record["worker_id"],
+            "assigned_by":          record["assigned_by"],
+            # Phase 7
+            "attempt_count":        attempt_count,
+            "recovery_history":     recovery_history,
+            "last_failure_reason":  record.get("last_failure_reason"),
+            "recovery_note":        recovery_note,
         }
 
     @app.get("/getStatus/<task_id>")
@@ -1445,6 +1480,18 @@ def create_app(node: ChordNode) -> Flask:
         workers[0] is the next /createTask placement target.
         """
         return jsonify(worker_registry.metrics_snapshot())
+
+    @app.post("/debug/trigger-recovery")
+    def debug_trigger_recovery():
+        """
+        Phase 7: Run one recovery scan cycle immediately.
+        Useful for testing without waiting for RECOVERY_CHECK_INTERVAL_SECONDS.
+        """
+        rm = app.config.get("recovery_manager")
+        if rm is None:
+            return jsonify({"ok": False, "reason": "recovery manager not initialised"}), 503
+        rm.trigger()
+        return jsonify({"ok": True, "message": "Recovery scan triggered"}), 200
 
     @app.post("/agent/chat")
     def agent_chat():
@@ -1793,6 +1840,12 @@ def start_node(host: str, port: int, known_address: str = None,
     # Failure watcher
     watcher = FailureWatcherThread(node, agent, interval=maintenance_interval)
     watcher.start()
+
+    # Phase 7: recovery manager
+    recovery_manager = app.config.get("recovery_manager")
+    if recovery_manager is not None:
+        recovery_manager.start()
+        logger.info(f"RecoveryManager started on node {node.node_id}")
 
     # Dummy client (optional)
     if enable_dummy_client:

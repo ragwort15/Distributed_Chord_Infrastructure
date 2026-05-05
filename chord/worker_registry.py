@@ -182,6 +182,10 @@ class WorkerRegistry:
             + PLACEMENT_WEIGHT_AVAILABILITY * availability
         )
 
+    def is_live(self, worker_id: str) -> bool:
+        """Return True if worker_id is currently in the live set."""
+        return worker_id in set(self.live_workers())
+
     def score_all_workers(self) -> List[Tuple[str, float]]:
         """
         Score every LIVE worker. Returns [(worker_id, score), ...] sorted
