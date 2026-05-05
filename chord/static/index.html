@@ -1005,7 +1005,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
           <div class="card-title">All Jobs</div>
           <div class="card-sub" id="jobs-subtitle">across entire ring</div>
           <div class="card-action btn-row">
-            <button class="btn btn-primary btn-sm" onclick="navigate('ring')">＋ Submit Job</button>
+            <button class="btn btn-primary btn-sm" id="btn-open-job-modal">＋ Submit Job</button>
           </div>
         </div>
         <div class="filter-chips" id="job-filter-chips">
@@ -1429,6 +1429,62 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 </div>
 
 <!-- ADD NODE MODAL removed — button now uses toast notifications -->
+
+<!-- ═══════════════════════ SUBMIT JOB MODAL ═══════════════════════ -->
+<div class="overlay hidden" id="submit-job-modal">
+  <div class="modal" style="width:460px">
+    <div class="modal-head">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div class="card-icon" style="background:rgba(99,102,241,.15);width:32px;height:32px;font-size:14px">▶</div>
+        <div>
+          <h3 style="margin:0;font-size:15px">Submit Job</h3>
+          <div style="font-size:11.5px;color:var(--tx-3);margin-top:2px">Routed by AI placement agent</div>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-icon" id="btn-close-job-modal" style="margin-left:auto">✕</button>
+    </div>
+    <div class="modal-body">
+      <form id="job-form-modal" autocomplete="off" style="display:flex;flex-direction:column;gap:12px">
+        <div class="field">
+          <label class="field-label">Job Type</label>
+          <select class="inp" id="jtype-modal">
+            <option value="echo">echo — reflect payload</option>
+            <option value="sleep">sleep — delay N seconds</option>
+            <option value="compute">compute — sum 0..N (CPU)</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr auto;gap:10px">
+          <div class="field">
+            <label class="field-label">Target Node</label>
+            <select class="inp" id="jtarget-modal">
+              <option value="">Auto (AI agent)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" title="Hint to the agent — how many copies to place across different nodes.">Replicas ⓘ</label>
+            <input type="number" class="inp" id="jreplicas-modal" value="1" min="1" max="10" style="width:64px;text-align:center">
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">Payload JSON</label>
+          <textarea class="inp inp-mono" id="jpayload-modal" rows="2">{"message":"hello"}</textarea>
+        </div>
+        <button type="submit" class="btn btn-primary" id="btn-submit-modal" style="width:100%;justify-content:center">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          Submit Job
+        </button>
+        <div class="feedback info" id="submit-fb-modal"></div>
+        <div id="ai-reasoning-wrap-modal" style="display:none;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;padding:8px 12px;font-size:11.5px;color:var(--tx-2);line-height:1.5">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;font-weight:700;color:#a5b4fc;font-size:11px;text-transform:uppercase;letter-spacing:.06em">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+            AI Placement Reasoning
+          </div>
+          <div id="ai-reasoning-text-modal" style="font-family:var(--mono);font-size:11px;color:var(--tx-1)"></div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 <script>
 'use strict';
@@ -2214,6 +2270,68 @@ function setFb(id,msg,type='info'){
   if(msg)el.scrollIntoView({behavior:'smooth',block:'nearest'});
   if(type==='err')console.error(`[${id}]`,msg);
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   SUBMIT JOB MODAL (Jobs page)
+═══════════════════════════════════════════════════════════════════ */
+(function(){
+  const modal   = document.getElementById('submit-job-modal');
+  const openBtn = document.getElementById('btn-open-job-modal');
+  const closeBtn= document.getElementById('btn-close-job-modal');
+
+  function openModal(){
+    // Sync target-node options from the ring sidebar select
+    const src = document.getElementById('jtarget');
+    const dst = document.getElementById('jtarget-modal');
+    dst.innerHTML = src.innerHTML;
+    modal.classList.remove('hidden');
+  }
+  function closeModal(){ modal.classList.add('hidden'); }
+
+  openBtn.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+  modal.addEventListener('click', e=>{ if(e.target===modal) closeModal(); });
+
+  document.getElementById('job-form-modal').addEventListener('submit', async e=>{
+    e.preventDefault();
+    const btn = document.getElementById('btn-submit-modal');
+    const type = document.getElementById('jtype-modal').value;
+    const replicas = parseInt(document.getElementById('jreplicas-modal').value)||1;
+    const target = document.getElementById('jtarget-modal').value;
+    let payload={};
+    try{ payload=JSON.parse(document.getElementById('jpayload-modal').value||'{}'); }
+    catch{ setFb('submit-fb-modal','✗ Invalid JSON payload','err'); return; }
+
+    btn.disabled=true;
+    btn.innerHTML='<div class="spinner"></div> Submitting…';
+    setFb('submit-fb-modal','','info');
+
+    try{
+      const body={type,payload,replicas};
+      if(target) body.target_node=target;
+      const res=await fetch('/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      let data={};
+      try{ data=await res.json(); }catch(_){ data={ok:false,error:'Server returned non-JSON'}; }
+      const reasonWrap=document.getElementById('ai-reasoning-wrap-modal');
+      const reasonText=document.getElementById('ai-reasoning-text-modal');
+      if(data.ok){
+        setFb('submit-fb-modal',`✓ Job ${data.job_id?.slice(0,10)}… → Node ${data.stored_at_node}`,'ok');
+        if(data.placement_reasoning){
+          reasonText.textContent=data.placement_reasoning;
+          reasonWrap.style.display='block';
+        } else { reasonWrap.style.display='none'; }
+        setTimeout(pollJobs, 400);
+      } else {
+        setFb('submit-fb-modal',`✗ ${data.error||'unknown error'}`,'err');
+        reasonWrap.style.display='none';
+      }
+    } catch(err){ setFb('submit-fb-modal',`✗ ${err.message}`,'err'); }
+    finally{
+      btn.disabled=false;
+      btn.innerHTML='<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg> Submit Job';
+    }
+  });
+})();
 
 document.getElementById('job-form').addEventListener('submit',async e=>{
   e.preventDefault();
