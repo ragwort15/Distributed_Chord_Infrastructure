@@ -729,10 +729,6 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
         <div class="node-pill-id" id="sidebar-node-id">Ring Status</div>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
-      <div class="ring-dots" id="ring-dots-sidebar"></div>
-      <span style="font-size:10px;color:var(--tx-4)" id="sidebar-ring-size">— nodes</span>
-    </div>
   </div>
 </nav>
 
@@ -768,10 +764,6 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
             <label class="check-label"><input type="checkbox" id="tog-ids" checked> Node IDs</label>
             <label class="check-label"><input type="checkbox" id="tog-ports"> Port labels</label>
             <div style="flex:1"></div>
-            <button class="btn btn-ghost btn-sm" id="btn-refresh-ring" title="Manually refresh the ring topology">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-              Refresh
-            </button>
             <button class="btn btn-ghost btn-sm" id="btn-add-node">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               Add Node
@@ -1712,25 +1704,8 @@ async function animateRoute(from,to){
 /* ═══════════════════════════════════════════════════════════════════
    SIDEBAR + HEADER STATE
 ═══════════════════════════════════════════════════════════════════ */
-let maxNodes=1;
-
 function updateSidebar(){
   const n=ring.nodes.length;
-  if(n>maxNodes)maxNodes=n;
-  const frac=n/maxNodes;
-  const status=frac>=1.0?'ok':frac>=0.6?'warn':'dead';
-
-  document.getElementById('sidebar-pulse').className='pulse '+(status==='ok'?'':'')+(status!=='ok'?status:'');
-  document.getElementById('sidebar-ring-size').textContent=`${n} node${n!==1?'s':''}`;
-
-  // Ring dots
-  const dotsEl=document.getElementById('ring-dots-sidebar');
-  dotsEl.innerHTML='';
-  for(let i=0;i<Math.min(n,12);i++){
-    const d=document.createElement('div');
-    d.className='ring-dot'+(status!=='ok'?' '+status:'');
-    dotsEl.appendChild(d);
-  }
 
   // Health chip
   const chip=document.getElementById('health-chip');
@@ -2418,17 +2393,6 @@ rmBtn.addEventListener('click',async()=>{
 document.getElementById('tog-fingers').addEventListener('change',function(){showFin=this.checked;document.getElementById('finger-help').style.display=this.checked?'block':'none';renderRing();});
 document.getElementById('tog-ids').addEventListener('change',function(){showIds=this.checked;renderRing();});
 document.getElementById('tog-ports').addEventListener('change',function(){showPorts=this.checked;renderRing();});
-
-document.getElementById('btn-refresh-ring').addEventListener('click',async function(){
-  const btn=this;
-  const icon=btn.querySelector('svg');
-  btn.disabled=true;
-  icon.style.animation='spin .6s linear infinite';
-  await pollRing();
-  await pollJobs();
-  icon.style.animation='';
-  btn.disabled=false;
-});
 
 /* ═══════════════════════════════════════════════════════════════════
    FAULT INJECTION
