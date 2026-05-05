@@ -699,9 +699,10 @@ def create_app(node: ChordNode) -> Flask:
                 content = {}
 
         # ── Prometheus instrumentation ──
+        duration_s = time.time() - t0
         FILE_REQUESTS.labels(node_id=nid_str, file_type=ftype).inc()
         FILE_REQUEST_HOPS.labels(node_id=nid_str).observe(hops)
-        FILE_REQUEST_DURATION.labels(node_id=nid_str).observe(time.time() - t0)
+        FILE_REQUEST_DURATION.labels(node_id=nid_str).observe(duration_s)
 
         entry = {
             "ts":             time.time(),
@@ -713,6 +714,7 @@ def create_app(node: ChordNode) -> Flask:
             "served_by_node": responsible["id"],
             "served_by_addr": served_addr,
             "hops":           hops,
+            "duration_ms":    round(duration_s * 1000, 1),
         }
         with _request_lock:
             _request_log.append(entry)
