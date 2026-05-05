@@ -1,6 +1,6 @@
 # Distributed Coordination Layer — Chord DHT
 
-A decentralized coordination layer for edge and IoT workloads built on the **Chord Distributed Hash Table**. Nodes self-organize into a consistent-hash ring, expose task APIs over **REST + gRPC**, and persist replicated task metadata without a central coordinator.
+A decentralized coordination layer for edge and IoT workloads built on the **Chord Distributed Hash Table**. Nodes self-organize into a consistent-hash ring, expose task and job APIs over **REST + gRPC**, execute jobs via an AI-assisted placement agent, and persist replicated task metadata without a central coordinator.
 
 **Course:** CMPE 273 — Distributed Systems  
 **Option:** A — Distributed Job Execution Platform
@@ -15,7 +15,16 @@ A decentralized coordination layer for edge and IoT workloads built on the **Cho
 - [Project Structure](#project-structure)
 - [Tech Stack](#tech-stack)
 - [Quick Start](#quick-start)
+  - [Option A — Docker Compose (recommended)](#option-a--docker-compose-recommended)
+  - [Option B — Local Python](#option-b--local-python)
 - [Running a Multi-Node Ring](#running-a-multi-node-ring)
+- [Control Center Dashboard](#control-center-dashboard)
+- [AI Task Chat](#ai-task-chat)
+- [Observability Stack](#observability-stack)
+- [Simulator & Benchmarking](#simulator--benchmarking)
+- [Utility Scripts](#utility-scripts)
+- [AWS Demo Deployment](#aws-demo-deployment)
+- [Retry & Fallback Policy](#retry--fallback-policy)
 - [API Reference](#api-reference)
 - [Testing with curl](#testing-with-curl)
 - [Run Tests](#run-tests)
@@ -82,7 +91,7 @@ Ack with replication status (COMPLETE / DEGRADED)
 
 ## Components
 
-### 1. Chord Core
+### 1. Chord Core (`chord/node.py`)
 The DHT backbone. Every other component builds on top of this.
 
 - **Consistent hashing** — SHA-1 maps keys into ring identifiers (8-bit test ring by default)
@@ -91,27 +100,77 @@ The DHT backbone. Every other component builds on top of this.
 - **Failure detection** — heartbeat-based predecessor liveness check
 - **Graceful leave** — data handoff to successor before departure
 
-### 2. Task Service & Storage Layer
-Sits on top of the Chord ring to provide application-level operations.
+### 2. Transport Layer (`chord/transport.py`)
+All inter-node HTTP calls go through a single wrapper — `ChordNode` logic stays decoupled from networking.
 
-- Task schema definition (`storage/schema.py`) and DHT persistence format
-- Register / deregister / get / query task APIs (`storage/task_service.py`)
-- Replication to `k` successors (`storage/replication.py`)
-- REST endpoints in `chord/server.py` and gRPC services in `api/grpc_server.py`
+- Unified `_request()` covers GET, POST, DELETE, PATCH
+- **Exponential back-off retry**: 3 attempts, delays 0.1 s → 0.2 s → 0.4 s
 
-### 3. External Interfaces
-The system is consumable by schedulers, workers, or orchestration layers through two API styles.
+### 3. Task Service & Storage Layer (`storage/`)
+Sits on top of the Chord ring for application-level task operations.
 
-- **REST API** — task registration/deregistration/lookup + ring/node query endpoints
-- **gRPC API** — typed `TaskService` and `InternalReplicationService` contracts
-- **Proto contract** — `api/task_service.proto`
-- **Detailed spec** — `docs/api_spec.md`
+- **`schema.py`** — task record schema, validation, full lifecycle (REGISTERED → QUEUED → RUNNING → COMPLETED / FAILED / CANCELLED / DELETED), `update_task_record()` for partial patches
+- **`task_service.py`** — register / get / update / deregister / query tasks; primary-write retry with re-resolution on stale routing; replica fallback on primary failure
+- **`replication.py`** — `ReplicationManager`: successor chain walk, write/delete to k replicas with per-replica retry and quorum check (`ceil(k/2)`)
 
-### 4. Testing & Validation
-- Chord ring behavior tests (`tests/test_chord.py`)
-- Task service tests (`tests/test_task_service.py`)
-- Replication tests (`tests/test_replication.py`)
-- gRPC service mapping tests (`tests/test_grpc_service.py`)
+### 4. Agent & Orchestration (`chord/agent.py`, `chord/agent_loop.py`)
+AI-powered job placement and continuous ring monitoring.
+
+- **`OrchestratorAgent`** — uses Claude LLM to select the best node for job placement; falls back to heuristic (least-loaded node) on any LLM exception
+- **`AgentLoop`** — daemon thread that walks the full ring every 5 s, collects metrics from all reachable nodes, skips dead nodes via finger-table fallback, and logs structured decisions to `agent_decisions.jsonl`
+
+### 5. Worker & Job Execution (`chord/worker.py`, `chord/job.py`)
+Local job execution with retry.
+
+- **`WorkerThread`** — scans local DHT for `PENDING` jobs, atomically claims them, executes in a thread pool
+- **Job retry** — re-queues on failure up to `MAX_JOB_RETRIES = 3`; timed-out jobs (`JOB_TIMEOUT = 120 s`) follow the same budget
+- **Job types**: `echo`, `sleep`, `compute`
+
+### 6. Metrics (`chord/metrics_registry.py`)
+Prometheus-compatible counters and gauges scraped by Grafana.
+
+- `FILE_REQUESTS`, `FILE_REQUEST_HOPS`, `FILE_REQUEST_DURATION`
+- `QUEUE_DEPTH`, `RING_SIZE`, `DATA_KEYS`
+- `STABILIZE_RUNS`, `FINGER_FIX_RUNS`, `PREDECESSOR_FAILURES`, `JOBS_TOTAL`
+
+### 7. Control Center Dashboard (`chord/static/index.html`)
+A single-file browser UI with 8 tabs served by each node's Flask server.
+
+| Tab | What it shows |
+|---|---|
+| Ring Topology | Live SVG ring; finger table arcs; **Add Node** (auto-spawns via `sys.executable`), Remove / Crash / Leave controls |
+| Analytics | 4 stat cards + Chart.js charts: request throughput, hop distribution, node queue depth, agent strategy mix |
+| Observability | Embedded Grafana iframe (requires Prometheus + Grafana running) |
+| All Jobs | Filterable job list with status dots, copy-to-clipboard Job ID buttons |
+| Task Registry | Register / get / update / deregister tasks; **Reset** button to restore form defaults; ring owner lookup |
+| File Requests | DHT file routing log with hop counts |
+| DHT Store | Raw key-value GET / PUT / DELETE; local key browser; ring key-owner lookup |
+| Agent Log | Structured agent decision log with strategy breakdown |
+
+The sidebar has an **"Assistant"** section and a pulsing floating button (bottom-right) that both open the AI Task Chat in a new tab.
+
+### 8. AI Task Chat (`chord/static/chat.html`)
+Conversational interface served at `/chat` on every node. Submit tasks and query ring state in natural language.
+
+### 9. External gRPC Interface (`api/`)
+- `TaskService` — `RegisterTask`, `GetTask`, `DeregisterTask`, `QueryTasks`, `LookupTaskOwner`, `GetNodeInfo`
+- `InternalReplicationService` — `ReplicateTask`
+- Contract: `api/task_service.proto`
+
+### 10. Simulator (`simulator/`)
+In-process virtual-node simulator for benchmarking and fault injection — no real HTTP servers required.
+
+- **`virtual_node.py`** — lightweight Chord node stub
+- **`benchmark.py`** — strategy comparison across LLM / heuristic / fallback agents
+- **`fault_injection.py`** — node crash/partition scenarios
+- **`metrics.py`** — latency, hop count, throughput collectors
+- Results captured in `simulator/results.md`
+
+### 11. Testing & Validation (`tests/`)
+- `test_chord.py` — ring behavior (hashing, join, stabilize, leave)
+- `test_task_service.py` — task CRUD + replica fallback
+- `test_replication.py` — quorum write/delete
+- `test_grpc_service.py` — gRPC service mapping
 
 ---
 
@@ -120,36 +179,75 @@ The system is consumable by schedulers, workers, or orchestration layers through
 ```
 Distributed_Chord_Infrastructure/
 │
-├── api/                       # gRPC contracts + generated stubs + gRPC server
+├── api/                         # gRPC contracts + generated stubs + gRPC server
 │   ├── task_service.proto
 │   ├── task_service_pb2.py
 │   ├── task_service_pb2_grpc.py
 │   └── grpc_server.py
 │
-├── chord/                     # Chord DHT core
-│   ├── __init__.py
-│   ├── node.py                # Ring logic: finger table, join, stabilize, leave
-│   ├── transport.py           # HTTP transport and inter-node RPC helpers
-│   └── server.py              # Flask server: Chord endpoints + task REST APIs
+├── chord/                       # Chord DHT core + application layer
+│   ├── node.py                  # Ring logic: finger table, join, stabilize, leave
+│   ├── transport.py             # HTTP transport with exponential-backoff retry
+│   ├── server.py                # Flask server: all REST endpoints
+│   ├── agent.py                 # OrchestratorAgent: LLM placement + heuristic fallback
+│   ├── agent_loop.py            # Daemon ring-walk + metrics collection
+│   ├── worker.py                # WorkerThread: job claim + execute + retry
+│   ├── job.py                   # Job schema helpers and status constants
+│   ├── metrics_registry.py      # Prometheus counters/gauges
+│   ├── dummy_client.py          # File-type simulation for request routing demo
+│   └── static/
+│       ├── index.html           # Control Center dashboard (single-file SPA, 8 tabs)
+│       └── chat.html            # AI Task Chat interface (served at /chat)
 │
-├── storage/                   # Task schema, service layer, replication logic
-│   ├── __init__.py
-│   ├── schema.py
-│   ├── task_service.py
-│   └── replication.py
+├── storage/                     # Task schema, service layer, replication logic
+│   ├── schema.py                # Task record schema, validation, lifecycle transitions
+│   ├── task_service.py          # TaskService: CRUD + primary-write retry + replica fallback
+│   └── replication.py           # ReplicationManager: successor chain, quorum write/delete
+│
+├── simulator/                   # In-process virtual-node simulator (no real HTTP)
+│   ├── virtual_node.py          # Lightweight Chord node stub
+│   ├── benchmark.py             # Strategy comparison benchmarks
+│   ├── fault_injection.py       # Node crash / partition scenarios
+│   ├── metrics.py               # Latency, hop count, throughput collectors
+│   └── results.md               # Captured benchmark results
+│
+├── observability/               # Prometheus + Grafana stack
+│   ├── prometheus.yml           # Scrape config (targets all Chord nodes)
+│   ├── docker-compose.yml       # Spin up Prometheus + Grafana only
+│   └── grafana/
+│       ├── provisioning/        # Auto-provisioned datasource + dashboard config
+│       └── dashboards/
+│           └── chord_dht.json   # Pre-built Chord DHT dashboard
+│
+├── deploy/
+│   └── ec2-demo/                # Budget AWS demo deployment (see DEPLOYMENT_GUIDE.md)
+│       ├── terraform/           # EC2 + security group + Elastic IP (free-tier friendly)
+│       ├── scripts/             # deploy.sh (one command) + teardown.sh + ec2-bootstrap.sh
+│       └── docker-compose.demo.yml  # Resource-limited compose for t3.small/t2.micro
+│
+├── helm/chord/                  # Helm chart for Kubernetes deployment
+├── k8s/                         # Raw Kubernetes manifests
+├── terraform/                   # Full EKS cluster Terraform (production-scale)
 │
 ├── docs/
-│   └── api_spec.md            # REST + gRPC API details
+│   └── api_spec.md              # REST + gRPC API specification
 │
-├── tests/                     # Unit + integration tests
-│   ├── __init__.py
+├── tests/                       # Unit + integration tests (pytest)
 │   ├── test_chord.py
 │   ├── test_task_service.py
 │   ├── test_replication.py
 │   └── test_grpc_service.py
 │
-├── run_node.py                # CLI entrypoint to start a Chord node
+├── Dockerfile                   # Production image (python:3.14-slim, multi-stage)
+├── Dockerfile.demo              # Demo image (python:3.11-slim, no dev deps)
+├── docker-compose.yml           # Full local stack: 3 nodes + Prometheus + Grafana
+├── run_node.py                  # CLI: start a single Chord node
+├── run_demo.py                  # CLI: end-to-end simulator demo
+├── run_benchmark.py             # CLI: strategy comparison benchmarks
+├── run_fault_tests.py           # CLI: fault injection test suite
+├── submit_job.py                # CLI: submit jobs to a running ring
 ├── requirements.txt
+├── DEPLOYMENT_GUIDE.md          # Step-by-step AWS EC2 demo deployment guide
 └── README.md
 ```
 
@@ -159,35 +257,61 @@ Distributed_Chord_Infrastructure/
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3.12+ |
+| Language | Python 3.11+ |
 | Chord transport | HTTP over TCP (Flask + requests) |
 | gRPC | grpcio + grpcio-tools |
 | API style | REST + gRPC |
+| Dashboard UI | Vanilla JS + Chart.js 4.4.2 (single HTML file) |
+| AI placement | Anthropic Claude API (with heuristic fallback) |
+| Metrics | Prometheus + Grafana |
+| Containerisation | Docker + Docker Compose |
+| Cloud deployment | AWS EC2 (demo) · EKS (production Terraform) · Helm |
 | Testing | pytest |
 
 ---
 
 ## Quick Start
 
-### Prerequisites
+### Option A — Docker Compose (recommended)
 
-- Python 3.12+
-- pip
+Spins up 3 Chord nodes + Prometheus + Grafana with a single command. No Python setup needed.
 
-### 1. Clone the repository
+**Prerequisites:** Docker Desktop (or Docker Engine + Docker Compose v2)
 
 ```bash
 git clone https://github.com/ragwort15/Distributed_Chord_Infrastructure.git
 cd Distributed_Chord_Infrastructure
+
+docker compose up --build
 ```
 
-### 2. Install dependencies
+| Service | URL |
+|---|---|
+| Chord Node 1 | http://localhost:5001 |
+| Chord Node 2 | http://localhost:5002 |
+| Chord Node 3 | http://localhost:5003 |
+| AI Task Chat | http://localhost:5001/chat |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (admin / admin) |
+
+To stop and clean up:
+```bash
+docker compose down -v
+```
+
+---
+
+### Option B — Local Python
+
+**Prerequisites:** Python 3.11+, pip
 
 ```bash
+git clone https://github.com/ragwort15/Distributed_Chord_Infrastructure.git
+cd Distributed_Chord_Infrastructure
 pip install -r requirements.txt
 ```
 
-### 3. Start a single bootstrap node
+Start a single bootstrap node:
 
 ```bash
 python run_node.py --port 5001 --id 10
@@ -200,6 +324,8 @@ INFO chord.node: [Node 10] Bootstrapped as first node
 INFO root: Starting Chord node 10 on 127.0.0.1:5001
  * Running on http://127.0.0.1:5001
 ```
+
+Open **http://127.0.0.1:5001** — the Control Center dashboard loads automatically.
 
 ---
 
@@ -229,6 +355,8 @@ Node 80  →  successor: Node 150  │  predecessor: Node 10
 Node 150 →  successor: Node 10   │  predecessor: Node 80
 ```
 
+Open **http://127.0.0.1:5001** to see all three nodes on the live ring diagram.
+
 ### CLI options
 
 | Flag | Description | Default |
@@ -240,6 +368,165 @@ Node 150 →  successor: Node 10   │  predecessor: Node 80
 | `--interval` | Stabilization interval in seconds | `2.0` |
 | `--grpc-port` | Enable gRPC TaskService on this port | Disabled |
 | `--log` | Log level: DEBUG / INFO / WARNING / ERROR | `INFO` |
+
+---
+
+## Control Center Dashboard
+
+Each node serves the dashboard at its root URL (e.g. `http://127.0.0.1:5001`).
+
+### Ring Topology tab
+- Live SVG ring auto-polls every 2 seconds; nodes coloured by position; arcs show finger table shortcuts
+- **Add Node** — auto-spawns a new process using `sys.executable` (works in venvs and Docker); shows the exact run command and polls the ring at 3.5 s / 6 s / 9 s / 13 s to reflect the new node as it stabilises
+- **Remove / Crash / Leave** — all apply an optimistic UI update so the SVG updates immediately without waiting for Chord stabilisation (2–10 s)
+
+### Analytics tab
+- **Stat cards**: Total Requests, Avg Hops, Jobs Completed, Jobs Failed
+- **Charts** (auto-refresh every 5 s): Request Throughput, Hop Distribution, Node Queue Depth, Agent Strategy Mix (LLM vs heuristic vs fallback)
+
+### Task Registry tab
+- **Register Task** — `job_id` (optional, defaults to `_unlinked`), `type` (required), `payload` (JSON, defaults to `{}`), `priority`
+- **Reset button** — restores all fields to working defaults in one click
+- **Get / Deregister** tasks by ID; hard delete or soft tombstone
+- **Update Status** — PATCH `status`, `result`, `error`, `payload`, or `priority`
+- **Ring Lookup** — find primary owner + replica chain for any task ID
+- Live task table with filter by Job ID or status
+
+### DHT Store tab
+- **Retrieve / Store / Delete** — routed key lookup/write/delete across the ring
+- **Local Keys** — snapshot of all keys on this node; click **Get** or **Del** to act on any row
+- **Ring Key Owner** — find which node owns any arbitrary key
+
+---
+
+## AI Task Chat
+
+Every node exposes a conversational chat interface at `/chat` (e.g. `http://127.0.0.1:5001/chat`).
+
+Open it via:
+- The **"AI Task Chat"** link in the sidebar "Assistant" section of the dashboard
+- The **pulsing chat bubble** fixed to the bottom-right corner of the dashboard
+- Directly in the browser
+
+The chat lets you submit tasks and query ring state in natural language. It is backed by the same REST API as the dashboard.
+
+---
+
+## Observability Stack
+
+Prometheus and Grafana run alongside the Chord nodes and are included in `docker-compose.yml`.
+
+**Start just the observability layer** (if you already have nodes running locally):
+
+```bash
+docker compose -f observability/docker-compose.yml up -d
+```
+
+| Service | URL |
+|---|---|
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (admin / admin) |
+
+The pre-built **Chord DHT** Grafana dashboard (`observability/grafana/dashboards/chord_dht.json`) is provisioned automatically and shows ring size, request throughput, hop distribution, queue depth, and job counters.
+
+Prometheus scrapes `/metrics` on each node every 15 s (configured in `observability/prometheus.yml`).
+
+---
+
+## Simulator & Benchmarking
+
+The `simulator/` package runs an in-process virtual ring — no real HTTP servers, ports, or Docker required.
+
+### End-to-end demo
+```bash
+python run_demo.py                       # 5 nodes, 10 jobs (default)
+python run_demo.py --nodes 10 --jobs 20
+```
+
+### Strategy benchmarks
+Compares LLM agent, heuristic, and fallback placement across multiple runs:
+```bash
+python run_benchmark.py                              # 5 nodes, 20 jobs, 2 runs
+python run_benchmark.py --nodes 10 --jobs 50 --runs 3
+```
+Results are printed to stdout and summarised in `simulator/results.md`.
+
+### Fault injection tests
+```bash
+python run_fault_tests.py                # 5 nodes (default)
+python run_fault_tests.py --nodes 10
+```
+Exercises node crash, partition, and recovery scenarios against the virtual ring.
+
+---
+
+## Utility Scripts
+
+| Script | Purpose |
+|---|---|
+| `run_node.py` | Start a single Chord node (see CLI options above) |
+| `run_demo.py` | End-to-end simulator demo |
+| `run_benchmark.py` | Strategy comparison benchmarks |
+| `run_fault_tests.py` | Fault injection test suite |
+| `submit_job.py` | Submit jobs to a live ring from the command line |
+
+### `submit_job.py` examples
+
+```bash
+# Echo job (no polling)
+python submit_job.py --node 127.0.0.1:5001 --type echo \
+  --payload '{"message": "hello ring"}'
+
+# Compute job with polling until done
+python submit_job.py --node 127.0.0.1:5001 --type compute \
+  --payload '{"n": 50000}' --replicas 2 --poll
+
+# Sleep job
+python submit_job.py --node 127.0.0.1:5001 --type sleep \
+  --payload '{"seconds": 3}' --poll
+```
+
+---
+
+## AWS Demo Deployment
+
+For a class demo on AWS with minimal cost (**~$0 on Free Tier**, ~$14/month on t3.small).
+
+**Single EC2 instance running all 5 containers via Docker Compose** — no EKS, no RDS.
+
+```bash
+# Prerequisites: AWS CLI configured, Terraform ≥ 1.3, rsync
+cd Distributed_Chord_Infrastructure
+chmod +x deploy/ec2-demo/scripts/*.sh
+bash deploy/ec2-demo/scripts/deploy.sh    # provisions + uploads + starts everything (~10 min)
+```
+
+After deploy, the script prints all URLs. To destroy all resources when done:
+
+```bash
+bash deploy/ec2-demo/scripts/teardown.sh
+```
+
+See **[DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)** for prerequisites, cost breakdown, step-by-step manual instructions, and troubleshooting.
+
+> **Why not EKS?** EKS costs ~$163/month (control plane + 3 nodes). The EC2 approach achieves the same demo at ~$0–14/month.
+
+---
+
+## Retry & Fallback Policy
+
+Retries are layered so a single transient failure never surfaces to the caller.
+
+| Layer | Policy |
+|---|---|
+| Transport (`transport.py`) | 3 retries, exponential back-off: 0.1 s → 0.2 s → 0.4 s, all HTTP verbs |
+| Routed endpoints (`server.py`) | Re-resolve Chord successor + retry ×2 for `/put`, `/get`, `/del`, `GET /jobs/<id>` |
+| Primary write (`task_service.py`) | Re-resolve + retry ×2 if remote primary write fails due to stale routing |
+| Read fallback (`task_service.py`) | If primary throws a network exception on `get_task`, automatically falls through to replica nodes |
+| Replication (`replication.py`) | Per-replica retry ×2 (0.2 s → 0.4 s); declared `COMPLETE` at `ceil(k/2)` — one flaky replica does not degrade every write |
+| Agent (`agent.py`) | Falls back to heuristic (least-loaded node) on any LLM exception; logged as `strategy="heuristic_fallback"` |
+| Agent ring walk (`agent_loop.py`) | Dead nodes are skipped via finger-table jump — walk continues over healthy peers |
+| Worker (`worker.py`) | Jobs retried up to `MAX_JOB_RETRIES = 3`; timed-out jobs (`JOB_TIMEOUT = 120 s`) follow the same budget |
 
 ---
 
@@ -268,24 +555,47 @@ Detailed request/response payloads are documented in `docs/api_spec.md`.
 | `GET` | `/data/<key>` | Retrieve a value from this node's local store |
 | `DELETE` | `/data/<key>` | Delete a key from this node's local store |
 
-### Routed Data API (auto-routes to responsible node)
+### Routed Data API (auto-routes to responsible node, with re-resolve retry)
 
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/put/<key>` | Hash the key, route to responsible node, store there |
 | `GET` | `/get/<key>` | Hash the key, route to responsible node, retrieve from there |
+| `DELETE` | `/del/<key>` | Hash the key, route to responsible node, delete there |
+| `GET` | `/chord/key-owner/<key>` | Find the Chord-responsible node for any raw key |
+
+### Job API
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/jobs` | Submit a job — agent selects placement node, worker executes it |
+| `GET` | `/jobs` | List all jobs on this node (`?status=pending\|running\|done\|failed`) |
+| `GET` | `/jobs/<job_id>` | Retrieve a job by ID (routed to responsible node) |
+
+Job body: `{"type": "echo|sleep|compute", "payload": {...}, "replicas": 1}`
 
 ### Task Service REST Endpoints
 
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/tasks` | Register a task with schema validation + replication |
-| `GET` | `/tasks/<task_id>` | Retrieve task by ID (with replica fallback) |
-| `DELETE` | `/tasks/<task_id>?hard=true|false` | Soft deregister (tombstone) or hard delete |
-| `GET` | `/tasks?job_id=&status=&include_deleted=&limit=` | Query local tasks on node |
-| `GET` | `/ring/lookup/<task_id>` | Resolve primary owner + replica chain |
+| `GET` | `/tasks/<task_id>` | Retrieve task by ID (primary first, replica fallback on failure) |
+| `PATCH` | `/tasks/<task_id>` | Partial update: `status`, `result`, `error`, `payload`, `priority` |
+| `DELETE` | `/tasks/<task_id>?hard=true\|false` | Soft deregister (tombstone) or hard delete |
+| `GET` | `/tasks?job_id=&status=&include_deleted=&limit=` | Query local tasks on this node |
+| `GET` | `/ring/lookup/<task_id>` | Resolve primary owner + replica chain for a task |
 | `GET` | `/nodes/self` | Return local node state |
 | `GET` | `/nodes/query?address=<host:port>` | Query remote node state |
+
+### Metrics & Observability
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/metrics` | Node metrics snapshot: queue depth, jobs, hop stats, agent decisions |
+| `GET` | `/prom_metrics` | Prometheus text-format metrics (scraped by Prometheus) |
+| `GET` | `/api/logs` | Last 40 structured agent decision log entries |
+| `GET` | `/api/ring` | Full ring snapshot: all known nodes with IDs and addresses |
+| `GET` | `/api/status` | Health summary: queue depth, jobs completed/failed, ring size |
 
 ### Internal Task Replication REST Endpoints
 
@@ -297,9 +607,10 @@ Detailed request/response payloads are documented in `docs/api_spec.md`.
 
 ### gRPC Services
 
-- `TaskService` (`RegisterTask`, `GetTask`, `DeregisterTask`, `QueryTasks`, `LookupTaskOwner`, `GetNodeInfo`)
-- `InternalReplicationService` (`ReplicateTask`)
+- `TaskService` — `RegisterTask`, `GetTask`, `DeregisterTask`, `QueryTasks`, `LookupTaskOwner`, `GetNodeInfo`
+- `InternalReplicationService` — `ReplicateTask`
 - Contract file: `api/task_service.proto`
+- Enable with: `python run_node.py --port 5001 --grpc-port 50051`
 
 ---
 
@@ -336,37 +647,74 @@ curl "http://127.0.0.1:5001/chord/find_successor?id=100"
 curl "http://127.0.0.1:5001/chord/find_successor?id=200"
 ```
 
-### Register, retrieve, and remove a task
+### Submit and query jobs
+
+```bash
+# Submit an echo job — agent places it on the best node
+curl -X POST http://127.0.0.1:5001/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"type": "echo", "payload": {"message": "hello ring"}, "replicas": 1}'
+
+# Submit a compute job
+curl -X POST http://127.0.0.1:5002/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"type": "compute", "payload": {"n": 10000}}'
+
+# List all jobs on node 1
+curl http://127.0.0.1:5001/jobs | python -m json.tool
+```
+
+### Register, update, retrieve, and remove a task
 
 ```bash
 # 1) Register a task (can hit any node)
 curl -X POST http://127.0.0.1:5001/tasks \
-      -H "Content-Type: application/json" \
-      -d '{
-            "task_id": "task-curl-1",
-            "job_id": "job-curl-1",
-            "type": "process.sensor",
-            "payload": {"sensor_id": "A12", "window": "5m"},
-            "priority": 5
+  -H "Content-Type: application/json" \
+  -d '{
+        "task_id": "task-curl-1",
+        "job_id": "job-curl-1",
+        "type": "process.sensor",
+        "payload": {"sensor_id": "A12", "window": "5m"},
+        "priority": 5
       }'
 
-# Expected (shape):
-# {"ok": true, "data": {"task": {...}, "task_key": "task:task-curl-1", "storage": {...}}}
+# 2) Update status (PATCH)
+curl -X PATCH http://127.0.0.1:5001/tasks/task-curl-1 \
+  -H "Content-Type: application/json" \
+  -d '{"status": "RUNNING"}'
 
-# 2) Retrieve the task from another node (replica fallback supported)
+# 3) Retrieve from another node (replica fallback supported)
 curl http://127.0.0.1:5003/tasks/task-curl-1
 
-# Expected (shape):
-# {"ok": true, "data": {"task": {"task_id": "task-curl-1", "job_id": "job-curl-1", ...}}}
+# 4) Query tasks by job_id/status
+curl "http://127.0.0.1:5002/tasks?job_id=job-curl-1&status=RUNNING&limit=10"
 
-# 3) Query tasks by job_id/status on local node store
-curl "http://127.0.0.1:5002/tasks?job_id=job-curl-1&status=REGISTERED&limit=10"
-
-# 4) Soft-deregister the task (writes DELETED tombstone + replicates)
+# 5) Soft-deregister (tombstone)
 curl -X DELETE "http://127.0.0.1:5001/tasks/task-curl-1?hard=false"
 
-# Optional hard delete:
-# curl -X DELETE "http://127.0.0.1:5001/tasks/task-curl-1?hard=true"
+# Hard delete (removes from all replicas)
+curl -X DELETE "http://127.0.0.1:5001/tasks/task-curl-1?hard=true"
+```
+
+### DHT Store (routed key-value)
+
+```bash
+# Store a value — routes to the responsible node
+curl -X POST http://127.0.0.1:5001/put/config.json \
+  -H "Content-Type: application/json" \
+  -d '{"version": 2, "threshold": 0.85}'
+
+# Retrieve from any node — auto-routes
+curl http://127.0.0.1:5003/get/config.json
+
+# Find which node owns a key
+curl http://127.0.0.1:5001/chord/key-owner/config.json
+
+# Delete via routed endpoint
+curl -X DELETE http://127.0.0.1:5001/del/config.json
+
+# List all keys stored locally on node 5001
+curl http://127.0.0.1:5001/data
 ```
 
 ### Test failure detection
@@ -458,54 +806,84 @@ tests/test_grpc_service.py::test_grpc_register_and_get_task        PASSED
 }
 ```
 
+### Job submission (`POST /jobs`)
+```json
+{
+  "ok": true,
+  "job_id": "a3f9c12d...",
+  "primary_key": "job:a3f9c12d...",
+  "stored_at_node": 80,
+  "placement_reasoning": "Node 80 has lowest queue depth (0 pending jobs)",
+  "replicas": []
+}
+```
+
 ### Task registration (`POST /tasks`)
 ```json
 {
-      "ok": true,
-      "data": {
-            "task": {
-                  "task_id": "task-curl-1",
-                  "job_id": "job-curl-1",
-                  "type": "process.sensor",
-                  "status": "REGISTERED"
-            },
-            "task_key": "task:task-curl-1",
-            "storage": {
-                  "replication_state": "COMPLETE"
-            }
-      }
+  "ok": true,
+  "data": {
+    "task": {
+      "task_id": "task-curl-1",
+      "job_id": "job-curl-1",
+      "type": "process.sensor",
+      "status": "REGISTERED",
+      "version": 1
+    },
+    "task_key": "task:task-curl-1",
+    "storage": {
+      "replication_state": "COMPLETE",
+      "quorum": {"required": 2, "achieved": 3}
+    }
+  }
+}
+```
+
+### Task partial update (`PATCH /tasks/task-curl-1`)
+```json
+{
+  "ok": true,
+  "data": {
+    "task": {
+      "task_id": "task-curl-1",
+      "status": "RUNNING",
+      "version": 2,
+      "updated_at": "2025-05-04T12:34:56Z"
+    },
+    "storage": {"replication_state": "COMPLETE"}
+  }
 }
 ```
 
 ### Task retrieval (`GET /tasks/task-curl-1`)
 ```json
 {
-      "ok": true,
-      "data": {
-            "task": {
-                  "task_id": "task-curl-1",
-                  "job_id": "job-curl-1",
-                  "type": "process.sensor",
-                  "status": "REGISTERED"
-            }
-      }
+  "ok": true,
+  "data": {
+    "task": {
+      "task_id": "task-curl-1",
+      "job_id": "job-curl-1",
+      "type": "process.sensor",
+      "status": "RUNNING",
+      "version": 2
+    }
+  }
 }
 ```
 
 ### Task soft-deregister (`DELETE /tasks/task-curl-1?hard=false`)
 ```json
 {
-      "ok": true,
-      "data": {
-            "task": {
-                  "task_id": "task-curl-1",
-                  "status": "DELETED"
-            },
-            "hard_delete": false,
-            "storage": {
-                  "replication_state": "COMPLETE"
-            }
-      }
+  "ok": true,
+  "data": {
+    "task": {
+      "task_id": "task-curl-1",
+      "status": "DELETED",
+      "deleted": true
+    },
+    "hard_delete": false,
+    "storage": {"replication_state": "COMPLETE"}
+  }
 }
 ```
 
@@ -537,5 +915,11 @@ Every 2 seconds each node runs:
 3. `check_predecessor()` — ping predecessor, clear if unreachable
 
 This keeps the ring correct as nodes join and leave without any central coordinator.
+
+### Replication and quorum
+
+When a task is registered it is written to the primary node (the Chord successor responsible for `hash("task:{task_id}")`), then replicated to `k-1` successor nodes. Replication is declared `COMPLETE` once at least `ceil(k/2)` copies exist (quorum). This means one slow or flaky replica does not block writes, while data still survives `floor(k/2)` simultaneous node failures.
+
+If the primary is later unreachable, `get_task` automatically falls back to the replica chain — no client retry needed.
 
 ---
