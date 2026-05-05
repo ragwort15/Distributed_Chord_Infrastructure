@@ -428,6 +428,11 @@ def create_app(node: ChordNode) -> Flask:
     def chat_alias():
         return send_from_directory(_STATIC_DIR, "chat.html")
 
+    @app.get("/recovery")
+    def recovery_dashboard():
+        """Phase 7 — live failure & recovery dashboard."""
+        return send_from_directory(_STATIC_DIR, "recovery.html")
+
     # ------------------------------------------------------------------
     # Dashboard API — ring topology
     # ------------------------------------------------------------------
@@ -1480,6 +1485,134 @@ def create_app(node: ChordNode) -> Flask:
         workers[0] is the next /createTask placement target.
         """
         return jsonify(worker_registry.metrics_snapshot())
+
+    # ------------------------------------------------------------------
+    # Phase 7 — live recovery dashboard APIs
+    #
+    # Three lightweight read-only endpoints powering /recovery:
+    #   GET /api/workers/status   — live/dead workers + load + latency
+    #   GET /api/tasks/active     — tasks currently PENDING or RUNNING
+    #   GET /api/recovery/events?since=<epoch> — events derived from
+    #     recovery_history of HT1 records updated since the cutoff
+    # ------------------------------------------------------------------
+
+    @app.get("/api/workers/status")
+    def api_workers_status():
+        """
+        Adapter over worker_registry.metrics_snapshot() that uses the
+        field names the recovery dashboard expects (id, status).
+        """
+        snap = worker_registry.metrics_snapshot()
+        out = []
+        for w in snap.get("workers", []):
+            out.append({
+                "id": w.get("worker_id"),
+                "status": "alive" if w.get("is_live") else "dead",
+                "pending_tasks": w.get("pending_tasks", 0),
+                "latency_ms": w.get("latency_ms", 0.0),
+                "success_rate": w.get("success_rate", 1.0),
+                "score": w.get("score") if w.get("score") is not None else 0.0,
+            })
+        return jsonify({"workers": out, "timestamp": time.time()})
+
+    @app.get("/api/tasks/active")
+    def api_tasks_active():
+        """
+        Tasks currently in flight (PENDING or RUNNING) on this node's
+        local store. Single-node ring → all tasks visible. Multi-node →
+        each node sees only the records it owns; aggregate at the UI
+        level if you need cluster-wide.
+        """
+        with node._lock:
+            snapshot = list(node.data_store.items())
+        tasks = []
+        for k, v in snapshot:
+            if not isinstance(k, str) or not k.startswith("result:"):
+                continue
+            if not isinstance(v, dict) or v.get("kind") != "result_details":
+                continue
+            if v.get("status") not in ("PENDING", "RUNNING"):
+                continue
+            tasks.append({
+                "task_id": v.get("task_id"),
+                "status": (v.get("status") or "").lower(),
+                "worker_id": v.get("worker_id"),
+                "attempt_count": v.get("attempt_count", 0),
+                "max_attempts": v.get("max_attempts", 3),
+                "last_failure_reason": v.get("last_failure_reason") or "None",
+                "recovery_history": v.get("recovery_history") or [],
+            })
+        # Most recently updated first (best-effort if updated_at present)
+        tasks.sort(key=lambda t: t.get("task_id") or "", reverse=True)
+        return jsonify({"tasks": tasks, "timestamp": time.time()})
+
+    def _classify_event(entry: str) -> str:
+        e = (entry or "").upper()
+        if "GIVE_UP" in e or "DEAD" in e or "CRASH" in e or "FAILURE" in e:
+            return "error"
+        if "RECOVER" in e and "FAIL" not in e:
+            return "success"
+        if "RETRY" in e or "RECOVER" in e:
+            return "warning"
+        return "info"
+
+    @app.get("/api/recovery/events")
+    def api_recovery_events():
+        """
+        Synthesise events from recovery_history of HT1 records updated
+        since `?since=<epoch>`. No instrumentation needed in recovery.py
+        — the data is already on every record we wrote. Each entry of
+        recovery_history becomes one event.
+        """
+        from datetime import datetime
+        try:
+            since = float(request.args.get("since", "0") or "0")
+        except ValueError:
+            since = 0.0
+
+        with node._lock:
+            snapshot = list(node.data_store.items())
+
+        events = []
+        total_attempts = 0
+        for k, v in snapshot:
+            if not isinstance(k, str) or not k.startswith("result:"):
+                continue
+            if not isinstance(v, dict) or v.get("kind") != "result_details":
+                continue
+            history = v.get("recovery_history") or []
+            if not history:
+                continue
+            # Count "real" recovery attempts (anything that's a retry) —
+            # GIVE_UP is recorded but isn't a retry attempt.
+            total_attempts += sum(1 for h in history if "RETRY" in (h or "").upper())
+
+            # Parse updated_at to epoch; fall back to now() if missing.
+            updated_iso = v.get("updated_at") or ""
+            try:
+                ts = datetime.fromisoformat(
+                    updated_iso.replace("Z", "+00:00")
+                ).timestamp()
+            except Exception:
+                ts = time.time()
+
+            if ts <= since:
+                continue
+            tid = v.get("task_id")
+            for entry in history:
+                events.append({
+                    "timestamp": ts,
+                    "type": _classify_event(entry),
+                    "message": f"{tid}: {entry}",
+                    "severity": _classify_event(entry),
+                })
+
+        events.sort(key=lambda e: e["timestamp"])
+        return jsonify({
+            "events": events,
+            "total_recovery_attempts": total_attempts,
+            "timestamp": time.time(),
+        })
 
     @app.post("/debug/trigger-recovery")
     def debug_trigger_recovery():
