@@ -182,8 +182,6 @@ body{
 /* Ring page: full-height flex column; padding moved to inner wrapper so
    the grid can genuinely fill all available height and the sidebar scrolls */
 #page-ring.active{display:flex;flex-direction:column;overflow:hidden;padding:0}
-/* Ring page: flex column so sidebar can scroll independently */
-#page-ring.active{display:flex;flex-direction:column;overflow:hidden}
 
 /* ─────────────────────────────────────────────────────────────
    CARDS + GRID
@@ -270,13 +268,6 @@ body{
 .ring-sidebar{display:flex;flex-direction:column;gap:14px;min-height:0;overflow-y:auto;overflow-x:hidden}
 /* Ring panel must also be constrained so it doesn't push the grid larger */
 .ring-panel{min-height:0;overflow:hidden}
-
-/* AI explain collapsible */
-.ai-explain summary::-webkit-details-marker{display:none}
-.ai-explain[open] .ai-explain-chevron{transform:rotate(180deg)}
-.ai-explain-chevron{transition:transform .2s}
-/* Ring sidebar */
-.ring-sidebar{display:flex;flex-direction:column;gap:14px;min-height:0;overflow-y:auto}
 
 /* AI explain collapsible */
 .ai-explain summary::-webkit-details-marker{display:none}
@@ -780,7 +771,6 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
       <!-- padding wrapper: keeps 24px gutter while letting the grid fill height -->
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;padding:24px;overflow:hidden">
       <div class="grid g-ring" style="flex:1;min-height:0">
-      <div class="grid g-ring" style="flex:1;min-height:0;overflow:hidden">
 
         <!-- Ring canvas -->
         <div class="ring-panel">
@@ -837,7 +827,6 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
         </div>
 
         <!-- Right sidebar: submit + stats -->
-        <div class="ring-sidebar" style="padding-bottom:8px">
         <div class="ring-sidebar" style="padding-bottom:8px">
 
           <!-- Quick stats -->
@@ -928,34 +917,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
                   </div>
                   <div id="ai-reasoning-text" style="font-family:var(--mono);font-size:11px;color:var(--tx-1)"></div>
                 </div>
-                <!-- AI reasoning badge — shown after successful submit -->
-                <div id="ai-reasoning-wrap" style="display:none;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.25);border-radius:8px;padding:8px 12px;font-size:11.5px;color:var(--tx-2);line-height:1.5">
-                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;font-weight:700;color:#a5b4fc;font-size:11px;text-transform:uppercase;letter-spacing:.06em">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
-                    AI Placement Reasoning
-                  </div>
-                  <div id="ai-reasoning-text" style="font-family:var(--mono);font-size:11px;color:var(--tx-1)"></div>
-                </div>
               </form>
-
-              <!-- How AI routing works — collapsible -->
-              <details class="ai-explain" style="margin-top:10px;border-top:1px solid var(--b1);padding-top:10px">
-                <summary style="cursor:pointer;font-size:11px;font-weight:600;color:var(--tx-3);letter-spacing:.04em;list-style:none;display:flex;align-items:center;gap:6px;user-select:none">
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="ai-explain-chevron"><polyline points="6 9 12 15 18 9"/></svg>
-                  How AI routing works
-                </summary>
-                <div style="margin-top:8px;font-size:11.5px;color:var(--tx-2);line-height:1.65;display:flex;flex-direction:column;gap:6px">
-                  <p>When you submit a job the <strong style="color:var(--tx-1)">OrchestratorAgent</strong> runs before any data is written to the ring. It inspects live metrics from every reachable node and decides <em>which node</em> should own the job.</p>
-                  <p>The agent evaluates three signals for each candidate node:</p>
-                  <ul style="padding-left:16px;display:flex;flex-direction:column;gap:3px">
-                    <li><strong style="color:#a5b4fc">Queue depth</strong> — how many jobs are already waiting; the agent avoids hot nodes</li>
-                    <li><strong style="color:#34d399">Worker health</strong> — nodes with more live workers get higher weight</li>
-                    <li><strong style="color:#f59e0b">Job type affinity</strong> — e.g. <em>compute</em> jobs prefer nodes with the shortest queues</li>
-                  </ul>
-                  <p>If an LLM API key is configured the agent calls Claude to score candidates and explain its choice — you see that reasoning above after each submit. Without an API key it falls back to the same weighted heuristic locally, so the ring always stays functional.</p>
-                  <p>For multi-replica jobs the agent runs a second pass (<em>decide_replication</em>) to spread copies across distinct physical nodes, ensuring data survives any single-node failure.</p>
-                </div>
-              </details>
 
               <!-- How AI routing works — collapsible -->
               <details class="ai-explain" style="margin-top:10px;border-top:1px solid var(--b1);padding-top:10px">
@@ -2274,10 +2236,6 @@ document.getElementById('job-form').addEventListener('submit',async e=>{
     try{data=await res.json();}catch(_){data={ok:false,error:'Server returned non-JSON (check logs)'};}
     const reasonWrap=document.getElementById('ai-reasoning-wrap');
     const reasonText=document.getElementById('ai-reasoning-text');
-    let data={};
-    try{data=await res.json();}catch(_){data={ok:false,error:'Server returned non-JSON (check logs)'};}
-    const reasonWrap=document.getElementById('ai-reasoning-wrap');
-    const reasonText=document.getElementById('ai-reasoning-text');
     if(data.ok){
       setFb('submit-fb',`✓ Job ${data.job_id?.slice(0,10)}… → Node ${data.stored_at_node}`,'ok');
       if(ring.this_node!=null&&data.stored_at_node!=null)animateRoute(ring.this_node,data.stored_at_node);
@@ -2286,16 +2244,7 @@ document.getElementById('job-form').addEventListener('submit',async e=>{
         reasonText.textContent=data.placement_reasoning;
         reasonWrap.style.display='block';
       }else{reasonWrap.style.display='none';}
-      // Show AI placement reasoning
-      if(data.placement_reasoning){
-        reasonText.textContent=data.placement_reasoning;
-        reasonWrap.style.display='block';
-      }else{reasonWrap.style.display='none';}
       setTimeout(pollJobs,400);
-    }else{
-      setFb('submit-fb',`✗ ${data.error||'unknown error'}`,'err');
-      reasonWrap.style.display='none';
-    }
     }else{
       setFb('submit-fb',`✗ ${data.error||'unknown error'}`,'err');
       reasonWrap.style.display='none';
