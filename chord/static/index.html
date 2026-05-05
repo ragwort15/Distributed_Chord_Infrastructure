@@ -1177,12 +1177,17 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
         <!-- Stats -->
         <div class="card">
           <div class="card-header"><div class="card-title">Request Stats</div></div>
-          <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-            <div class="nd-stat"><div class="nd-stat-label">Total</div><div class="nd-stat-val" id="req-total">—</div></div>
-            <div class="nd-stat"><div class="nd-stat-label">Avg Hops</div><div class="nd-stat-val" id="req-avg-hops">—</div></div>
-            <div class="nd-stat"><div class="nd-stat-label">Avg Duration</div><div class="nd-stat-val" id="req-avg-duration">—</div></div>
-            <div class="nd-stat"><div class="nd-stat-label">1-hop %</div><div class="nd-stat-val" id="req-1hop">—</div></div>
-            <div class="nd-stat"><div class="nd-stat-label">2+ hop %</div><div class="nd-stat-val" id="req-2hop">—</div></div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:20px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+              <div class="nd-stat"><div class="nd-stat-label">Total</div><div class="nd-stat-val" id="req-total">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">Avg Hops</div><div class="nd-stat-val" id="req-avg-hops">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">Avg Duration</div><div class="nd-stat-val" id="req-avg-duration">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">1-hop %</div><div class="nd-stat-val" id="req-1hop">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">2+ hop %</div><div class="nd-stat-val" id="req-2hop">—</div></div>
+            </div>
+            <div style="display:flex;justify-content:center;align-items:center;min-height:220px;border-top:1px solid var(--b1);padding-top:16px">
+              <canvas id="req-type-chart" style="max-width:100%;max-height:220px"></canvas>
+            </div>
           </div>
         </div>
       </div>
@@ -2085,6 +2090,31 @@ function renderRequests(reqs){
       <td class="mono muted">${t}</td>
     </tr>`;
   }).join('');
+  updateFileTypeChart(reqs);
+}
+
+let reqTypeChart=null;
+function updateFileTypeChart(reqs){
+  const counts={};
+  reqs.forEach(r=>{const ft=r.file_type||'file';counts[ft]=(counts[ft]||0)+1;});
+  const labels=Object.keys(counts).sort();
+  const data=labels.map(l=>counts[l]);
+  const colors=['#818cf8','#f59e0b','#10b981','#ef4444','#06b6d4','#ec4899','#8b5cf6','#14b8a6','#f97316','#6366f1'];
+  const bgColors=colors.slice(0,labels.length);
+  const canv=document.getElementById('req-type-chart');
+  if(!canv)return;
+  if(!reqTypeChart){
+    reqTypeChart=new Chart(canv,{
+      type:'doughnut',
+      data:{labels,datasets:[{label:'Requests',data,backgroundColor:bgColors,borderColor:'#0d1117',borderWidth:2}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{font:{size:11},padding:15}}}}
+    });
+  }else{
+    reqTypeChart.data.labels=labels;
+    reqTypeChart.data.datasets[0].data=data;
+    reqTypeChart.data.datasets[0].backgroundColor=bgColors;
+    reqTypeChart.update();
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
