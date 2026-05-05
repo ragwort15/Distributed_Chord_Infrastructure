@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Architecture Diagram — Chord DHT</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0A0F1E;
+    font-family: Inter, system-ui, sans-serif;
+    color: #F9FAFB;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 24px;
+    gap: 24px;
+  }
+  h1 { font-size: 1.25rem; font-weight: 700; color: #06B6D4; letter-spacing: 0.05em; }
+  .subtitle { font-size: 0.8rem; color: #6B7280; }
+  .diagram-wrap {
+    width: 100%;
+    max-width: 1200px;
+    border: 1px solid #1F2937;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #0A0F1E;
+  }
+  .diagram-wrap img, .diagram-wrap svg { width: 100%; height: auto; display: block; }
+  .controls {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  button {
+    padding: 10px 28px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 2px solid;
+    transition: background 0.2s, color 0.2s;
+  }
+  .btn-svg {
+    border-color: #06B6D4;
+    background: transparent;
+    color: #06B6D4;
+  }
+  .btn-svg:hover { background: #06B6D4; color: #0A0F1E; }
+  .btn-png {
+    border-color: #3B82F6;
+    background: transparent;
+    color: #3B82F6;
+  }
+  .btn-png:hover { background: #3B82F6; color: #fff; }
+  .note { font-size: 0.75rem; color: #4B5563; text-align: center; max-width: 600px; }
+  #status { font-size: 0.8rem; color: #10B981; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<h1>Distributed Chord Infrastructure — Architecture Diagram</h1>
+<p class="subtitle">CMPE 273 · Spring 2026 · Group Project</p>
+
+<div class="diagram-wrap" id="diagram-container">
+  <!-- SVG injected by JS for PNG export to work cross-origin-free -->
+</div>
+
+<div class="controls">
+  <button class="btn-svg" onclick="downloadSVG()">Download SVG</button>
+  <button class="btn-png" onclick="downloadPNG()">Download PNG (2x)</button>
+</div>
+
+<p id="status"></p>
+<p class="note">PNG export uses browser canvas at 2× resolution (2400×1560px). SVG is infinitely scalable — recommended for slides and websites.</p>
+
+<script>
+const SVG_PATH = 'architecture-diagram.svg';
+
+async function loadSVG() {
+  const res = await fetch(SVG_PATH);
+  const text = await res.text();
+  document.getElementById('diagram-container').innerHTML = text;
+}
+
+function downloadSVG() {
+  const a = document.createElement('a');
+  a.href = SVG_PATH;
+  a.download = 'chord-architecture.svg';
+  a.click();
+  setStatus('SVG downloaded.');
+}
+
+async function downloadPNG() {
+  setStatus('Rendering PNG…');
+  try {
+    const res = await fetch(SVG_PATH);
+    const svgText = await res.text();
+    const scale = 2;
+    const W = 1200 * scale, H = 780 * scale;
+    const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, 1200, 780);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(pngBlob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(pngBlob);
+        a.download = 'chord-architecture.png';
+        a.click();
+        setStatus('PNG downloaded (2400×1560px).');
+      }, 'image/png');
+    };
+    img.onerror = () => setStatus('PNG render failed — download SVG instead.');
+    img.src = url;
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+  }
+}
+
+function setStatus(msg) {
+  document.getElementById('status').textContent = msg;
+}
+
+loadSVG();
+</script>
+</body>
+</html>
