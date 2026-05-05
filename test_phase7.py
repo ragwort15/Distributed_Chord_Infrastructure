@@ -175,20 +175,32 @@ def test_retry_on_failure():
 
 def test_max_attempts_respected():
     print("\n── Test 4: max_attempts=1 → GIVE_UP after 1 retry ─")
+    tid = f"t4-maxout-{RUN_ID}"
     r = post("/createTask", {
-        "task_id": f"t4-maxout-{RUN_ID}",
+        "task_id": tid,
         "task_details": {"task_type": "SCRIPT", "path": "", "script": "exit 1"},
         "max_attempts": 1,
         "retry_on_failure": True,
     })
     log("/createTask returns 201", r.status_code == 201)
 
-    wait_for(f"t4-maxout-{RUN_ID}", "FAILURE", timeout=15)
-    trigger()
-    time.sleep(3)
+    # Wait for first failure, trigger recovery (→ RETRY_DIFFERENT, attempt=1)
+    wait_for(tid, "FAILURE", timeout=15)
     trigger()
 
-    s = status(f"t4-maxout-{RUN_ID}")
+    # Now wait for the re-queued task to fail a second time, then trigger again
+    # poll until attempt_count > 0 AND status == FAILURE (means retry was run & failed)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        s = status(tid)
+        if s.get("attempt_count", 0) > 0 and s.get("status") == "FAILURE":
+            break
+        time.sleep(0.5)
+
+    trigger()  # second trigger should now see attempt_count >= max_attempts → GIVE_UP
+    time.sleep(1)
+
+    s = status(tid)
     hist = s.get("recovery_history") or []
     gave_up = "GIVE_UP" in hist
     log("GIVE_UP in history after max_attempts exceeded", gave_up, str(hist))

@@ -137,9 +137,6 @@ class Worker:
                 for tid in assigned:
                     if self._stop_event.is_set():
                         break
-                    if tid in self.seen_task_ids:
-                        continue
-                    self.seen_task_ids.add(tid)   # claim BEFORE executing
                     record = self._fetch_record(tid)
                     if record is None:
                         logger.warning(
@@ -147,6 +144,14 @@ class Worker:
                             self.worker_id, tid,
                         )
                         continue
+                    # Skip tasks already completed; re-execute if PENDING (recovery retry).
+                    ht1_status = record.get("status")
+                    if ht1_status in ("SUCCESS", "FAILURE", "RUNNING"):
+                        self.seen_task_ids.add(tid)
+                        continue
+                    if tid in self.seen_task_ids:
+                        continue
+                    self.seen_task_ids.add(tid)   # claim BEFORE executing
                     self._execute_and_report(tid, record)
             except Exception:
                 logger.exception("[Worker %s] polling tick failed", self.worker_id)

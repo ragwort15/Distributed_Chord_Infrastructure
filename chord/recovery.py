@@ -188,15 +188,16 @@ class RecoveryManager:
     def _detect_failed_tasks(self) -> None:
         """
         Find tasks with status FAILURE that completed normally (not timed out)
-        but have not yet been processed by the recovery manager.
+        and have not yet been permanently given up.
         Applies GIVE_UP or RETRY_DIFFERENT depending on retry_on_failure.
         """
         for record in self._all_ht1_records():
+            history = record.get("recovery_history") or []
             if (
                 record.get("status") == "FAILURE"
                 and not record.get("timed_out")
                 and record.get("recovery_status") is None
-                and not record.get("recovery_history")
+                and GIVE_UP not in history          # not already permanently failed
             ):
                 self._attempt_recovery(record, "task_failure")
 
@@ -308,14 +309,17 @@ class RecoveryManager:
 
         else:
             # RETRY_SAME or RETRY_DIFFERENT
+            current_worker = updated.get("worker_id", "")
             if path == RETRY_SAME:
-                current_worker = updated.get("worker_id", "")
                 if current_worker and self._registry.is_live(current_worker):
                     new_worker = current_worker
                 else:
                     new_worker = scored_workers[0][0] if scored_workers else None
-            else:  # RETRY_DIFFERENT
-                new_worker = scored_workers[0][0] if scored_workers else None
+            else:  # RETRY_DIFFERENT — prefer any live worker other than the one that failed
+                others = [w for w, _score in scored_workers if w != current_worker]
+                new_worker = others[0] if others else (
+                    scored_workers[0][0] if scored_workers else None
+                )
 
             if new_worker is None:
                 # No worker available after all — fall back to wait
