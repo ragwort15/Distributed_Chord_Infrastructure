@@ -71,7 +71,7 @@ body{
   background:var(--bg-1);
   border-right:1px solid var(--b1);
   display:flex;flex-direction:column;
-  height:100%;overflow:hidden;
+  height:100%;overflow-y:auto;
 }
 
 .sidebar-logo{
@@ -1393,23 +1393,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
     </div>
   </div>
 </div>
-
-<div class="overlay hidden" id="add-modal-overlay">
-  <div class="modal" style="width:440px">
-    <div class="modal-head">
-      <h3>Add a Node to the Ring</h3>
-      <button class="btn btn-ghost btn-icon" id="btn-close-add" style="margin-left:auto">✕</button>
-    </div>
-    <div class="modal-body">
-      <p style="color:var(--tx-2);font-size:12.5px;line-height:1.7;margin-bottom:14px">A new node is being spawned. You can also run the command below manually in a new terminal:</p>
-      <div class="codeblock" id="add-node-cmd">…</div>
-      <p style="font-size:11.5px;color:var(--tx-3);margin-top:12px;line-height:1.6">The ring rebalances in ~4 s (two stabilization cycles). The new node inherits keys from its successor.</p>
-    </div>
-    <div class="modal-foot">
-      <button class="btn btn-ghost" id="btn-close-add2">Close</button>
-    </div>
-  </div>
-</div>
+<!-- ADD NODE MODAL removed — button uses toast notifications -->
 
 <!-- ═══════════════════════ SUBMIT JOB MODAL ═══════════════════════ -->
 <div class="overlay hidden" id="submit-job-modal">
@@ -2359,42 +2343,38 @@ document.querySelectorAll('.filter-chip').forEach(chip=>{
     renderJobs();
   });
 });
+/* ═══════════════════════════════════════════════════════════════════
+   TOAST HELPER
+═══════════════════════════════════════════════════════════════════ */
+function showToast(msg,type='info'){
+  const t=document.createElement('div');
+  t.textContent=msg;
+  t.style.cssText='position:fixed;bottom:24px;right:24px;z-index:9999;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:500;color:#fff;box-shadow:0 4px 16px rgba(0,0,0,.35);transition:opacity .4s;opacity:1;'
+    +(type==='error'?'background:#e74c3c;':type==='success'?'background:#27ae60;':'background:#2980b9;');
+  document.body.appendChild(t);
+  setTimeout(()=>{t.style.opacity='0';setTimeout(()=>t.remove(),400);},3000);
+}
+
 
 /* ═══════════════════════════════════════════════════════════════════
    NODE MANAGEMENT
 ═══════════════════════════════════════════════════════════════════ */
 document.getElementById('btn-add-node').addEventListener('click',async()=>{
   const btn=document.getElementById('btn-add-node');
-  const cmdBox=document.getElementById('add-node-cmd');
-  const modalTitle=document.querySelector('#add-modal-overlay .modal-head h3');
   btn.disabled=true;
   btn.innerHTML='<div class="spinner"></div> Adding…';
   try{
     const r=await fetch('/api/nodes/add',{method:'POST'});
     let d={};
-    try{ d=await r.json(); }catch(_){ /* non-JSON fallback */ }
-
+    try{ d=await r.json(); }catch(_){}
     if(!r.ok || d.ok===false){
-      // Server reported a failure — surface it clearly
-      const hint=d.hint||`python run_node.py --port <PORT> --join ${window.location.host} --worker`;
-      const errMsg=d.error||'Server error — see logs';
-      if(modalTitle) modalTitle.textContent='⚠ Could Not Auto-Spawn Node';
-      cmdBox.textContent=`# Error: ${errMsg}\n\n# Run this manually in a terminal:\n${hint}`;
+      showToast('Could not spawn node: '+(d.error||'server error'),'error');
     } else {
-      // Success — server spawned (or is spawning) the node
-      const cmd=d.cmd||`python run_node.py --port ${d.port||'<PORT>'} --join ${window.location.host} --worker`;
-      if(modalTitle) modalTitle.textContent='Node Spawning — Add to Ring';
-      cmdBox.textContent=cmd;
-      // Poll the ring several times to catch the node once it stabilises (~4-8 s)
+      showToast('Node spawning — ring rebalances in ~4 s','success');
       [3500,6000,9000,13000].forEach(t=>setTimeout(pollRing,t));
     }
-    document.getElementById('add-modal-overlay').classList.remove('hidden');
   }catch(err){
-    // Network-level failure (fetch itself threw)
-    const port=Math.floor(Math.random()*1000)+5100;
-    if(modalTitle) modalTitle.textContent='⚠ Could Not Reach Server';
-    cmdBox.textContent=`# Network error: ${err.message}\n\n# Run manually:\npython run_node.py --port ${port} --join ${window.location.host} --worker`;
-    document.getElementById('add-modal-overlay').classList.remove('hidden');
+    showToast('Network error: '+err.message,'error');
   }finally{
     btn.disabled=false;
     btn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Node';
@@ -2941,10 +2921,7 @@ document.getElementById('btn-close-nd').addEventListener('click',()=>document.ge
 document.getElementById('node-modal-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.classList.add('hidden');});
 
 // Add modal close
-['btn-close-add','btn-close-add2'].forEach(id=>{
-  document.getElementById(id)?.addEventListener('click',()=>document.getElementById('add-modal-overlay').classList.add('hidden'));
-});
-document.getElementById('add-modal-overlay').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.classList.add('hidden');});
+
 
 /* ═══════════════════════════════════════════════════════════════════
    STATS MODAL  (Ring Size · Queue Depth · Jobs Done · Failed)
