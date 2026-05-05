@@ -262,74 +262,80 @@ def create_app(node: ChordNode) -> Flask:
         """
         Body: {"type": str, "payload": {}, "replicas": int (optional)}
         The agent selects the target node; the job key is engineered to hash there.
+        Always returns JSON — never lets Flask produce an HTML 500.
         """
-        body = request.get_json(force=True) or {}
-        job_type = body.get("type", "echo")
-        payload = body.get("payload", {})
-        requested_replicas = int(body.get("replicas", 1))
+        try:
+            body = request.get_json(force=True) or {}
+            job_type = body.get("type", "echo")
+            payload = body.get("payload", {})
+            requested_replicas = int(body.get("replicas", 1))
 
-        valid_types = {"echo", "sleep", "compute"}
-        if job_type not in valid_types:
-            return jsonify({"error": f"Unknown job type '{job_type}'. Valid: {sorted(valid_types)}"}), 400
-        if requested_replicas < 1 or requested_replicas > 10:
-            return jsonify({"error": "replicas must be between 1 and 10"}), 400
+            valid_types = {"echo", "sleep", "compute"}
+            if job_type not in valid_types:
+                return jsonify({"ok": False, "error": f"Unknown job type '{job_type}'. Valid: {sorted(valid_types)}"}), 400
+            if requested_replicas < 1 or requested_replicas > 10:
+                return jsonify({"ok": False, "error": "replicas must be between 1 and 10"}), 400
 
-        agent = app.config.get("agent")
-        transport = node._transport
+            agent = app.config.get("agent")
+            transport = node._transport
 
-        # Collect ring metrics (self + reachable fingers)
-        ring_metrics = _collect_ring_metrics(node, transport)
+            # Collect ring metrics (self + reachable fingers)
+            ring_metrics = _collect_ring_metrics(node, transport)
 
-        job = make_job(job_type, payload)
+            job = make_job(job_type, payload)
 
-        # --- Placement decision ---
-        if agent and ring_metrics:
-            placement = agent.select_placement(job, ring_metrics)
-            target_node_id = placement["node_id"]
-            placement_reasoning = placement["reasoning"]
-        else:
-            # No agent or metrics — fall back to standard Chord routing
-            key_id = sha1_id(job_key(job["job_id"]))
-            responsible = node.find_successor(key_id)
-            target_node_id = responsible["id"]
-            placement_reasoning = "no-agent fallback: standard Chord routing"
+            # --- Placement decision ---
+            if agent and ring_metrics:
+                placement = agent.select_placement(job, ring_metrics)
+                target_node_id = placement["node_id"]
+                placement_reasoning = placement["reasoning"]
+            else:
+                # No agent or metrics — fall back to standard Chord routing
+                key_id = sha1_id(job_key(job["job_id"]))
+                responsible = node.find_successor(key_id)
+                target_node_id = responsible["id"]
+                placement_reasoning = "no-agent fallback: standard Chord routing"
 
-        # --- Replication decision ---
-        replica_node_ids = []
-        if agent and ring_metrics and requested_replicas > 1:
-            rep_plan = agent.decide_replication(job, ring_metrics, requested_replicas)
-            target_node_id = rep_plan["primary_node_id"]
-            replica_node_ids = rep_plan.get("replica_node_ids", [])
-            requested_replicas = rep_plan.get("replication_factor", 1)
+            # --- Replication decision ---
+            replica_node_ids = []
+            if agent and ring_metrics and requested_replicas > 1:
+                rep_plan = agent.decide_replication(job, ring_metrics, requested_replicas)
+                target_node_id = rep_plan["primary_node_id"]
+                replica_node_ids = rep_plan.get("replica_node_ids", [])
+                requested_replicas = rep_plan.get("replication_factor", 1)
 
-        # Find address of chosen target
-        target_address = _address_for(node, transport, target_node_id)
+            # Find address of chosen target
+            target_address = _address_for(node, transport, target_node_id)
 
-        # Store primary copy
-        primary_key = _store_job(node, transport, job, target_address, target_node_id)
+            # Store primary copy
+            primary_key = _store_job(node, transport, job, target_address, target_node_id)
 
-        # Store replicas
-        replica_results = []
-        for rid in replica_node_ids:
-            if rid == target_node_id:
-                continue
-            replica_address = _address_for(node, transport, rid)
-            replica_job = dict(job)
-            replica_job["replica_of"] = job["job_id"]
-            try:
-                rkey = _store_job(node, transport, replica_job, replica_address, rid)
-                replica_results.append({"node_id": rid, "key": rkey})
-            except Exception as e:
-                logger.warning(f"[Server] Replica to node {rid} failed: {e}")
+            # Store replicas
+            replica_results = []
+            for rid in replica_node_ids:
+                if rid == target_node_id:
+                    continue
+                replica_address = _address_for(node, transport, rid)
+                replica_job = dict(job)
+                replica_job["replica_of"] = job["job_id"]
+                try:
+                    rkey = _store_job(node, transport, replica_job, replica_address, rid)
+                    replica_results.append({"node_id": rid, "key": rkey})
+                except Exception as e:
+                    logger.warning(f"[Server] Replica to node {rid} failed: {e}")
 
-        return jsonify({
-            "ok": True,
-            "job_id": job["job_id"],
-            "primary_key": primary_key,
-            "stored_at_node": target_node_id,
-            "placement_reasoning": placement_reasoning,
-            "replicas": replica_results,
-        }), 201
+            return jsonify({
+                "ok": True,
+                "job_id": job["job_id"],
+                "primary_key": primary_key,
+                "stored_at_node": target_node_id,
+                "placement_reasoning": placement_reasoning,
+                "replicas": replica_results,
+            }), 201
+
+        except Exception as exc:
+            logger.error(f"[Server] submit_job unhandled error: {exc}", exc_info=True)
+            return jsonify({"ok": False, "error": str(exc)}), 500
 
     @app.get("/jobs")
     def list_jobs():
@@ -1897,9 +1903,14 @@ class MaintenanceThread(threading.Thread):
         self.interval = interval
         self._stop_event = threading.Event()
 
+    # Evict terminal jobs older than this many seconds (default: 1 hour)
+    _JOB_TTL_S = int(os.environ.get("JOB_TTL_S", str(3600)))
+    _EVICT_EVERY = 30  # run eviction every N maintenance ticks (~60 s at 2 s interval)
+
     def run(self):
         logger.info(f"[Maintenance] Started for node {self.node.node_id}")
         nid = str(self.node.node_id)
+        tick = 0
         while not self._stop_event.is_set():
             try:
                 prev_pred = self.node.predecessor
@@ -1910,9 +1921,31 @@ class MaintenanceThread(threading.Thread):
                 self.node.check_predecessor()
                 if prev_pred and self.node.predecessor is None:
                     PREDECESSOR_FAILURES.labels(node_id=nid).inc()
+                # Periodically evict old terminal jobs to bound memory growth
+                tick += 1
+                if tick % self._EVICT_EVERY == 0:
+                    self._evict_old_jobs()
             except Exception as e:
                 logger.warning(f"[Maintenance] Error: {e}")
             self._stop_event.wait(self.interval)
+
+    def _evict_old_jobs(self):
+        """Remove completed/failed jobs whose finished_at exceeds JOB_TTL_S."""
+        cutoff = time.time() - self._JOB_TTL_S
+        evicted = 0
+        with self.node._lock:
+            keys_to_delete = [
+                k for k, v in self.node.data_store.items()
+                if k.startswith("job:") and isinstance(v, dict)
+                and v.get("status") in ("done", "failed", "cancelled", "deleted")
+                and isinstance(v.get("finished_at"), (int, float))
+                and v["finished_at"] < cutoff
+            ]
+            for k in keys_to_delete:
+                del self.node.data_store[k]
+                evicted += 1
+        if evicted:
+            logger.info(f"[Maintenance] Evicted {evicted} old terminal jobs (TTL={self._JOB_TTL_S}s)")
 
     def stop(self):
         self._stop_event.set()
@@ -1997,7 +2030,20 @@ def start_node(host: str, port: int, known_address: str = None,
 
     logger.info(f"Starting Chord node {node.node_id} on {address}")
     try:
-        app.run(host=host, port=port, threaded=True)
+        # Prefer waitress (production WSGI server) over Flask's dev server.
+        # waitress handles concurrent requests properly and never drops
+        # health-check pings under maintenance-thread + dashboard-poll load.
+        try:
+            from waitress import serve as waitress_serve
+            logger.info(f"[Server] Using waitress WSGI server (threads=8)")
+            waitress_serve(app, host=host, port=port, threads=8,
+                           connection_limit=200, channel_timeout=30)
+        except ImportError:
+            logger.warning(
+                "[Server] waitress not installed — falling back to Flask dev server. "
+                "Run `pip install waitress` for stable production serving."
+            )
+            app.run(host=host, port=port, threaded=True)
     finally:
         maint.stop()
         if grpc_server is not None:
