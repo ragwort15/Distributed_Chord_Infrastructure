@@ -44,11 +44,26 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # In-memory request log — last 100 entries, shared across all threads
 _request_log: List[Dict] = []
 _request_lock = threading.Lock()
+_request_log_path = pathlib.Path(os.environ.get("REQUEST_LOG_PATH", "request_log.jsonl"))
 
 
 def create_app(node: ChordNode) -> Flask:
+    global _request_log
     app = Flask(__name__)
     app.config["node"] = node
+
+    # Load persisted request log on startup
+    if _request_log_path.exists():
+        try:
+            lines = _request_log_path.read_text().strip().splitlines()
+            for line in lines[-100:]:  # Keep last 100 entries
+                try:
+                    _request_log.append(json.loads(line))
+                except Exception:
+                    pass
+            logger.info(f"[Server] Loaded {len(_request_log)} persisted request log entries")
+        except Exception as e:
+            logger.warning(f"[Server] Failed to load request log: {e}")
     task_service = TaskService(node=node, transport=node._transport)
 
     # Phase 2: live worker registry + conversational agent.  Storage is
@@ -699,9 +714,10 @@ def create_app(node: ChordNode) -> Flask:
                 content = {}
 
         # ── Prometheus instrumentation ──
+        duration_s = time.time() - t0
         FILE_REQUESTS.labels(node_id=nid_str, file_type=ftype).inc()
         FILE_REQUEST_HOPS.labels(node_id=nid_str).observe(hops)
-        FILE_REQUEST_DURATION.labels(node_id=nid_str).observe(time.time() - t0)
+        FILE_REQUEST_DURATION.labels(node_id=nid_str).observe(duration_s)
 
         entry = {
             "ts":             time.time(),
@@ -713,11 +729,18 @@ def create_app(node: ChordNode) -> Flask:
             "served_by_node": responsible["id"],
             "served_by_addr": served_addr,
             "hops":           hops,
+            "duration_ms":    round(duration_s * 1000, 1),
         }
         with _request_lock:
             _request_log.append(entry)
             if len(_request_log) > 100:
                 _request_log.pop(0)
+            # Persist to file
+            try:
+                with _request_log_path.open('a') as f:
+                    f.write(json.dumps(entry) + '\n')
+            except Exception as e:
+                logger.warning(f"[Server] Failed to persist request log: {e}")
 
         return jsonify({
             "ok":             True,

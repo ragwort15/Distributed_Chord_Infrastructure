@@ -1086,22 +1086,43 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
               <label class="field-label">Filename</label>
               <input class="inp" id="req-filename" placeholder="e.g. report.pdf or dataset.csv">
             </div>
+            <div style="display:flex;gap:8px">
+              <select class="inp" id="req-filename-select" style="flex:1">
+                <option value="">— Pick a file —</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" id="btn-pick-random" style="padding:6px 12px">🎲 Random</button>
+            </div>
             <div class="field">
               <label class="field-label">Client Tag</label>
               <input class="inp" id="req-client" value="dashboard" placeholder="client identifier">
             </div>
-            <button class="btn btn-primary" id="btn-simulate-req" style="justify-content:center">Route File Request</button>
+            <div class="btn-row">
+              <button class="btn btn-primary" id="btn-simulate-req" style="flex:1;justify-content:center">Route File Request</button>
+              <button class="btn btn-ghost" id="btn-simulate-burst" style="flex:1;justify-content:center">Burst ×10</button>
+            </div>
+            <div id="burst-progress" style="display:none;margin-top:8px">
+              <div style="font-size:11px;color:var(--tx-3);margin-bottom:4px">Sending <span id="burst-count">0</span>/10...</div>
+              <div style="width:100%;height:4px;background:var(--bg-3);border-radius:2px;overflow:hidden">
+                <div id="burst-bar" style="width:0%;height:100%;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width 0.2s"></div>
+              </div>
+            </div>
             <div class="dht-result-box" id="req-result">Result will appear here…</div>
           </div>
         </div>
         <!-- Stats -->
         <div class="card">
           <div class="card-header"><div class="card-title">Request Stats</div></div>
-          <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <div class="nd-stat"><div class="nd-stat-label">Total</div><div class="nd-stat-val" id="req-total">—</div></div>
-            <div class="nd-stat"><div class="nd-stat-label">Avg Hops</div><div class="nd-stat-val" id="req-avg-hops">—</div></div>
-            <div class="nd-stat"><div class="nd-stat-label">1-hop %</div><div class="nd-stat-val" id="req-1hop">—</div></div>
-            <div class="nd-stat"><div class="nd-stat-label">2+ hop %</div><div class="nd-stat-val" id="req-2hop">—</div></div>
+          <div class="card-body" style="display:flex;flex-direction:column;gap:20px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+              <div class="nd-stat"><div class="nd-stat-label">Total</div><div class="nd-stat-val" id="req-total">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">Avg Hops</div><div class="nd-stat-val" id="req-avg-hops">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">Avg Duration</div><div class="nd-stat-val" id="req-avg-duration">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">1-hop %</div><div class="nd-stat-val" id="req-1hop">—</div></div>
+              <div class="nd-stat"><div class="nd-stat-label">2+ hop %</div><div class="nd-stat-val" id="req-2hop">—</div></div>
+            </div>
+            <div style="display:flex;justify-content:center;align-items:center;min-height:220px;border-top:1px solid var(--b1);padding-top:16px">
+              <canvas id="req-type-chart" style="max-width:100%;max-height:220px"></canvas>
+            </div>
           </div>
         </div>
       </div>
@@ -1110,9 +1131,9 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
         <div class="card-header"><div class="card-title">Request Log</div><div class="card-sub">Last 30 routed file requests</div></div>
         <div style="overflow-y:auto;max-height:500px">
           <table class="data-table" id="req-table">
-            <thead><tr><th>File</th><th>Routed From</th><th>Served By</th><th>Hops</th><th>Key ID</th><th>Time</th></tr></thead>
+            <thead><tr><th>File</th><th>Type</th><th>Routed From</th><th>Served By</th><th>Hops</th><th>Duration</th><th>Key ID</th><th>Time</th></tr></thead>
             <tbody id="req-tbody">
-              <tr><td colspan="6"><div class="empty-state"><div class="icon">📡</div><p>Waiting for requests…</p></div></td></tr>
+              <tr><td colspan="8"><div class="empty-state"><div class="icon">📡</div><p>Waiting for requests…</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -1963,32 +1984,73 @@ function renderMiniJobs(){
 ═══════════════════════════════════════════════════════════════════ */
 const FILE_ICONS={pdf:'📄',csv:'📊',bin:'⚙️',yaml:'⚙️',gz:'🗜',zip:'🗜',pptx:'📊',png:'🖼',jpg:'🖼',mp4:'🎬',tar:'🗜',md:'📝',sql:'🗄',json:'📋',txt:'📝',sh:'⚡',parquet:'📊'};
 function ficon(name){const ext=(name.includes('.')?name.split('.').pop():'').toLowerCase();return FILE_ICONS[ext]||'📁';}
+const DUMMY_FILES=['report_q1.pdf','report_q2.pdf','report_q3.pdf','report_q4.pdf','dataset_train.csv','dataset_test.csv','model_weights.bin','config.yaml','logs_2024.tar.gz','backup_jan.zip','invoice_001.pdf','invoice_002.pdf','presentation.pptx','image_001.png','image_002.jpg','video_demo.mp4','source_code.tar','readme.md','schema.sql','users.json','audit_log.txt','metrics.parquet','pipeline.json','deploy.sh'];
 
+const FILE_TYPE_CLS={
+  document:'badge-info',slides:'badge-info',text:'badge-neutral',
+  dataset:'badge-warn',data:'badge-warn',database:'badge-warn',
+  archive:'badge-neutral',image:'badge-neutral',video:'badge-neutral',
+  config:'badge-info',script:'badge-danger',binary:'badge-danger',file:'badge-neutral',
+};
 function renderRequests(reqs){
   const tbody=document.getElementById('req-tbody');if(!tbody)return;
-  if(!reqs.length){tbody.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="icon">📡</div><p>Waiting…</p></div></td></tr>';return;}
+  if(!reqs.length){tbody.innerHTML='<tr><td colspan="8"><div class="empty-state"><div class="icon">📡</div><p>Waiting…</p></div></td></tr>';return;}
 
   // Stats
-  const avg=reqs.length?reqs.reduce((s,r)=>s+r.hops,0)/reqs.length:0;
+  const avgHops=reqs.length?reqs.reduce((s,r)=>s+r.hops,0)/reqs.length:0;
+  const avgDur=reqs.length?reqs.reduce((s,r)=>s+(r.duration_ms||0),0)/reqs.length:0;
   const h1=reqs.filter(r=>r.hops===1).length;
   document.getElementById('req-total').textContent=reqs.length;
-  document.getElementById('req-avg-hops').textContent=avg.toFixed(1);
+  document.getElementById('req-avg-hops').textContent=avgHops.toFixed(1);
   document.getElementById('req-1hop').textContent=reqs.length?Math.round(h1/reqs.length*100)+'%':'—';
   document.getElementById('req-2hop').textContent=reqs.length?Math.round((reqs.length-h1)/reqs.length*100)+'%':'—';
+  const durEl=document.getElementById('req-avg-duration');
+  if(durEl)durEl.textContent=(avgDur>0?avgDur.toFixed(0)+'ms':'—');
 
   tbody.innerHTML=reqs.map(r=>{
     const c=colorMap[r.served_by_node]||'var(--tx-2)';
     const t=new Date(r.ts*1000).toLocaleTimeString();
     const hopCls=r.hops===1?'badge-ok':r.hops<=3?'badge-warn':'badge-danger';
+    const ftype=r.file_type||'file';
+    const ftCls=FILE_TYPE_CLS[ftype]||'badge-neutral';
+    const dur=r.duration_ms??0;
+    const durCls=dur<10?'badge-ok':dur<50?'badge-warn':'badge-danger';
     return`<tr>
       <td><span style="margin-right:5px">${ficon(r.filename)}</span><span class="mono">${r.filename}</span></td>
+      <td><span class="badge ${ftCls}">${ftype}</span></td>
       <td class="mono muted">N${r.routed_from??'?'}</td>
       <td class="mono" style="color:${c}">N${r.served_by_node??'?'}</td>
       <td><span class="badge ${hopCls}">${r.hops} hop${r.hops!==1?'s':''}</span></td>
+      <td><span class="badge ${durCls}">${dur}ms</span></td>
       <td class="mono muted">${r.key_id}</td>
       <td class="mono muted">${t}</td>
     </tr>`;
   }).join('');
+  updateFileTypeChart(reqs);
+}
+
+let reqTypeChart=null;
+function updateFileTypeChart(reqs){
+  const counts={};
+  reqs.forEach(r=>{const ft=r.file_type||'file';counts[ft]=(counts[ft]||0)+1;});
+  const labels=Object.keys(counts).sort();
+  const data=labels.map(l=>counts[l]);
+  const colors=['#818cf8','#f59e0b','#10b981','#ef4444','#06b6d4','#ec4899','#8b5cf6','#14b8a6','#f97316','#6366f1'];
+  const bgColors=colors.slice(0,labels.length);
+  const canv=document.getElementById('req-type-chart');
+  if(!canv)return;
+  if(!reqTypeChart){
+    reqTypeChart=new Chart(canv,{
+      type:'doughnut',
+      data:{labels,datasets:[{label:'Requests',data,backgroundColor:bgColors,borderColor:'#0d1117',borderWidth:2}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{font:{size:11},padding:15}}}}
+    });
+  }else{
+    reqTypeChart.data.labels=labels;
+    reqTypeChart.data.datasets[0].data=data;
+    reqTypeChart.data.datasets[0].backgroundColor=bgColors;
+    reqTypeChart.update();
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2571,6 +2633,16 @@ async function quickDel(key){
 /* ═══════════════════════════════════════════════════════════════════
    FILE REQUEST SIMULATION
 ═══════════════════════════════════════════════════════════════════ */
+function initFileSelector(){
+  const select=document.getElementById('req-filename-select');
+  select.innerHTML='<option value="">— Pick a file —</option>'+DUMMY_FILES.map(f=>`<option value="${f}">${f}</option>`).join('');
+  select.addEventListener('change',(e)=>{if(e.target.value)document.getElementById('req-filename').value=e.target.value;});
+  document.getElementById('btn-pick-random').addEventListener('click',()=>{
+    const file=DUMMY_FILES[Math.floor(Math.random()*DUMMY_FILES.length)];
+    select.value=file;
+    document.getElementById('req-filename').value=file;
+  });
+}
 document.getElementById('btn-simulate-req').addEventListener('click',async()=>{
   const fn=document.getElementById('req-filename').value.trim();
   if(!fn){alert('Enter a filename');return;}
@@ -2584,6 +2656,34 @@ document.getElementById('btn-simulate-req').addEventListener('click',async()=>{
     box.textContent=JSON.stringify(d,null,2);
     setTimeout(pollRequests,300);
   }catch(e){box.className='dht-result-box error';box.textContent=`Error: ${e.message}`;}
+});
+
+document.getElementById('btn-simulate-burst').addEventListener('click',async()=>{
+  const client=document.getElementById('req-client').value.trim()||'dashboard-burst';
+  const prog=document.getElementById('burst-progress');
+  const cnt=document.getElementById('burst-count');
+  const bar=document.getElementById('burst-bar');
+  const box=document.getElementById('req-result');
+
+  prog.style.display='block';
+  box.className='dht-result-box';box.textContent='Preparing 10 requests…';
+
+  const picks=[];
+  for(let i=0;i<10;i++)picks.push(DUMMY_FILES[Math.floor(Math.random()*DUMMY_FILES.length)]);
+
+  for(let i=0;i<picks.length;i++){
+    cnt.textContent=i+1;
+    bar.style.width=((i+1)/10*100)+'%';
+    try{
+      await fetch('/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:picks[i],client})});
+    }catch(e){console.warn(`Request ${i+1} failed:`,e);}
+    if(i<picks.length-1)await new Promise(r=>setTimeout(r,120));
+  }
+
+  prog.style.display='none';
+  box.className='dht-result-box result';
+  box.textContent='✓ Burst complete: 10 requests sent';
+  setTimeout(pollRequests,200);
 });
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3006,6 +3106,7 @@ setInterval(pollLogs,     4000);
 setInterval(pollMetrics,  5500);
 setInterval(pollWorkers,  3000);
 
+initFileSelector();
 pollRing();
 pollJobs();
 pollRequests();
