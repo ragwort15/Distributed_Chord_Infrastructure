@@ -1,0 +1,133 @@
+version: '3.8'
+
+services:
+  # Bootstrap node for the Chord ring
+  chord-node-1:
+    build: .
+    container_name: chord-node-1
+    ports:
+      - "5001:5000"
+    environment:
+      CHORD_PORT: "5000"
+      CHORD_ID: "10"
+      CHORD_JOIN: ""  # Bootstrap node, no join target
+    networks:
+      - chord-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/chord/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Node 2 - joins the ring
+  chord-node-2:
+    build: .
+    container_name: chord-node-2
+    ports:
+      - "5002:5000"
+    environment:
+      CHORD_PORT: "5000"
+      CHORD_ID: "80"
+      CHORD_JOIN: "chord-node-1:5000"  # Join via node-1
+    networks:
+      - chord-network
+    depends_on:
+      chord-node-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/chord/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Node 3 - joins the ring
+  chord-node-3:
+    build: .
+    container_name: chord-node-3
+    ports:
+      - "5003:5000"
+    environment:
+      CHORD_PORT: "5000"
+      CHORD_ID: "150"
+      CHORD_JOIN: "chord-node-1:5000"  # Join via node-1
+    networks:
+      - chord-network
+    depends_on:
+      chord-node-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/chord/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: chord-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - chord-network
+    depends_on:
+      - chord-node-1
+      - chord-node-2
+      - chord-node-3
+    restart: unless-stopped
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: chord-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - chord-network
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+networks:
+  chord-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-storage:

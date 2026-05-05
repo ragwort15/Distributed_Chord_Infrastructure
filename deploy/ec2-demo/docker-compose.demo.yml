@@ -1,0 +1,188 @@
+version: '3.8'
+
+# =============================================================================
+# Chord DHT — Demo Compose (optimized for single EC2 t3.small / t2.micro)
+# All services share one network; resource limits keep RAM under ~900 MB total.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Bootstrap node — starts the Chord ring
+  # ---------------------------------------------------------------------------
+  chord-node-1:
+    build:
+      context: ../..          # repo root (where Dockerfile.demo lives)
+      dockerfile: Dockerfile.demo
+    image: chord-dht:demo
+    container_name: chord-node-1
+    ports:
+      - "5001:5000"
+    environment:
+      CHORD_PORT: "5000"
+      CHORD_ID: "10"
+      CHORD_JOIN: ""          # Bootstrap — no join target
+      PYTHONUNBUFFERED: "1"
+    networks:
+      - chord-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/chord/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ---------------------------------------------------------------------------
+  # Node 2 — joins the ring via node-1
+  # ---------------------------------------------------------------------------
+  chord-node-2:
+    image: chord-dht:demo
+    container_name: chord-node-2
+    ports:
+      - "5002:5000"
+    environment:
+      CHORD_PORT: "5000"
+      CHORD_ID: "80"
+      CHORD_JOIN: "chord-node-1:5000"
+      PYTHONUNBUFFERED: "1"
+    networks:
+      - chord-net
+    depends_on:
+      chord-node-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/chord/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ---------------------------------------------------------------------------
+  # Node 3 — joins the ring via node-1
+  # ---------------------------------------------------------------------------
+  chord-node-3:
+    image: chord-dht:demo
+    container_name: chord-node-3
+    ports:
+      - "5003:5000"
+    environment:
+      CHORD_PORT: "5000"
+      CHORD_ID: "150"
+      CHORD_JOIN: "chord-node-1:5000"
+      PYTHONUNBUFFERED: "1"
+    networks:
+      - chord-net
+    depends_on:
+      chord-node-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/chord/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — scrapes metrics from all nodes
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: chord-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=6h'   # Keep only 6h for demo (saves disk)
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - chord-net
+    depends_on:
+      - chord-node-1
+      - chord-node-2
+      - chord-node-3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 150M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ---------------------------------------------------------------------------
+  # Grafana — dashboards
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: chord-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: ""            # No extra plugins → faster startup
+      GF_LOG_LEVEL: warn
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - chord-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 150M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  chord-net:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
