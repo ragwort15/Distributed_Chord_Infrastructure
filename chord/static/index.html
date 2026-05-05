@@ -834,20 +834,20 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
           </button>
 
           <!-- Workers panel (single toggle button — status + scores) -->
-          <div class="card">
-            <button type="button" id="wk-toggle" aria-expanded="false"
+          <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0">
+            <button type="button" id="wk-toggle" aria-expanded="true"
               style="width:100%;background:none;border:none;padding:0;cursor:pointer;text-align:left;color:inherit;font:inherit">
               <div class="card-header" style="cursor:pointer">
                 <div class="card-icon" style="background:rgba(16,185,129,.15)">👷</div>
                 <div style="flex:1">
                   <div class="card-title">Workers</div>
-                  <div class="card-sub" id="wk-summary">click to view status & scores</div>
+                  <div class="card-sub" id="wk-summary">— live · — idle · — dead</div>
                 </div>
-                <span id="wk-caret" style="font-size:14px;color:var(--tx-3);transition:transform .15s">▸</span>
+                <span id="wk-caret" style="font-size:14px;color:var(--tx-3);transition:transform .15s;transform:rotate(90deg)">▸</span>
               </div>
             </button>
-            <div class="card-body" id="wk-body" style="padding:8px 12px;display:none">
-              <div id="wk-list" style="display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto">
+            <div class="card-body" id="wk-body" style="padding:8px 12px;display:flex;flex:1;min-height:0">
+              <div id="wk-list" style="display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto">
                 <div class="empty-state" style="padding:16px"><div class="icon">👷</div><p>No workers yet</p></div>
               </div>
             </div>
@@ -2954,7 +2954,7 @@ setInterval(refreshStatsButton, 2000);
   const caret = document.getElementById('wk-caret');
   if(btn) btn.addEventListener('click',()=>{
     const open = body.style.display !== 'none';
-    body.style.display = open ? 'none' : 'block';
+    body.style.display = open ? 'none' : 'flex';
     caret.style.transform = open ? 'rotate(0deg)' : 'rotate(90deg)';
     btn.setAttribute('aria-expanded', String(!open));
     if(!open) pollWorkers();

@@ -1014,6 +1014,10 @@ def create_app(node: ChordNode) -> Flask:
     def workers_live():
         return jsonify({"live_workers": worker_registry.live_workers()})
 
+    @app.get("/debug/worker-metrics")
+    def debug_worker_metrics():
+        return jsonify(worker_registry.metrics_snapshot())
+
     @app.get("/workers/status")
     def workers_status():
         """
