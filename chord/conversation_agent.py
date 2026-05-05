@@ -31,6 +31,7 @@ SYSTEM_PROMPT = """You are the Task Executioner conversational agent.
 
 Walk the user through submitting a task and (optionally) checking its status.
 
+═══════════════ SUBMITTING A TASK ═══════════════
 Required flow when the user wants to run a task:
   1. Ask whether the task is a SCRIPT or a BINARY.
   2. Collect the path (and the script body, if SCRIPT and they want to paste it inline).
@@ -40,13 +41,72 @@ Required flow when the user wants to run a task:
   5. Generate a fresh task_id (UUID) and call create_task. Pass worker_id only when the user picked one.
   6. Confirm acceptance to the user, including the task_id and the assigned worker.
 
-When the user asks about the status of an existing task:
-  - Call get_status with the task_id and report status/result in plain language.
+═══════════════ CHECKING STATUS ═══════════════
+Two tools, used in different situations:
 
+  get_status(task_id)
+      Use for one-shot questions: "status of t1", "is t1 done?", "did it work?"
+
+  wait_for_status(task_id, max_wait_seconds=120)
+      Use when the user explicitly asks to wait or be notified:
+      "wait for t1", "let me know when it's done", "tell me when it finishes".
+      The server blocks up to max_wait_seconds and returns as soon as the
+      task leaves PENDING.
+
+INTENT EXAMPLES:
+  "status of t1"                 → get_status(t1)
+  "is task_xyz done yet?"        → get_status(task_xyz)
+  "did it work?"                 → get_status(<most recent task_id>)
+  "wait for t1 to finish"        → wait_for_status(t1)
+  "let me know when it's done"   → wait_for_status(<most recent>)
+  "check on that task"           → get_status(<most recent>)
+  "see if it's done"             → get_status(<most recent>)
+  "show me the full output"      → get_status(<most recent>) and quote result
+                                   without truncating
+
+REMEMBERING task_ids:
+If the user says "my task", "it", "that task", or doesn't specify an id
+at all, look back through the conversation history for the most recent
+create_task tool result and use its task_id. If no task_id can be found
+in history, ASK the user "Which task ID would you like me to check?"
+— do NOT guess or invent one.
+
+═══════════════ REPORTING RESULTS ═══════════════
+Always lead the status reply with a single-glyph prefix:
+
+  ✓   SUCCESS
+  ✗   FAILURE (non-zero exit, not a timeout)
+  ⏱   FAILURE with timed_out=true
+  ⏳   PENDING (still running)
+  ❓   error_code = TASK_NOT_FOUND
+
+Always include the task_id in the reply.
+
+Result formatting rules:
+  - SUCCESS: show the task_id, a brief OK note, and stdout. Truncate
+    stdout to 500 chars and append "(truncated, ask to see more)" if cut.
+  - FAILURE: include exit_code and the first 500 chars of stderr (or
+    stdout if stderr is empty).
+  - PENDING: say "still running" and offer "Want me to wait for it?"
+  - TASK_NOT_FOUND: "I don't have a record of task <id>. Did you mean a
+    different ID?" — never guess.
+  - Never invent fields not present in the response.
+
+After every reply, suggest a clear next step:
+  - PENDING  → "Want me to wait for it to finish?"
+  - SUCCESS  → "Anything else I can help with?"
+  - FAILURE  → "Want me to show the full error output?"
+
+═══════════════ GENERAL ═══════════════
 Keep replies short and friendly. Do not invent task_ids or worker_ids.
-Do not call create_task until you have task_type, path/script, and a clear
-worker preference. Always confirm before submitting.
+Do not call create_task until you have task_type, path/script, and a
+clear worker preference. Always confirm before submitting.
 """
+
+# Phase 5 constants
+STDOUT_TRUNCATE_CHARS = 500
+WAIT_FOR_STATUS_DEFAULT_S = 120
+WAIT_FOR_STATUS_MAX_S = 120
 
 
 def _new_task_id() -> str:
@@ -81,10 +141,33 @@ TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     },
     {
         "name": "get_status",
-        "description": "Look up the status of a previously-submitted task.",
+        "description": (
+            "One-shot status check for a previously-submitted task. Returns "
+            "immediately with the current state. Use for questions like "
+            "'status of X', 'is X done?', 'did it work?'."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "wait_for_status",
+        "description": (
+            "Block until the task completes (status leaves PENDING) or the "
+            "max_wait_seconds elapses. Use when the user explicitly asks to "
+            "wait, be notified, or be told when the task finishes. Capped "
+            "server-side at 120 seconds; pass an integer 1-120."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "max_wait_seconds": {
+                    "type": "integer", "minimum": 1, "maximum": 120, "default": 120,
+                },
+            },
             "required": ["task_id"],
         },
     },
@@ -168,7 +251,7 @@ class ConversationAgent:
                 if block.type != "tool_use":
                     continue
                 result = self._execute_tool(block.name, block.input or {})
-                if block.name in ("create_task", "get_status"):
+                if block.name in ("create_task", "get_status", "wait_for_status"):
                     last_action = {
                         "type": block.name,
                         "input": block.input,
@@ -228,7 +311,22 @@ class ConversationAgent:
                     return {"error": "task_id required"}
                 r = requests.get(
                     f"{self.base_url}/getStatus/{task_id}",
-                    timeout=5,
+                    timeout=10,
+                )
+                return r.json()
+
+            if name == "wait_for_status":
+                task_id = args.get("task_id")
+                if not task_id:
+                    return {"error": "task_id required"}
+                wait_s = int(args.get("max_wait_seconds") or WAIT_FOR_STATUS_DEFAULT_S)
+                wait_s = max(1, min(WAIT_FOR_STATUS_MAX_S, wait_s))
+                r = requests.get(
+                    f"{self.base_url}/getStatus/{task_id}",
+                    params={"wait": wait_s},
+                    # Allow a small grace beyond the server-side wait so we
+                    # don't socket-timeout right before the server replies.
+                    timeout=wait_s + 10,
                 )
                 return r.json()
 
@@ -259,15 +357,12 @@ class ScriptedAgent:
         state = self._read_state(history) or {"step": "INIT", "data": {}}
         action: Optional[Dict[str, Any]] = None
 
-        # "What's the status of <task_id>?" can be asked at any point.
-        # Require the task_id to start with `task_` so the regex doesn't
-        # capture the literal word "of" out of "status of ...".
-        m = re.search(r"\b(task_[A-Za-z0-9]+)\b", msg, re.I)
-        if m:
-            tid = m.group(1)
-            result = self._http_get(f"/getStatus/{tid}")
-            reply = self._format_status(tid, result)
-            action = {"type": "get_status", "input": {"task_id": tid}, "result": result}
+        # Phase 5: status / wait / show-full-output intents can be asked at
+        # any point in the conversation. Try them first before falling into
+        # the create_task state machine.
+        intent_result = self._try_status_intent(msg, state)
+        if intent_result is not None:
+            reply, action = intent_result
             return self._return(history, message, reply, state, action)
 
         step = state.get("step", "INIT")
@@ -287,11 +382,24 @@ class ScriptedAgent:
                 reply = "Hi! Would you like to execute a [1] Script or [2] Binary?"
 
         elif step == "ASK_PATH":
-            data["path"] = msg
-            if data.get("task_type") == "SCRIPT" and (msg.startswith("#!") or "\n" in msg):
-                data["script"] = msg
-            else:
-                data["script"] = data.get("script", "")
+            if data.get("task_type") == "SCRIPT":
+                # SCRIPT inputs: prefer storing as `script` body (the common case).
+                # Only treat as a `path` to an existing script file when the input
+                # looks unambiguously like a filesystem path (starts with / or ./
+                # AND has no whitespace).
+                looks_like_path = (
+                    (msg.startswith("/") or msg.startswith("./"))
+                    and " " not in msg and "\n" not in msg
+                )
+                if looks_like_path:
+                    data["path"] = msg
+                    data["script"] = ""
+                else:
+                    data["path"] = ""
+                    data["script"] = msg
+            else:  # BINARY
+                data["path"] = msg
+                data["script"] = ""
             state = {"step": "ASK_WORKER", "data": data}
             reply = "Would you like to [1] Pick a specific worker, or [2] Let the system auto-assign one?"
 
@@ -309,12 +417,12 @@ class ScriptedAgent:
                     reply = f"Live workers: {', '.join(live)}. Which one?"
             else:
                 reply, action = self._submit(data, None)
-                state = {"step": "DONE", "data": {}}
+                state = self._post_submit_state(action)
 
         elif step == "ASK_WORKER_ID":
             chosen = msg.strip()
             reply, action = self._submit(data, chosen)
-            state = {"step": "DONE", "data": {}}
+            state = self._post_submit_state(action)
 
         elif step == "DONE":
             reply = (
@@ -363,16 +471,175 @@ class ScriptedAgent:
         except Exception as exc:
             return f"Error submitting task: {exc}", None
 
-    def _http_get(self, path: str) -> Dict[str, Any]:
+    def _http_get(self, path: str, params: Optional[Dict[str, Any]] = None,
+                  timeout: float = 5.0) -> Dict[str, Any]:
         try:
-            return requests.get(f"{self.base_url}{path}", timeout=5).json()
+            return requests.get(
+                f"{self.base_url}{path}",
+                params=params, timeout=timeout,
+            ).json()
         except Exception as exc:
             return {"error": str(exc)}
 
+    # ------------------------------------------------------------------
+    # Phase 5 — intent detection + status formatting
+    # ------------------------------------------------------------------
+
+    # Wait/notify-me intent — prefer LONG forms ("when it is done") over
+    # bare "wait" so casual mentions aren't false positives.
+    _RE_WAIT = re.compile(
+        r"\b("
+        r"wait\s+(for|until|till|on)|"
+        r"let\s+me\s+know|"
+        r"tell\s+me\s+when|"
+        r"notify\s+me|"
+        r"when\s+(it|the\s+task|that\s+task)(\s+is|\s*'s)?\s+(done|finished|complete|completes|ready)|"
+        r"when\s+(it|the\s+task|that)(\s+is|\s*'s)?\s+done"
+        r")\b",
+        re.I,
+    )
+    # One-shot status intent
+    _RE_STATUS = re.compile(
+        r"\b("
+        r"status|"
+        r"is\s+(it|that|the\s+task|task_\w+)\s+(done|finished|ready|complete)|"
+        r"did\s+(it|task_\w+)\s+(finish|complete|work|run)|"
+        r"check\s+on\s+(it|that|the\s+task)|"
+        r"see\s+if\s+(it|that)\s+(is\s+)?done"
+        r")\b",
+        re.I,
+    )
+    # "show me the full output" — return without truncation
+    _RE_SHOW_FULL = re.compile(
+        r"\bshow\s+(me\s+)?(the\s+)?full\s+(output|stdout|stderr|result)",
+        re.I,
+    )
+    # Allow underscores so multi-segment ids like task_wait_p5_abc1234 are captured whole.
+    _RE_TASK_ID = re.compile(r"\b(task_\w+)\b", re.I)
+
+    def _try_status_intent(self, msg: str, state: Dict[str, Any]):
+        """
+        Detect if msg is a status-related query. Returns (reply, action) on
+        match, or None if no status intent (caller continues with the
+        create_task state machine).
+        """
+        explicit_tid_m = self._RE_TASK_ID.search(msg)
+        explicit_tid = explicit_tid_m.group(1) if explicit_tid_m else None
+
+        is_show_full = bool(self._RE_SHOW_FULL.search(msg))
+        is_wait      = bool(self._RE_WAIT.search(msg))
+        is_status    = bool(self._RE_STATUS.search(msg))
+
+        # No status-flavoured intent and no explicit task_id → not a status query
+        if not (is_show_full or is_wait or is_status or explicit_tid):
+            return None
+
+        tid, ask_for_id = self._resolve_task_id(explicit_tid, state)
+        if ask_for_id:
+            return ask_for_id, None
+
+        if is_wait:
+            wait_s = WAIT_FOR_STATUS_DEFAULT_S
+            result = self._http_get(f"/getStatus/{tid}", params={"wait": wait_s},
+                                    timeout=wait_s + 10)
+            reply = self._format_status_reply(tid, result, full=False, after_wait=True)
+            return reply, {"type": "wait_for_status",
+                           "input": {"task_id": tid, "max_wait_seconds": wait_s},
+                           "result": result}
+
+        # one-shot or show-full — both call /getStatus, formatting differs
+        result = self._http_get(f"/getStatus/{tid}")
+        reply = self._format_status_reply(tid, result, full=is_show_full)
+        return reply, {"type": "get_status",
+                       "input": {"task_id": tid}, "result": result}
+
+    def _resolve_task_id(self, explicit_tid: Optional[str], state: Dict[str, Any]):
+        """
+        Return (task_id, None) if resolvable. Otherwise (None, ask_message)
+        — caller should send the ask_message back to the user.
+        """
+        if explicit_tid:
+            return explicit_tid, None
+        last_tid = state.get("last_task_id")
+        if last_tid:
+            return last_tid, None
+        return None, "Which task ID would you like me to check?"
+
+    def _post_submit_state(self, action: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """After a successful submit, persist the new task_id into state."""
+        last_tid = None
+        if action and isinstance(action, dict):
+            inp = action.get("input") or {}
+            res = action.get("result") or {}
+            last_tid = inp.get("task_id") or res.get("task_id")
+        return {"step": "DONE", "data": {}, "last_task_id": last_tid}
+
+    def _format_status_reply(self, task_id: str, body: Dict[str, Any],
+                              *, full: bool = False, after_wait: bool = False) -> str:
+        """
+        Translate /getStatus response into natural language with a glyph
+        prefix, truncating long output unless full=True. after_wait adjusts
+        the message for the wait-for-completion path.
+        """
+        if not isinstance(body, dict):
+            return f"❓ Couldn't read status for {task_id} — server returned {body!r}."
+
+        # Standardised error shapes from Phase 5
+        if body.get("error_code") == "TASK_NOT_FOUND":
+            return (
+                f"❓ I don't have a record of task `{task_id}`. "
+                f"Did you mean a different ID?"
+            )
+        if body.get("error_code"):
+            return f"⚠️ Server error checking `{task_id}`: {body.get('message') or body}"
+
+        status = body.get("status")
+        result = body.get("result") or {}
+
+        if status == "PENDING":
+            base = (f"⏳ Task `{task_id}` is still running"
+                    f"{' (no change after the wait window)' if after_wait else ''}.")
+            return f"{base}\n   Want me to wait for it to finish?"
+
+        if status == "SUCCESS":
+            stdout = result.get("stdout", "") or ""
+            duration = result.get("duration_ms")
+            stdout_str = stdout if full else self._truncate(stdout, STDOUT_TRUNCATE_CHARS)
+            note = ""
+            if not full and len(stdout) > STDOUT_TRUNCATE_CHARS:
+                note = "  (output truncated, ask 'show me the full output' for the rest)"
+            tail = "  Anything else I can help with?"
+            duration_s = f" in {duration}ms" if duration is not None else ""
+            return (f"✓ Task `{task_id}` completed successfully{duration_s}.\n"
+                    f"Output:\n{stdout_str}{note}\n{tail}")
+
+        if status == "FAILURE":
+            timed_out = bool(result.get("timed_out"))
+            exit_code = result.get("exit_code")
+            stderr = (result.get("stderr") or result.get("stdout") or "")
+            stderr_str = stderr if full else self._truncate(stderr, STDOUT_TRUNCATE_CHARS)
+            note = ""
+            if not full and len(stderr) > STDOUT_TRUNCATE_CHARS:
+                note = "  (truncated, ask 'show me the full output' for the rest)"
+            tail = "  Want me to show the full error output?"
+            if timed_out:
+                return (f"⏱ Task `{task_id}` ran longer than the allowed time and "
+                        f"was stopped.\nstderr:\n{stderr_str}{note}\n{tail}")
+            return (f"✗ Task `{task_id}` failed (exit code {exit_code}).\n"
+                    f"Error:\n{stderr_str}{note}\n{tail}")
+
+        # Unknown status — defensive
+        return f"❓ Task `{task_id}` has an unrecognised status: {status!r}"
+
+    @staticmethod
+    def _truncate(text: str, n: int) -> str:
+        if not text:
+            return "(empty)"
+        return text if len(text) <= n else text[:n] + "…"
+
+    # Kept for backward-compat; prefer _format_status_reply
     def _format_status(self, task_id: str, result: Dict[str, Any]) -> str:
-        if isinstance(result, dict) and "status" in result:
-            return f"Task {task_id}: status={result['status']}, result={result.get('result')}"
-        return f"Couldn't fetch status for {task_id}: {result}"
+        return self._format_status_reply(task_id, result, full=False)
 
     def _read_state(self, history: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         for msg in reversed(history or []):

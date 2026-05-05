@@ -60,6 +60,13 @@ class Worker:
         # _recover_pending_tasks(). HT1 status is the source of truth.
         self.seen_task_ids: set[str] = set()
 
+        # Phase 6: tasks we've started but not yet reported to /complete.
+        # Drives the pending_tasks count we send in heartbeats so the
+        # frontend's placement scorer can avoid loaded workers. Guarded by
+        # _inflight_lock because the heartbeat thread reads it.
+        self._inflight: set[str] = set()
+        self._inflight_lock = threading.Lock()
+
         self._stop_event = threading.Event()
         self._heartbeat_thread: Optional[threading.Thread] = None
 
@@ -153,28 +160,35 @@ class Worker:
         script = record.get("script") or ""
         logger.info("[Worker %s] executing %s (%s)", self.worker_id, task_id, task_type)
 
+        # Phase 6: count this task as in-flight so heartbeats reflect load.
+        with self._inflight_lock:
+            self._inflight.add(task_id)
         try:
-            result = run_task(
-                task_type=task_type, path=path, script=script,
-                timeout_s=self.execution_timeout,
-            )
-        except Exception as exc:
-            logger.exception("[Worker %s] execution raised for %s",
-                             self.worker_id, task_id)
-            self._report(task_id, status="FAILURE", result_payload={
-                "exit_code": -1, "stdout": "",
-                "stderr": f"executor error: {exc}",
-                "duration_ms": 0, "timed_out": False,
-            })
-            return
+            try:
+                result = run_task(
+                    task_type=task_type, path=path, script=script,
+                    timeout_s=self.execution_timeout,
+                )
+            except Exception as exc:
+                logger.exception("[Worker %s] execution raised for %s",
+                                 self.worker_id, task_id)
+                self._report(task_id, status="FAILURE", result_payload={
+                    "exit_code": -1, "stdout": "",
+                    "stderr": f"executor error: {exc}",
+                    "duration_ms": 0, "timed_out": False,
+                })
+                return
 
-        status = "SUCCESS" if (result.exit_code == 0 and not result.timed_out) else "FAILURE"
-        logger.info(
-            "[Worker %s] task %s finished status=%s exit=%s duration=%dms timed_out=%s",
-            self.worker_id, task_id, status,
-            result.exit_code, result.duration_ms, result.timed_out,
-        )
-        self._report(task_id, status=status, result_payload=result.to_dict())
+            status = "SUCCESS" if (result.exit_code == 0 and not result.timed_out) else "FAILURE"
+            logger.info(
+                "[Worker %s] task %s finished status=%s exit=%s duration=%dms timed_out=%s",
+                self.worker_id, task_id, status,
+                result.exit_code, result.duration_ms, result.timed_out,
+            )
+            self._report(task_id, status=status, result_payload=result.to_dict())
+        finally:
+            with self._inflight_lock:
+                self._inflight.discard(task_id)
 
     # -- HTTP helpers --------------------------------------------------------
 
@@ -240,10 +254,18 @@ class Worker:
         )
 
     def _send_heartbeat(self):
+        # Phase 6: include current load + send-time so the frontend's
+        # placement scorer can compute load + latency.
+        with self._inflight_lock:
+            pending = len(self._inflight)
         try:
             requests.post(
                 f"{self.base_url}/workers/heartbeat",
-                json={"worker_id": self.worker_id},
+                json={
+                    "worker_id": self.worker_id,
+                    "pending_tasks": pending,
+                    "timestamp": time.time(),
+                },
                 timeout=HTTP_TIMEOUT_SECONDS,
             )
         except Exception as exc:

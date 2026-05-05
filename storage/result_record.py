@@ -18,7 +18,7 @@ RESULT_KIND = "result_details"
 
 VALID_STATUSES = {"PENDING", "SUCCESS", "FAILURE"}
 VALID_TASK_TYPES = {"SCRIPT", "BINARY"}
-VALID_ASSIGNED_BY = {"user", "frontend"}
+VALID_ASSIGNED_BY = {"user", "frontend", "intelligence"}
 
 
 class ResultValidationError(ValueError):

@@ -1003,11 +1003,28 @@ def create_app(node: ChordNode) -> Flask:
 
     @app.post("/workers/heartbeat")
     def workers_heartbeat():
+        """
+        Phase 2: register a heartbeat for liveness tracking.
+        Phase 6: optionally accept ``pending_tasks`` (int) and
+        ``timestamp`` (epoch float) for the placement scorer.
+        Both extra fields are optional — old clients still work.
+        """
         body = request.get_json(silent=True) or {}
         worker_id = body.get("worker_id")
         if not worker_id:
             return jsonify({"ok": False, "error": "worker_id required"}), 422
-        worker_registry.heartbeat(worker_id)
+        # Defensive: tolerate non-numeric / missing values from old clients
+        pending = body.get("pending_tasks")
+        try:
+            pending = int(pending) if pending is not None else 0
+        except (TypeError, ValueError):
+            pending = 0
+        ts = body.get("timestamp")
+        try:
+            ts = float(ts) if ts is not None else None
+        except (TypeError, ValueError):
+            ts = None
+        worker_registry.heartbeat(worker_id, pending_tasks=pending, timestamp=ts)
         return jsonify({"ok": True})
 
     @app.get("/workers/live")
@@ -1113,17 +1130,32 @@ def create_app(node: ChordNode) -> Flask:
             }), 200
 
         # ---- Step 1: determine worker ----
+        # Phase 6: replace Phase 2 round-robin with load/latency/availability-
+        # weighted scoring when the user doesn't pick a specific worker.
+        placement_explanation = None
         if provided_worker:
             worker_id = provided_worker
             assigned_by = "user"
+            placement_explanation = f"User selected {worker_id}"
         else:
-            worker_id = worker_registry.round_robin_assign()
-            if worker_id is None:
+            scored = worker_registry.score_all_workers()
+            if not scored:
                 return jsonify({
                     "message": "Task rejected",
                     "reason": "no live workers available for auto-assignment",
                 }), 503
-            assigned_by = "frontend"
+            worker_id, score = scored[0]
+            assigned_by = "intelligence"
+            m = worker_registry.get_metrics(worker_id)
+            s = worker_registry.get_stats(worker_id)
+            pending = m.pending_tasks if m else 0
+            latency_ms = m.latency_ms if m else 0.0
+            placement_explanation = (
+                f"{worker_id} chosen "
+                f"(pending: {pending}, "
+                f"latency: {latency_ms:.0f}ms, "
+                f"success: {s.success_rate*100:.0f}%)"
+            )
 
         # ---- Step 2: build the result record ----
         try:
@@ -1195,25 +1227,78 @@ def create_app(node: ChordNode) -> Flask:
             "task_id": task_id,
             "worker_id": worker_id,
             "assigned_by": assigned_by,
+            "placement_explanation": placement_explanation,
         }), 201
 
-    @app.get("/getStatus/<task_id>")
-    def get_status_v2(task_id):
-        """Phase 3: real HT1 read with replica fallback (in result_service.get)."""
-        try:
-            record = result_service.get(task_id)
-        except Exception as exc:
-            logger.exception("[getStatus] read failed for %s", task_id)
-            return jsonify({"error": "lookup failed", "details": str(exc)}), 500
-        if record is None:
-            return jsonify({"error": "task not found", "task_id": task_id}), 404
-        return jsonify({
+    # Phase 5 constants (server-side ?wait=)
+    WAIT_PARAM_MAX_SECONDS = 120
+    WAIT_POLL_INTERVAL_S = 0.5
+
+    def _format_status_response(task_id, record):
+        return {
             "task_id": task_id,
             "status": record["status"],
             "result": record["result"],
             "worker_id": record["worker_id"],
             "assigned_by": record["assigned_by"],
-        }), 200
+        }
+
+    @app.get("/getStatus/<task_id>")
+    def get_status_v2(task_id):
+        """
+        Phase 3 read + Phase 5 polish:
+          - real HT1 read with replica fallback (via result_service.get)
+          - standardized error_code on 404 / 400 / 500 so the agent can branch
+          - optional ?wait=N (capped at 120) blocks server-side until the
+            status leaves PENDING (or N seconds elapse)
+        """
+        # parse + validate ?wait=
+        wait_raw = request.args.get("wait", "0") or "0"
+        try:
+            wait_s = float(wait_raw)
+        except ValueError:
+            return jsonify({
+                "error_code": "BAD_REQUEST",
+                "message": "wait parameter must be a number",
+                "task_id": task_id,
+            }), 400
+        if wait_s < 0:
+            wait_s = 0
+        if wait_s > WAIT_PARAM_MAX_SECONDS:
+            return jsonify({
+                "error_code": "BAD_REQUEST",
+                "message": f"wait parameter capped at {WAIT_PARAM_MAX_SECONDS} seconds",
+                "max_wait_seconds": WAIT_PARAM_MAX_SECONDS,
+                "task_id": task_id,
+            }), 400
+
+        deadline = time.time() + wait_s
+
+        while True:
+            try:
+                record = result_service.get(task_id)
+            except Exception as exc:
+                logger.exception("[getStatus] read failed for %s", task_id)
+                return jsonify({
+                    "error_code": "INTERNAL_ERROR",
+                    "message": str(exc),
+                    "task_id": task_id,
+                }), 500
+
+            if record is None:
+                return jsonify({
+                    "error_code": "TASK_NOT_FOUND",
+                    "message": f"No task found with id {task_id!r}",
+                    "task_id": task_id,
+                }), 404
+
+            if record["status"] != "PENDING":
+                return jsonify(_format_status_response(task_id, record)), 200
+            if time.time() >= deadline:
+                # Caller's wait window elapsed — return PENDING normally.
+                return jsonify(_format_status_response(task_id, record)), 200
+
+            time.sleep(WAIT_POLL_INTERVAL_S)
 
     # ------------------------------------------------------------------
     # Phase 3 — internal HT1/HT2 RPCs
@@ -1335,9 +1420,31 @@ def create_app(node: ChordNode) -> Flask:
             logger.exception("[results/complete] write failed for %s", task_id)
             return jsonify({"ok": False, "error": str(exc)}), 500
 
+        # Phase 6: feed the completion into the worker's running success rate.
+        # Single caller (this endpoint), so no double-counting risk.
+        try:
+            worker_registry.record_completion(
+                worker_id=existing.get("worker_id"),
+                is_success=(status == "SUCCESS"),
+            )
+        except Exception:
+            logger.exception("[results/complete] record_completion failed for %s", task_id)
+
         return jsonify({
             "ok": True, "task_id": task_id, "status": status,
         }), 200
+
+    # ------------------------------------------------------------------
+    # Phase 6 — placement debug endpoint
+    # ------------------------------------------------------------------
+
+    @app.get("/debug/worker-metrics")
+    def debug_worker_metrics():
+        """
+        Snapshot of every worker's metrics + score, sorted by score desc.
+        workers[0] is the next /createTask placement target.
+        """
+        return jsonify(worker_registry.metrics_snapshot())
 
     @app.post("/agent/chat")
     def agent_chat():
