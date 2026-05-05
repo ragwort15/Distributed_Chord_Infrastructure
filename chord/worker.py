@@ -1,218 +1,76 @@
 """
-Worker thread: scans local DHT store for PENDING jobs, claims and executes them.
+Phase 2: Live worker registry + pure round-robin auto-assignment.
+
+This module is intentionally independent of the Chord/DHT layer.  It tracks
+which workers have heartbeated recently and hands out worker_ids in O(1)
+via a rotating index.
+
+Storage of the actual task records (HT1) and worker->task list (HT2) is
+Phase 3 work and is NOT done here.
 """
 
 import threading
 import time
-import logging
-from concurrent.futures import ThreadPoolExecutor
-
-from chord.job import PENDING, CLAIMED, RUNNING, DONE, FAILED, job_key
-
-logger = logging.getLogger(__name__)
+from typing import List, Optional
 
 
-JOB_TIMEOUT = 120   # seconds before a RUNNING job is declared stuck and failed
-MAX_JOB_RETRIES = 3  # max automatic retries for transient job failures
-JOB_RETRY_DELAY = 2  # seconds to wait before re-queuing a failed job
+DEFAULT_HEARTBEAT_TIMEOUT_S = 10.0
 
 
-class WorkerThread(threading.Thread):
-    """
-    Daemon thread that polls the node's local data_store for PENDING jobs,
-    atomically claims them, then executes them in a thread pool.
-    Also reaps jobs stuck in RUNNING state beyond JOB_TIMEOUT.
-    """
+class WorkerRegistry:
+    def __init__(self, heartbeat_timeout_s: float = DEFAULT_HEARTBEAT_TIMEOUT_S):
+        self._workers: dict = {}          # worker_id -> last_heartbeat_ts
+        self._lock = threading.Lock()
+        self._rr_index = -1
+        self._timeout = heartbeat_timeout_s
 
-    def __init__(self, node, interval: float = 1.0, max_workers: int = 4):
-        super().__init__(daemon=True, name=f"chord-worker-{node.node_id}")
-        self.node = node
-        self.interval = interval
-        self._stop_event = threading.Event()
-        self._executor = ThreadPoolExecutor(max_workers=max_workers,
-                                            thread_name_prefix=f"job-{node.node_id}")
+    def heartbeat(self, worker_id: str) -> None:
+        if not worker_id:
+            raise ValueError("worker_id required")
+        with self._lock:
+            self._workers[worker_id] = time.time()
 
-    def run(self):
-        logger.info(f"[Worker {self.node.node_id}] Started (interval={self.interval}s)")
-        while not self._stop_event.is_set():
-            try:
-                self._scan_and_claim()
-                self._reap_timed_out_jobs()
-            except Exception as e:
-                logger.warning(f"[Worker {self.node.node_id}] Scan error: {e}")
-            self._stop_event.wait(self.interval)
+    def remove(self, worker_id: str) -> bool:
+        with self._lock:
+            return self._workers.pop(worker_id, None) is not None
 
-    def _reap_timed_out_jobs(self):
-        """Mark RUNNING jobs that exceeded JOB_TIMEOUT as FAILED.
+    def live_workers(self) -> List[str]:
+        with self._lock:
+            return self._live_locked()
 
-        Previously timed-out jobs were immediately hard-failed with no
-        consideration of retry_count.  Now we re-queue them (reset to
-        PENDING) if they have remaining retry budget, consistent with
-        how _run_job() handles transient execution errors.
-        """
+    def round_robin_assign(self) -> Optional[str]:
+        with self._lock:
+            live = self._live_locked()
+            if not live:
+                return None
+            self._rr_index = (self._rr_index + 1) % len(live)
+            return live[self._rr_index]
+
+    def _live_locked(self) -> List[str]:
+        # timeout <= 0 disables expiration: every heartbeated worker stays live
+        if self._timeout <= 0:
+            return sorted(self._workers.keys())
         now = time.time()
-        with self.node._lock:
-            for k, v in self.node.data_store.items():
-                if not (k.startswith("job:") and isinstance(v, dict)):
-                    continue
-                if v.get("status") == RUNNING:
-                    started = v.get("started_at") or now
-                    if now - started > JOB_TIMEOUT:
-                        retry_count = v.get("retry_count", 0)
-                        if retry_count < MAX_JOB_RETRIES:
-                            # Re-queue so the worker picks it up again
-                            v["status"] = PENDING
-                            v["retry_count"] = retry_count + 1
-                            v["started_at"] = None
-                            v["error"] = (
-                                f"timed out after {JOB_TIMEOUT}s "
-                                f"(retry {retry_count + 1}/{MAX_JOB_RETRIES})"
-                            )
-                            self.node.data_store[k] = v
-                            logger.warning(
-                                "[Worker %s] Job %s timed out — re-queuing "
-                                "(attempt %d/%d)",
-                                self.node.node_id, k,
-                                retry_count + 1, MAX_JOB_RETRIES,
-                            )
-                        else:
-                            v["status"] = FAILED
-                            v["finished_at"] = now
-                            v["error"] = (
-                                f"timed out after {JOB_TIMEOUT}s "
-                                f"(exhausted {MAX_JOB_RETRIES} retries)"
-                            )
-                            self.node.data_store[k] = v
-                            self.node.jobs_failed += 1
-                            logger.warning(
-                                "[Worker %s] Job %s timed out — no retries left, marking FAILED",
-                                self.node.node_id, k,
-                            )
+        return sorted(
+            w for w, t in self._workers.items()
+            if now - t <= self._timeout
+        )
 
-    def stop(self):
-        self._stop_event.set()
-        self._executor.shutdown(wait=False)
+    def dead_workers(self) -> List[tuple]:
+        """Workers ever seen but no longer live. Returns [(worker_id, age_s)]."""
+        with self._lock:
+            if self._timeout <= 0:
+                return []
+            now = time.time()
+            return sorted(
+                (w, now - t) for w, t in self._workers.items()
+                if now - t > self._timeout
+            )
 
-    def _scan_and_claim(self):
-        with self.node._lock:
-            pending = [
-                (k, v) for k, v in self.node.data_store.items()
-                if k.startswith("job:") and isinstance(v, dict) and v.get("status") == PENDING
-            ]
-
-        for key, job in pending:
-            claimed = self._try_claim(key, job)
-            if claimed:
-                self._executor.submit(self._run_job, key, job)
-
-    def _try_claim(self, key: str, job: dict) -> bool:
-        """Atomically transition job from PENDING → CLAIMED."""
-        with self.node._lock:
-            current = self.node.data_store.get(key)
-            if current is None or current.get("status") != PENDING:
-                return False
-            current["status"] = CLAIMED
-            current["claimed_by"] = self.node.address
-            current["started_at"] = time.time()
-            self.node.data_store[key] = current
-        logger.debug(f"[Worker {self.node.node_id}] Claimed {key}")
-        return True
-
-    def _run_job(self, key: str, job: dict):
-        node = self.node
-        with node._lock:
-            entry = node.data_store.get(key)
-            if entry:
-                entry["status"] = RUNNING
-                node.data_store[key] = entry
-
-        try:
-            result = _execute(job)
-            with node._lock:
-                entry = node.data_store.get(key)
-                if entry:
-                    entry["status"] = DONE
-                    entry["finished_at"] = time.time()
-                    entry["result"] = result
-                    node.data_store[key] = entry
-            node.jobs_completed += 1
-            logger.info(f"[Worker {node.node_id}] Completed {key}")
-            try:
-                from chord.metrics_registry import JOBS_TOTAL
-                JOBS_TOTAL.labels(node_id=str(node.node_id), status="done").inc()
-            except Exception:
-                pass
-        except Exception as e:
-            # Previous behaviour: immediately mark FAILED on first exception.
-            # Fix: check retry_count; re-queue with a short delay if budget
-            # remains.  Only genuinely exhausted jobs are marked FAILED.
-            #
-            # "Transient" here means any exception from _execute() — network
-            # hiccup, downstream service blip, temporary resource contention.
-            # Permanent failures (e.g. unknown job type) will also exhaust
-            # retries, but that is acceptable: three fast attempts take < 10 s
-            # and the job lands in FAILED with a clear error message.
-            with node._lock:
-                entry = node.data_store.get(key)
-                retry_count = entry.get("retry_count", 0) if entry else MAX_JOB_RETRIES
-
-            if retry_count < MAX_JOB_RETRIES:
-                next_retry = retry_count + 1
-                logger.warning(
-                    "[Worker %s] Job %s failed (attempt %d/%d): %s — "
-                    "re-queuing in %ds",
-                    node.node_id, key, next_retry, MAX_JOB_RETRIES, e,
-                    JOB_RETRY_DELAY,
-                )
-                time.sleep(JOB_RETRY_DELAY)
-                with node._lock:
-                    entry = node.data_store.get(key)
-                    if entry:
-                        entry["status"] = PENDING
-                        entry["retry_count"] = next_retry
-                        entry["started_at"] = None
-                        entry["error"] = (
-                            f"attempt {next_retry} failed: {e}"
-                        )
-                        node.data_store[key] = entry
-            else:
-                with node._lock:
-                    entry = node.data_store.get(key)
-                    if entry:
-                        entry["status"] = FAILED
-                        entry["finished_at"] = time.time()
-                        entry["error"] = str(e)
-                        node.data_store[key] = entry
-                node.jobs_failed += 1
-                logger.warning(
-                    "[Worker %s] Job %s permanently failed after %d retries: %s",
-                    node.node_id, key, MAX_JOB_RETRIES, e,
-                )
-                try:
-                    from chord.metrics_registry import JOBS_TOTAL
-                    JOBS_TOTAL.labels(node_id=str(node.node_id), status="failed").inc()
-                except Exception:
-                    pass
-
-
-def _execute(job: dict):
-    """Execute a job by type. Raises on failure."""
-    job_type = job.get("type", "")
-    payload = job.get("payload", {})
-
-    if job_type == "sleep":
-        duration = float(payload.get("seconds", 1))
-        time.sleep(duration)
-        return {"slept": duration}
-
-    elif job_type == "echo":
-        message = payload.get("message", "")
-        return {"echo": message}
-
-    elif job_type == "compute":
-        n = int(payload.get("n", 1000))
-        total = sum(range(n))
-        return {"sum": total, "n": n}
-
-    else:
-        raise ValueError(f"Unknown job type: {job_type!r}")
+    def all_workers(self) -> List[tuple]:
+        """All workers ever seen. Returns [(worker_id, last_ts, age_s)] sorted by id."""
+        with self._lock:
+            now = time.time()
+            return sorted(
+                (w, t, now - t) for w, t in self._workers.items()
+            )
