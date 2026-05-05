@@ -434,6 +434,21 @@ def create_app(node: ChordNode) -> Flask:
         return send_from_directory(_STATIC_DIR, "recovery.html")
 
     # ------------------------------------------------------------------
+    # Presentation page
+    # ------------------------------------------------------------------
+
+    _PRESENTATION_DIR = os.path.join(_STATIC_DIR, "presentation")
+
+    @app.get("/presentation")
+    @app.get("/presentation/")
+    def presentation():
+        return send_from_directory(_PRESENTATION_DIR, "index.html")
+
+    @app.get("/presentation/<path:filename>")
+    def presentation_assets(filename):
+        return send_from_directory(_PRESENTATION_DIR, filename)
+
+    # ------------------------------------------------------------------
     # Dashboard API — ring topology
     # ------------------------------------------------------------------
 
