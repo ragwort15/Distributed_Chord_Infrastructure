@@ -858,7 +858,14 @@ def create_app(node: ChordNode) -> Flask:
             "jobs_running":   jobs_running,
             "ring_size":      len(seen),
         })
+    # Configuration endpoint for frontend
+    # ------------------------------------------------------------------
 
+    @app.get("/api/config")
+    def config():
+        """Return frontend config including Grafana URL."""
+        grafana_url = os.environ.get("GRAFANA_URL", "http://localhost:3000")
+        return jsonify({"grafana_url": grafana_url}), 200
     # ------------------------------------------------------------------
     # Fault injection — hard kill (no graceful handoff)
     # ------------------------------------------------------------------
