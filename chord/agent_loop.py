@@ -27,11 +27,11 @@ class AgentLoop(threading.Thread):
     continuous observability and can trigger proactive rebalancing advice.
     """
 
-    def __init__(self, node, agent: OrchestratorAgent, interval: float = 5.0):
+    def __init__(self, node, agent: OrchestratorAgent, interval: float = 15.0):
         super().__init__(daemon=True, name=f"agent-loop-{node.node_id}")
         self.node = node
         self.agent = agent
-        self.interval = interval
+        self.interval = interval  # default raised from 5s → 15s to reduce I/O pressure
         self._stop = threading.Event()
 
     def run(self):
@@ -155,7 +155,12 @@ class AgentLoop(threading.Thread):
                 # Try to find a finger that is not in `seen` to continue
                 skipped = False
                 with self.node._lock:
-                    fingers = list(self.node.finger_table)
+                    # node.fingers is a List[FingerEntry]; convert to plain dicts
+                    fingers = [
+                        {"id": f.node_id, "address": f.node_address}
+                        for f in self.node.fingers
+                        if f.node_id is not None
+                    ]
                 for finger in fingers:
                     if finger and finger.get("id") not in seen:
                         current = finger

@@ -19,6 +19,7 @@ COPY requirements.txt .
 # Install only runtime deps (skip pytest, anthropic for demo)
 RUN pip install --user --no-cache-dir \
     flask \
+    waitress \
     requests \
     prometheus-client \
     grpcio \

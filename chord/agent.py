@@ -34,6 +34,25 @@ STRATEGY = os.environ.get("AGENT_STRATEGY", "llm").lower()
 
 _log_lock = threading.Lock()
 _LOG_PATH = Path(os.environ.get("AGENT_LOG_PATH", "agent_decisions.jsonl"))
+_LOG_MAX_BYTES = int(os.environ.get("AGENT_LOG_MAX_MB", "10")) * 1024 * 1024  # default 10 MB
+_LOG_KEEP_LINES = 5000  # lines kept after rotation
+
+
+def _rotate_log_if_needed():
+    """Truncate the decision log when it exceeds _LOG_MAX_BYTES.
+    Keeps the newest _LOG_KEEP_LINES lines so recent history is preserved.
+    Called inside _log_lock so no concurrent writes occur during rotation.
+    """
+    try:
+        if _LOG_PATH.exists() and _LOG_PATH.stat().st_size > _LOG_MAX_BYTES:
+            lines = _LOG_PATH.read_text(encoding="utf-8").splitlines()
+            kept = lines[-_LOG_KEEP_LINES:]
+            _LOG_PATH.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            logger.info(
+                f"[DecisionLog] Rotated {_LOG_PATH}: kept {len(kept)}/{len(lines)} lines"
+            )
+    except Exception as e:
+        logger.warning(f"[DecisionLog] Rotation failed: {e}")
 
 
 def _log_decision(agent: str, tool: str, inputs: dict, output: dict, strategy: str,
@@ -48,6 +67,7 @@ def _log_decision(agent: str, tool: str, inputs: dict, output: dict, strategy: s
         "latency_ms": round(latency_ms, 1),
     }
     with _log_lock:
+        _rotate_log_if_needed()
         with _LOG_PATH.open("a") as f:
             f.write(json.dumps(entry) + "\n")
     logger.debug(f"[DecisionLog] {agent}/{tool} → {output}")
