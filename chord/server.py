@@ -3,6 +3,7 @@ Flask HTTP server exposing all Chord RPC endpoints and the public data/job API.
 """
 
 import os
+import sys
 import json
 import random
 import threading
@@ -592,31 +593,57 @@ def create_app(node: ChordNode) -> Flask:
             join_addr = node.address
             
             # Spawn new node in background
+            spawn_error = []  # mutable container so the thread can write to it
+
             def _spawn():
                 try:
                     env = os.environ.copy()
                     env['AGENT_STRATEGY'] = 'heuristic'
-                    # Get the project root directory (parent of chord/)
+                    # Use the same interpreter that is running right now — works
+                    # in virtualenvs, Docker, and any custom Python installation.
                     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    subprocess.Popen([
-                        'python3', 'run_node.py',
-                        '--host', '127.0.0.1',
-                        '--port', str(next_port),
-                        '--join', join_addr,
-                        '--worker',
-                        '--log', 'INFO'
-                    ], env=env, cwd=project_root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    logger.info(f"[API] Spawned new node on port {next_port} from {project_root}")
+                    proc = subprocess.Popen(
+                        [
+                            sys.executable, 'run_node.py',
+                            '--host', '127.0.0.1',
+                            '--port', str(next_port),
+                            '--join', join_addr,
+                            '--worker',
+                            '--log', 'INFO',
+                        ],
+                        env=env,
+                        cwd=project_root,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                    )
+                    logger.info(f"[API] Spawned new node on port {next_port} (pid={proc.pid}) from {project_root}")
                 except Exception as e:
+                    spawn_error.append(str(e))
                     logger.error(f"[API] Failed to spawn node: {e}", exc_info=True)
-            
-            threading.Thread(target=_spawn, daemon=True).start()
-            
+
+            t = threading.Thread(target=_spawn, daemon=True)
+            t.start()
+            # Give the thread a short moment to detect immediate failures
+            # (e.g. executable not found) before we respond.
+            t.join(timeout=0.3)
+
+            if spawn_error:
+                return jsonify({
+                    "ok": False,
+                    "error": spawn_error[0],
+                    "hint": (
+                        f"Run manually: {sys.executable} run_node.py "
+                        f"--port {next_port} --join {join_addr} --worker"
+                    ),
+                    "port": next_port,
+                }), 500
+
             return jsonify({
                 "ok": True,
                 "port": next_port,
                 "address": f"127.0.0.1:{next_port}",
-                "message": f"New node spawning on port {next_port}"
+                "cmd": f"{sys.executable} run_node.py --port {next_port} --join {join_addr} --worker",
+                "message": f"New node spawning on port {next_port}",
             })
         except Exception as e:
             logger.error(f"[API] Error in add_node: {e}")
@@ -836,6 +863,9 @@ def create_app(node: ChordNode) -> Flask:
             return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
         except TaskConflictError as e:
             return jsonify({"ok": False, "error": {"code": "TASK_CONFLICT", "message": str(e)}}), 409
+        except Exception as e:
+            logger.error("[register_task] Unexpected error: %s", e, exc_info=True)
+            return jsonify({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": str(e)}}), 500
 
     @app.get("/tasks/<task_id>")
     def get_task(task_id):
