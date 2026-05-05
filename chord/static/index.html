@@ -725,10 +725,8 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 
   <div class="sidebar-footer">
     <div class="node-pill" id="node-pill" title="Click to view all nodes">
-      <div class="pulse" id="sidebar-pulse"></div>
       <div class="node-pill-info">
-        <div class="node-pill-id" id="sidebar-node-id">Node —</div>
-        <div class="node-pill-addr" id="sidebar-node-addr">connecting…</div>
+        <div class="node-pill-id" id="sidebar-node-id">Ring Status</div>
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
@@ -1748,8 +1746,6 @@ function updateSidebar(){
   if(ring.this_node!=null){
     const self=ring.nodes.find(nd=>nd.node_id===ring.this_node);
     if(self){
-      document.getElementById('sidebar-node-id').textContent=`Node ${ring.this_node}`;
-      document.getElementById('sidebar-node-addr').textContent=self.address||'';
     }
   }
 
