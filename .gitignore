@@ -7,5 +7,6 @@ dist/
 build/
 .env
 agent_decisions.jsonl
+request_log.jsonl
 *.log
 .DS_Store

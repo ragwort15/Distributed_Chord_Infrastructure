@@ -1170,7 +1170,16 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
               <label class="field-label">Client Tag</label>
               <input class="inp" id="req-client" value="dashboard" placeholder="client identifier">
             </div>
-            <button class="btn btn-primary" id="btn-simulate-req" style="justify-content:center">Route File Request</button>
+            <div class="btn-row">
+              <button class="btn btn-primary" id="btn-simulate-req" style="flex:1;justify-content:center">Route File Request</button>
+              <button class="btn btn-ghost" id="btn-simulate-burst" style="flex:1;justify-content:center">Burst ×10</button>
+            </div>
+            <div id="burst-progress" style="display:none;margin-top:8px">
+              <div style="font-size:11px;color:var(--tx-3);margin-bottom:4px">Sending <span id="burst-count">0</span>/10...</div>
+              <div style="width:100%;height:4px;background:var(--bg-3);border-radius:2px;overflow:hidden">
+                <div id="burst-bar" style="width:0%;height:100%;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width 0.2s"></div>
+              </div>
+            </div>
             <div class="dht-result-box" id="req-result">Result will appear here…</div>
           </div>
         </div>
@@ -2728,6 +2737,34 @@ document.getElementById('btn-simulate-req').addEventListener('click',async()=>{
     box.textContent=JSON.stringify(d,null,2);
     setTimeout(pollRequests,300);
   }catch(e){box.className='dht-result-box error';box.textContent=`Error: ${e.message}`;}
+});
+
+document.getElementById('btn-simulate-burst').addEventListener('click',async()=>{
+  const client=document.getElementById('req-client').value.trim()||'dashboard-burst';
+  const prog=document.getElementById('burst-progress');
+  const cnt=document.getElementById('burst-count');
+  const bar=document.getElementById('burst-bar');
+  const box=document.getElementById('req-result');
+
+  prog.style.display='block';
+  box.className='dht-result-box';box.textContent='Preparing 10 requests…';
+
+  const picks=[];
+  for(let i=0;i<10;i++)picks.push(DUMMY_FILES[Math.floor(Math.random()*DUMMY_FILES.length)]);
+
+  for(let i=0;i<picks.length;i++){
+    cnt.textContent=i+1;
+    bar.style.width=((i+1)/10*100)+'%';
+    try{
+      await fetch('/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename:picks[i],client})});
+    }catch(e){console.warn(`Request ${i+1} failed:`,e);}
+    if(i<picks.length-1)await new Promise(r=>setTimeout(r,120));
+  }
+
+  prog.style.display='none';
+  box.className='dht-result-box result';
+  box.textContent='✓ Burst complete: 10 requests sent';
+  setTimeout(pollRequests,200);
 });
 
 /* ═══════════════════════════════════════════════════════════════════
