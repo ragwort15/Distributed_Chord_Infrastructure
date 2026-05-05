@@ -1184,9 +1184,9 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
         <div class="card-header"><div class="card-title">Request Log</div><div class="card-sub">Last 30 routed file requests</div></div>
         <div style="overflow-y:auto;max-height:500px">
           <table class="data-table" id="req-table">
-            <thead><tr><th>File</th><th>Routed From</th><th>Served By</th><th>Hops</th><th>Key ID</th><th>Time</th></tr></thead>
+            <thead><tr><th>File</th><th>Type</th><th>Routed From</th><th>Served By</th><th>Hops</th><th>Key ID</th><th>Time</th></tr></thead>
             <tbody id="req-tbody">
-              <tr><td colspan="6"><div class="empty-state"><div class="icon">📡</div><p>Waiting for requests…</p></div></td></tr>
+              <tr><td colspan="7"><div class="empty-state"><div class="icon">📡</div><p>Waiting for requests…</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -2037,9 +2037,15 @@ function renderMiniJobs(){
 const FILE_ICONS={pdf:'📄',csv:'📊',bin:'⚙️',yaml:'⚙️',gz:'🗜',zip:'🗜',pptx:'📊',png:'🖼',jpg:'🖼',mp4:'🎬',tar:'🗜',md:'📝',sql:'🗄',json:'📋',txt:'📝',sh:'⚡',parquet:'📊'};
 function ficon(name){const ext=(name.includes('.')?name.split('.').pop():'').toLowerCase();return FILE_ICONS[ext]||'📁';}
 
+const FILE_TYPE_CLS={
+  document:'badge-info',slides:'badge-info',text:'badge-neutral',
+  dataset:'badge-warn',data:'badge-warn',database:'badge-warn',
+  archive:'badge-neutral',image:'badge-neutral',video:'badge-neutral',
+  config:'badge-info',script:'badge-danger',binary:'badge-danger',file:'badge-neutral',
+};
 function renderRequests(reqs){
   const tbody=document.getElementById('req-tbody');if(!tbody)return;
-  if(!reqs.length){tbody.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="icon">📡</div><p>Waiting…</p></div></td></tr>';return;}
+  if(!reqs.length){tbody.innerHTML='<tr><td colspan="7"><div class="empty-state"><div class="icon">📡</div><p>Waiting…</p></div></td></tr>';return;}
 
   // Stats
   const avg=reqs.length?reqs.reduce((s,r)=>s+r.hops,0)/reqs.length:0;
@@ -2053,8 +2059,11 @@ function renderRequests(reqs){
     const c=colorMap[r.served_by_node]||'var(--tx-2)';
     const t=new Date(r.ts*1000).toLocaleTimeString();
     const hopCls=r.hops===1?'badge-ok':r.hops<=3?'badge-warn':'badge-danger';
+    const ftype=r.file_type||'file';
+    const ftCls=FILE_TYPE_CLS[ftype]||'badge-neutral';
     return`<tr>
       <td><span style="margin-right:5px">${ficon(r.filename)}</span><span class="mono">${r.filename}</span></td>
+      <td><span class="badge ${ftCls}">${ftype}</span></td>
       <td class="mono muted">N${r.routed_from??'?'}</td>
       <td class="mono" style="color:${c}">N${r.served_by_node??'?'}</td>
       <td><span class="badge ${hopCls}">${r.hops} hop${r.hops!==1?'s':''}</span></td>
