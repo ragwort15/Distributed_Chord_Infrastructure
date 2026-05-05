@@ -1050,7 +1050,13 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
                 <input type="number" class="inp" id="task-reg-replicas" value="1" min="1" max="5" style="width:56px;text-align:center" title="Replicas">
               </div>
             </div>
-            <div class="feedback info" id="task-reg-fb"></div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <div class="feedback info" id="task-reg-fb" style="flex:1;margin:0"></div>
+              <button class="btn btn-ghost btn-sm" id="btn-reset-task-form" title="Restore default values" style="flex-shrink:0;white-space:nowrap">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
+                Reset
+              </button>
+            </div>
           </div>
         </div>
 
@@ -2246,19 +2252,40 @@ document.querySelectorAll('.filter-chip').forEach(chip=>{
 ═══════════════════════════════════════════════════════════════════ */
 document.getElementById('btn-add-node').addEventListener('click',async()=>{
   const btn=document.getElementById('btn-add-node');
-  btn.disabled=true;btn.innerHTML='<div class="spinner"></div> Adding…';
+  const cmdBox=document.getElementById('add-node-cmd');
+  const modalTitle=document.querySelector('#add-modal-overlay .modal-head h3');
+  btn.disabled=true;
+  btn.innerHTML='<div class="spinner"></div> Adding…';
   try{
     const r=await fetch('/api/nodes/add',{method:'POST'});
-    const d=await r.json();
-    const cmd=d.cmd||d.command||`python run_node.py --port ${d.port||'<PORT>'} --join ${window.location.host} --worker`;
-    document.getElementById('add-node-cmd').textContent=cmd;
+    let d={};
+    try{ d=await r.json(); }catch(_){ /* non-JSON fallback */ }
+
+    if(!r.ok || d.ok===false){
+      // Server reported a failure — surface it clearly
+      const hint=d.hint||`python run_node.py --port <PORT> --join ${window.location.host} --worker`;
+      const errMsg=d.error||'Server error — see logs';
+      if(modalTitle) modalTitle.textContent='⚠ Could Not Auto-Spawn Node';
+      cmdBox.textContent=`# Error: ${errMsg}\n\n# Run this manually in a terminal:\n${hint}`;
+    } else {
+      // Success — server spawned (or is spawning) the node
+      const cmd=d.cmd||`python run_node.py --port ${d.port||'<PORT>'} --join ${window.location.host} --worker`;
+      if(modalTitle) modalTitle.textContent='Node Spawning — Add to Ring';
+      cmdBox.textContent=cmd;
+      // Poll the ring several times to catch the node once it stabilises (~4-8 s)
+      [3500,6000,9000,13000].forEach(t=>setTimeout(pollRing,t));
+    }
     document.getElementById('add-modal-overlay').classList.remove('hidden');
-    setTimeout(pollRing,3500);
   }catch(err){
+    // Network-level failure (fetch itself threw)
     const port=Math.floor(Math.random()*1000)+5100;
-    document.getElementById('add-node-cmd').textContent=`python run_node.py --port ${port} --join ${window.location.host} --worker`;
+    if(modalTitle) modalTitle.textContent='⚠ Could Not Reach Server';
+    cmdBox.textContent=`# Network error: ${err.message}\n\n# Run manually:\npython run_node.py --port ${port} --join ${window.location.host} --worker`;
     document.getElementById('add-modal-overlay').classList.remove('hidden');
-  }finally{btn.disabled=false;btn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Node';}
+  }finally{
+    btn.disabled=false;
+    btn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Node';
+  }
 });
 
 const rmSel=document.getElementById('rm-sel');
@@ -2521,41 +2548,72 @@ const TASK_STATUS_CLS={
   DELETED:'badge-neutral',
 };
 
+// Defaults for the Register Task form
+const TASK_FORM_DEFAULTS={
+  type:'compute',
+  payload:'{"input":"demo","priority":"normal"}',
+  priority:0,
+};
+function resetTaskForm(){
+  document.getElementById('task-reg-id').value='';
+  document.getElementById('task-reg-jobid').value='';
+  document.getElementById('task-reg-type').value=TASK_FORM_DEFAULTS.type;
+  document.getElementById('task-reg-payload').value=TASK_FORM_DEFAULTS.payload;
+  document.getElementById('task-reg-priority').value=TASK_FORM_DEFAULTS.priority;
+  setFb('task-reg-fb','','');
+}
+document.getElementById('btn-reset-task-form').addEventListener('click',resetTaskForm);
+
 document.getElementById('btn-register-task').addEventListener('click',async()=>{
-  // Validate payload JSON
-  let payloadObj={};
-  try{payloadObj=JSON.parse(document.getElementById('task-reg-payload').value||'{}');}
-  catch{setFb('task-reg-fb','✗ Invalid JSON in Payload field','err');return;}
-
+  // ── Validate type (required) ─────────────────────────────────────────────
   const typeVal=document.getElementById('task-reg-type').value.trim();
-  if(!typeVal){setFb('task-reg-fb','✗ Type is required','err');return;}
+  if(!typeVal){
+    setFb('task-reg-fb','✗ Task Type is required — enter a value like "compute" or "echo"','err');
+    document.getElementById('task-reg-type').focus();
+    return;
+  }
 
-  const taskId=document.getElementById('task-reg-id').value.trim();
-  const jobId=document.getElementById('task-reg-jobid').value.trim()||'_unlinked';
-  const priority=parseInt(document.getElementById('task-reg-priority').value)||0;
+  // ── Validate / coerce payload (optional, defaults to {}) ────────────────
+  const rawPayload=document.getElementById('task-reg-payload').value.trim();
+  let payloadObj={};
+  if(rawPayload){
+    try{ payloadObj=JSON.parse(rawPayload); }
+    catch{
+      setFb('task-reg-fb','✗ Payload must be valid JSON — e.g. {"key":"value"} — or leave it blank','err');
+      document.getElementById('task-reg-payload').focus();
+      return;
+    }
+  }
 
-  // Build body with the exact fields the backend schema requires:
-  // { job_id, type, payload, priority, task_id? }
-  const body={
-    job_id: jobId,
-    type:   typeVal,
-    payload: payloadObj,
-    priority,
-  };
+  const taskId  = document.getElementById('task-reg-id').value.trim();
+  const jobId   = document.getElementById('task-reg-jobid').value.trim() || '_unlinked';
+  const priority= parseInt(document.getElementById('task-reg-priority').value,10);
+
+  // ── Build request body ───────────────────────────────────────────────────
+  const body={ job_id:jobId, type:typeVal, payload:payloadObj, priority:isNaN(priority)?0:priority };
   if(taskId) body.task_id=taskId;
 
   setFb('task-reg-fb','Registering…','info');
   try{
     const r=await fetch('/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const d=await r.json();
+
+    // Always parse as JSON — server now guarantees a JSON body even on errors
+    let d={};
+    try{ d=await r.json(); }
+    catch{ setFb('task-reg-fb',`✗ Server returned non-JSON (HTTP ${r.status})`,'err'); return; }
+
     if(d.ok){
       const tid=d.data?.task?.task_id||d.data?.task_id||'done';
-      setFb('task-reg-fb',`✓ Registered: ${tid.slice(0,18)}…`,'ok');
+      const short=tid.length>18?tid.slice(0,18)+'…':tid;
+      setFb('task-reg-fb',`✓ Registered: ${short}`,'ok');
       loadTasks();
     } else {
-      setFb('task-reg-fb',`✗ ${d.error?.message||JSON.stringify(d.error)}`,'err');
+      const msg=d.error?.message||JSON.stringify(d.error)||`HTTP ${r.status}`;
+      setFb('task-reg-fb',`✗ ${msg}`,'err');
     }
-  }catch(e){setFb('task-reg-fb',`✗ ${e.message}`,'err');}
+  }catch(e){
+    setFb('task-reg-fb',`✗ Network error: ${e.message}`,'err');
+  }
 });
 
 document.getElementById('btn-task-lookup').addEventListener('click',async()=>{
