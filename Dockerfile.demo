@@ -1,0 +1,61 @@
+# =============================================================================
+# Dockerfile.demo — lightweight image for EC2 demo
+# Uses Python 3.11 (stable LTS) instead of 3.14 (alpha) for better
+# compatibility with pre-built wheels on PyPI.
+# =============================================================================
+
+# Stage 1: Builder
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+# Install only runtime deps (skip pytest, anthropic for demo)
+RUN pip install --user --no-cache-dir \
+    flask \
+    requests \
+    prometheus-client \
+    grpcio \
+    grpcio-tools
+
+# Stage 2: Runtime
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /root/.local /root/.local
+
+# Copy application source
+COPY chord/   ./chord/
+COPY storage/ ./storage/
+COPY api/     ./api/
+COPY run_node.py .
+COPY submit_job.py .
+
+ENV PATH=/root/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    CHORD_PORT=${CHORD_PORT:-5000} \
+    CHORD_ID=${CHORD_ID:-1} \
+    CHORD_JOIN=${CHORD_JOIN:-""}
+
+RUN useradd -m -u 1000 chord && chown -R chord:chord /app
+USER chord
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+    CMD curl -sf http://localhost:${CHORD_PORT}/chord/ping || exit 1
+
+EXPOSE 5000
+
+CMD ["python", "run_node.py"]
