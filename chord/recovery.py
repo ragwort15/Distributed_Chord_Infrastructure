@@ -24,6 +24,7 @@ written by workers (e.g. result, updated_at) are preserved.
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -109,6 +110,9 @@ class RecoveryManager:
         # Guard against the same task being recovered concurrently
         self._in_progress: set = set()
         self._in_progress_lock = threading.Lock()
+        # Event logging for recovery timeline
+        self._events = deque(maxlen=100)  # Keep last 100 events
+        self._events_lock = threading.Lock()
 
     # ---- lifecycle --------------------------------------------------------
 
@@ -133,6 +137,31 @@ class RecoveryManager:
             self._scan()
         except Exception as exc:
             logger.warning("[RecoveryManager] trigger scan error: %s", exc)
+
+    def get_events(self, since: float = 0.0) -> list:
+        """
+        Return events since the given timestamp (in seconds).
+        
+        Args:
+            since: Unix timestamp; return events >= this time.
+        
+        Returns:
+            List of event dicts: {ts, type, task_id, worker_id, message}
+        """
+        with self._events_lock:
+            return [e for e in self._events if e["ts"] >= since]
+
+    def _emit_event(self, event_type: str, task_id: str, worker_id: str = "", message: str = "") -> None:
+        """Emit a recovery event for the timeline."""
+        event = {
+            "ts": time.time(),
+            "type": event_type,
+            "task_id": task_id,
+            "worker_id": worker_id,
+            "message": message,
+        }
+        with self._events_lock:
+            self._events.append(event)
 
     # ---- main loop --------------------------------------------------------
 
@@ -169,6 +198,12 @@ class RecoveryManager:
                 if record is None:
                     continue
                 if record.get("status") in ("PENDING", "RUNNING"):
+                    self._emit_event(
+                        "worker_crash",
+                        task_id,
+                        worker_id=worker_id,
+                        message=f"Worker {worker_id} crashed"
+                    )
                     self._attempt_recovery(record, "worker_crash")
 
     def _detect_timed_out_tasks(self) -> None:
@@ -298,6 +333,7 @@ class RecoveryManager:
             history.append("GIVE_UP")
             updated["recovery_history"] = history
             self._safe_put(task_id, updated)
+            self._emit_event("give_up", task_id, message=f"Gave up after {attempt} attempt(s)")
 
         elif path == WAIT_AND_RETRY:
             retry_at = time.time() + RECOVERY_WAIT_SECONDS
@@ -306,6 +342,7 @@ class RecoveryManager:
             history.append(f"WAIT_AND_RETRY (retry at {retry_at:.0f})")
             updated["recovery_history"] = history
             self._safe_put(task_id, updated)
+            self._emit_event("wait_retry", task_id, message=f"Waiting {RECOVERY_WAIT_SECONDS}s before retry")
 
         else:
             # RETRY_SAME or RETRY_DIFFERENT
@@ -329,6 +366,7 @@ class RecoveryManager:
                 history.append(f"WAIT_AND_RETRY (no workers; retry at {retry_at:.0f})")
                 updated["recovery_history"] = history
                 self._safe_put(task_id, updated)
+                self._emit_event("wait_retry", task_id, message="No workers available, waiting for retry")
                 return
 
             updated["attempt_count"] = updated.get("attempt_count", 0) + 1
@@ -344,10 +382,22 @@ class RecoveryManager:
             # Re-assign in HT2 so the new worker picks up the task
             try:
                 self._assign_svc.append(new_worker, task_id)
+                self._emit_event(
+                    "retry",
+                    task_id,
+                    worker_id=new_worker,
+                    message=f"{path} on worker {new_worker}"
+                )
             except Exception as exc:
                 logger.warning(
                     "[RecoveryManager] HT2 append failed for %s → %s: %s",
                     task_id, new_worker, exc,
+                )
+                self._emit_event(
+                    "error",
+                    task_id,
+                    worker_id=new_worker,
+                    message=f"Failed to assign to {new_worker}: {exc}"
                 )
 
     # ---- helpers ----------------------------------------------------------

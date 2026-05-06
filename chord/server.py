@@ -35,6 +35,7 @@ from chord.retry import with_timeout_and_retry
 from storage.result_record import build_result_record, ResultValidationError
 from storage.result_service import ResultService
 from storage.worker_assignment import WorkerAssignmentService
+from chord.recovery import RecoveryManager
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,13 @@ def create_app(node: ChordNode) -> Flask:
     )
     app.config["result_service"] = result_service
     app.config["worker_assignment_service"] = worker_assignment_service
+
+    # Phase 7: Recovery manager daemon for intelligent failure recovery.
+    recovery_manager = RecoveryManager(result_service, worker_assignment_service, worker_registry)
+    app.config["recovery_manager"] = recovery_manager
+    recovery_manager.start()
+    logger.info("[Server] RecoveryManager started")
+
     _conv_agent_holder: Dict[str, ConversationAgent] = {}
 
     def _get_conversation_agent():
@@ -868,6 +876,130 @@ def create_app(node: ChordNode) -> Flask:
         """Return frontend config including Grafana URL."""
         grafana_url = os.environ.get("GRAFANA_URL", "http://localhost:3000")
         return jsonify({"grafana_url": grafana_url}), 200
+
+    # Recovery API endpoints for monitoring failure detection and recovery
+    # ------------------------------------------------------------------
+
+    @app.get("/api/workers/status")
+    def api_workers_status():
+        """Return status of all workers in the cluster."""
+        try:
+            worker_registry = app.config.get("worker_registry")
+            if not worker_registry:
+                return jsonify({"error": "Worker registry not available"}), 500
+
+            workers = []
+            for worker_id in worker_registry.live_workers():
+                metrics = worker_registry.get_worker_metrics(worker_id)
+                stats = worker_registry.get_worker_stats(worker_id)
+                scored = worker_registry.score_all_workers()
+                score = next((s for w, s in scored if w == worker_id), 0.0)
+                
+                workers.append({
+                    "id": worker_id,
+                    "status": "alive",
+                    "pending_tasks": metrics.pending_tasks if metrics else 0,
+                    "latency_ms": metrics.latency_ms if metrics else 0,
+                    "success_rate": stats.success_rate if stats else 0.0,
+                    "score": score,
+                })
+            
+            # Also include recently dead workers
+            for worker_id, _ts, _age in worker_registry.all_workers():
+                if worker_id not in worker_registry.live_workers():
+                    workers.append({
+                        "id": worker_id,
+                        "status": "dead",
+                        "pending_tasks": 0,
+                        "latency_ms": 0,
+                        "success_rate": 0.0,
+                        "score": 0.0,
+                    })
+
+            return jsonify({"workers": workers}), 200
+        except Exception as e:
+            logger.error(f"[/api/workers/status] error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.get("/api/tasks/active")
+    def api_tasks_active():
+        """Return active (PENDING/RUNNING) tasks."""
+        try:
+            result_service = app.config.get("result_service")
+            if not result_service:
+                return jsonify({"error": "Result service not available"}), 500
+
+            tasks = []
+            # Scan result: records in local node data store
+            node = result_service.node
+            with node._lock:
+                for k, v in node.data_store.items():
+                    if (
+                        isinstance(k, str)
+                        and k.startswith("result:")
+                        and isinstance(v, dict)
+                        and v.get("kind") == "result_details"
+                    ):
+                        task_id = v.get("task_id")
+                        status = v.get("status")
+                        if status in ("PENDING", "RUNNING"):
+                            tasks.append({
+                                "task_id": task_id,
+                                "status": status,
+                                "worker_id": v.get("worker_id", ""),
+                                "attempt_count": v.get("attempt_count", 0),
+                                "max_attempts": v.get("max_attempts", 3),
+                                "last_failure_reason": v.get("last_failure_reason", ""),
+                                "recovery_history": v.get("recovery_history", []),
+                            })
+
+            return jsonify({"tasks": tasks}), 200
+        except Exception as e:
+            logger.error(f"[/api/tasks/active] error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.get("/api/recovery/events")
+    def api_events():
+        """Return recovery events for the timeline."""
+        try:
+            recovery_manager = app.config.get("recovery_manager")
+            if not recovery_manager:
+                return jsonify({"events": [], "total_recovery_attempts": 0}), 200
+
+            since = request.args.get("since", default=0.0, type=float)
+            events = recovery_manager.get_events(since)
+
+            # Convert ts -> timestamp for frontend compatibility
+            converted = [{
+                "type": e["type"],
+                "timestamp": e["ts"],
+                "task_id": e["task_id"],
+                "worker_id": e["worker_id"],
+                "message": e["message"],
+            } for e in events]
+
+            # Count retry-type events as recovery attempts
+            attempts = sum(1 for e in converted if e["type"] in ("retry", "wait_retry", "give_up"))
+
+            return jsonify({"events": converted, "total_recovery_attempts": attempts}), 200
+        except Exception as e:
+            logger.error(f"[/api/recovery/events] error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/debug/trigger-recovery")
+    def debug_trigger_recovery():
+        """Manually trigger an immediate recovery scan."""
+        try:
+            recovery_manager = app.config.get("recovery_manager")
+            if not recovery_manager:
+                return jsonify({"error": "Recovery manager not available"}), 500
+
+            recovery_manager.trigger()
+            return jsonify({"ok": True, "scanned_at": time.time()}), 200
+        except Exception as e:
+            logger.error(f"[/debug/trigger-recovery] error: {e}")
+            return jsonify({"error": str(e)}), 500
+
     # ------------------------------------------------------------------
     # Fault injection — hard kill (no graceful handoff)
     # ------------------------------------------------------------------
