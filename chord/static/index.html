@@ -787,9 +787,6 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
     </div>
     <div class="sep"></div>
     <div class="tb-chip"><div class="dot" style="background:var(--info)"></div><span id="tb-queue">Queue: 0</span></div>
-        <a class="tb-chip" href="/recovery" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#f59e0b,#ef4444);border:none;color:white;text-decoration:none;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer">
-      🔄 Recovery Live
-    </a>
   </div>
 
   <!-- Pages -->
@@ -893,62 +890,167 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
       </div>
     </div><!-- /page-ring -->
 
-    <!-- ══════════════ PAGE: OBSERVABILITY ══════════════ -->
-    <div class="page" id="page-observability" style="padding:0">
-      <div style="flex:1;overflow:hidden;display:flex;flex-direction:column;position:relative">
-        <div id="gf-loading" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:var(--bg-2);z-index:10;flex-direction:column;gap:12px">
-          <div style="width:32px;height:32px;border:3px solid var(--b2);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite"></div>
-          <span style="color:var(--tx-3);font-size:12px">Loading Grafana dashboard...</span>
+    <!-- ══════════════ PAGE: OBSERVABILITY (Metrics Dashboard) ══════════════ -->
+    <div class="page" id="page-observability" style="padding:20px;overflow-y:auto">
+      <!-- Header with refresh button -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
+        <div>
+          <div style="font-size:20px;font-weight:700;color:var(--accent)">System Observability</div>
+          <div style="font-size:12px;color:var(--tx-3);margin-top:4px">Real-time metrics dashboard • Auto-refresh 2s</div>
         </div>
-        <div id="gf-error" style="display:none;padding:24px;background:var(--bg-3);color:var(--tx-1);border-radius:var(--r-md);margin:12px">
-          <div style="font-weight:600;color:var(--danger);margin-bottom:8px">Grafana Not Available</div>
-          <div style="font-size:12px;color:var(--tx-2);margin-bottom:12px">Could not connect to Grafana. Ensure it's running:</div>
-          <code style="display:block;background:var(--bg-1);padding:8px;border-radius:4px;margin-bottom:12px;font-size:11px;font-family:var(--mono)">cd observability && docker-compose up -d</code>
-          <button onclick="document.getElementById('gf-iframe').src=document.getElementById('gf-iframe').dataset.src;document.getElementById('gf-loading').style.display='flex';document.getElementById('gf-error').style.display='none'" style="padding:6px 12px;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px">Retry</button>
+        <button onclick="pollObservability()" style="padding:8px 14px;background:var(--accent);color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px">↻ Refresh</button>
+      </div>
+
+      <!-- Charts Row -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:24px">
+        <!-- Throughput Trend Chart -->
+        <div style="background:var(--bg-3);border:1px solid var(--b1);border-radius:8px;padding:16px;grid-column:1/-1">
+          <div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px">📈 Request Throughput (Last 60s)</div>
+          <canvas id="obs-chart-throughput" style="max-height:200px;"></canvas>
         </div>
-        <iframe id="gf-iframe"
-          data-src="about:blank"
-          style="width:100%;height:100%;border:none;display:block;flex:1"
-          title="Grafana Dashboard" allowfullscreen>
-        </iframe>
+
+        <!-- Worker Latency Chart -->
+        <div style="background:var(--bg-3);border:1px solid var(--b1);border-radius:8px;padding:16px">
+          <div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px">⏱️ Worker Latency (ms)</div>
+          <canvas id="obs-chart-worker-latency" style="max-height:220px;"></canvas>
+        </div>
+
+        <!-- Task Status Chart -->
+        <div style="background:var(--bg-3);border:1px solid var(--b1);border-radius:8px;padding:16px">
+          <div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px">📊 Task Status Distribution</div>
+          <canvas id="obs-chart-task-status" style="max-height:220px;"></canvas>
+        </div>
       </div>
-      <div style="padding:10px 24px;border-top:1px solid var(--b1);background:var(--bg-1);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
-        <span style="font-size:11px;color:var(--tx-3)">Prometheus scraping all nodes every 5 s · 12 panels · auto-refresh</span>
-        <a id="gf-link" href="#" target="_blank" style="font-size:11.5px;color:var(--accent-light);text-decoration:none">Open full Grafana ↗</a>
+
+      <!-- Grid of cards -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:24px">
+        <!-- System Health -->
+        <div style="background:var(--bg-3);border:1px solid var(--b1);border-radius:8px;padding:16px">
+          <div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px">⚙️ System Health</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:10px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Ring Size</div>
+              <div style="font-size:20px;font-weight:700;color:var(--accent)" id="obs-ring-size">—</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:10px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Live Workers</div>
+              <div style="font-size:20px;font-weight:700;color:#10b981" id="obs-live-workers">—</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:10px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Dead Workers</div>
+              <div style="font-size:20px;font-weight:700;color:#ef4444" id="obs-dead-workers">—</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:10px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Active Tasks</div>
+              <div style="font-size:20px;font-weight:700;color:#3b82f6" id="obs-active-tasks">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Worker Metrics -->
+        <div style="background:var(--bg-3);border:1px solid var(--b1);border-radius:8px;padding:16px">
+          <div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px">🖥️ Worker Metrics</div>
+          <div id="obs-workers-list" style="display:grid;grid-template-columns:1fr;gap:8px;max-height:200px;overflow-y:auto;font-size:11px">
+            <div style="color:var(--tx-3);text-align:center;padding:8px">Loading workers…</div>
+          </div>
+        </div>
+
+        <!-- Performance Metrics -->
+        <div style="background:var(--bg-3);border:1px solid var(--b1);border-radius:8px;padding:16px">
+          <div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px">📊 Performance</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px">
+              <div style="font-size:9px;color:var(--tx-3);text-transform:uppercase;margin-bottom:4px">Throughput</div>
+              <div style="font-size:16px;font-weight:700;color:var(--accent)" id="obs-throughput">—</div>
+              <div style="font-size:9px;color:var(--tx-4)">req/min</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px">
+              <div style="font-size:9px;color:var(--tx-3);text-transform:uppercase;margin-bottom:4px">Avg Latency</div>
+              <div style="font-size:16px;font-weight:700;color:var(--accent)" id="obs-latency">—</div>
+              <div style="font-size:9px;color:var(--tx-4)">ms</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px">
+              <div style="font-size:9px;color:var(--tx-3);text-transform:uppercase;margin-bottom:4px">Avg Hops</div>
+              <div style="font-size:16px;font-weight:700;color:#10b981" id="obs-hops">—</div>
+              <div style="font-size:9px;color:var(--tx-4)">hops</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px">
+              <div style="font-size:9px;color:var(--tx-3);text-transform:uppercase;margin-bottom:4px">Total Requests</div>
+              <div style="font-size:16px;font-weight:700;color:#f59e0b" id="obs-total-reqs">—</div>
+              <div style="font-size:9px;color:var(--tx-4)">all-time</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Replication Status -->
+        <div style="background:var(--bg-3);border:1px solid var(--b1);border-radius:8px;padding:16px">
+          <div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px">🔄 Replication</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:10px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Quorum K</div>
+              <div style="font-size:20px;font-weight:700;color:var(--accent)">3</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:10px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Ring Data Keys</div>
+              <div style="font-size:20px;font-weight:700;color:var(--accent)" id="obs-data-keys">—</div>
+            </div>
+          </div>
+          <div style="margin-top:12px;padding:8px;background:var(--bg-2);border-radius:6px;font-size:11px;color:var(--tx-2)">
+            <strong>Status:</strong> <span id="obs-repl-status" style="color:#10b981">Healthy</span> • HT1 (Results) + HT2 (Workers) · 3-way replication
+          </div>
+        </div>
+
+        <!-- Recovery Events -->
+        <div style="background:var(--bg-3);border:1px solid var(--b1);border-radius:8px;padding:16px;grid-column:1/-1">
+          <div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:12px">⚡ Recovery Events & Timeline</div>
+          <!-- Recovery stats row -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:9px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">Total Attempts</div>
+              <div style="font-size:16px;font-weight:700;color:#10b981" id="obs-recovery-total">—</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:9px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">Retried</div>
+              <div style="font-size:16px;font-weight:700;color:#3b82f6" id="obs-recovery-retry">—</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:9px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">Waiting</div>
+              <div style="font-size:16px;font-weight:700;color:#f59e0b" id="obs-recovery-wait">—</div>
+            </div>
+            <div style="padding:8px;background:var(--bg-2);border-radius:6px;text-align:center">
+              <div style="font-size:9px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">Failed</div>
+              <div style="font-size:16px;font-weight:700;color:#ef4444" id="obs-recovery-giveup">—</div>
+            </div>
+          </div>
+          <!-- Event type filter -->
+          <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;font-size:10px">
+            <button class="obs-filter-btn" data-filter="all" style="padding:4px 10px;background:rgba(99,102,241,.2);border:1px solid rgba(99,102,241,.4);color:#a5b4fc;border-radius:4px;cursor:pointer;font-weight:600">All</button>
+            <button class="obs-filter-btn" data-filter="retry" style="padding:4px 10px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.2);color:#6ee7b7;border-radius:4px;cursor:pointer">Retry</button>
+            <button class="obs-filter-btn" data-filter="wait_retry" style="padding:4px 10px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.2);color:#fcd34d;border-radius:4px;cursor:pointer">Wait</button>
+            <button class="obs-filter-btn" data-filter="give_up" style="padding:4px 10px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);color:#fca5a5;border-radius:4px;cursor:pointer">Failed</button>
+          </div>
+          <!-- Events log -->
+          <div id="obs-events-list" style="display:grid;grid-template-columns:1fr;gap:6px;max-height:400px;overflow-y:auto;font-size:10px;font-family:var(--mono)">
+            <div style="color:var(--tx-3);text-align:center;padding:8px">Waiting for events…</div>
+          </div>
+        </div>
       </div>
+
+      <!-- Legacy Grafana option - DISABLED FOR NOW
+      <div style="margin-top:32px;padding:16px;background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.3);border-radius:8px;display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:12px;color:var(--tx-2)">
+          <div style="font-weight:600;color:var(--tx-1);margin-bottom:4px">📈 Legacy Grafana Dashboard</div>
+          <div style="color:var(--tx-3)">Advanced Prometheus visualization with custom panels</div>
+        </div>
+        <button onclick="switchToGrafana()" style="padding:8px 14px;background:rgba(96,165,250,.2);border:1px solid rgba(96,165,250,.4);color:#93c5fd;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px;white-space:nowrap">View Grafana</button>
+      </div>
+      -->
     </div>
 
-    <style>
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
-    </style>
+    <!-- ══════════════ PAGE: OBSERVABILITY GRAFANA (Legacy) ══════════════ -->
+    <div class="page" id="page-observability-grafana" style="padding:0;display:none">
+    </div>
 
-    <script>
-      // Initialize Grafana iframe with dynamic URL
-      (async () => {
-        try {
-          const resp = await fetch('/api/config');
-          const cfg = await resp.json();
-          const url = cfg.grafana_url + '/d/chord-dht-01?orgId=1&kiosk=tv&theme=dark&refresh=5s';
-          document.getElementById('gf-iframe').dataset.src = url;
-          document.getElementById('gf-iframe').src = url;
-          document.getElementById('gf-link').href = cfg.grafana_url + '/d/chord-dht-01?theme=dark';
-        } catch (e) {
-          console.error('Failed to load Grafana config:', e);
-          document.getElementById('gf-loading').style.display = 'none';
-          document.getElementById('gf-error').style.display = 'block';
-        }
-      })();
-
-      document.getElementById('gf-iframe').onload = () => {
-        document.getElementById('gf-loading').style.display = 'none';
-      };
-      document.getElementById('gf-iframe').onerror = () => {
-        document.getElementById('gf-loading').style.display = 'none';
-        document.getElementById('gf-error').style.display = 'block';
-      };
-    </script>
     <!-- ══════════════ PAGE: WORKLOADS (Jobs + Tasks combined) ══════════════ -->
     <div class="page" id="page-workloads">
       <div class="wl-tabs" style="display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--b2);padding-bottom:0">
@@ -1518,6 +1620,7 @@ function navigate(page){
   const m=PAGE_META[page]||{};
   document.getElementById('topbar-title').textContent=m.title||page;
   document.getElementById('topbar-sub').textContent=m.sub||'';
+  if(page==='observability'){initObsCharts();initObsEventFilters();pollObservability();}
   if(page==='workloads'){
     // First-load tab: jobs (already polled). Tasks tab loads on first switch.
   }
@@ -1833,6 +1936,7 @@ function updateSidebar(){
   const hbFill=document.getElementById('health-bar-fill');
   const hbLbl=document.getElementById('health-bar-label');
   if(hbf){
+    const frac=n>0?(n-deadNodes.size)/n:1;
     const pct=Math.round(frac*100);
     hbFill.style.width=pct+'%';
     if(deadNodes.size>0){hbf.className='badge badge-danger';hbf.textContent=`● ${deadNodes.size} dead`;hbFill.style.background='var(--danger)';hbLbl.textContent=`${deadNodes.size} node(s) dead — ring healing`;}
@@ -1947,6 +2051,433 @@ async function pollLogs(){
     const entries=(await r.json()).entries||[];
     renderAgentLog(entries);
   }catch{}
+}
+
+async function pollObservability(){
+  await Promise.all([
+    fetchObsSystemHealth(),
+    fetchObsWorkers(),
+    fetchObsPerformance(),
+    fetchObsReplication(),
+    fetchObsTasks(),
+    fetchObsEvents(),
+    updateObsCharts()
+  ]);
+}
+
+// Chart state tracking
+const obsChartsState={
+  throughputHistory:[],
+  throughputLabels:[],
+  workerLatencies:{},
+  taskStatusCounts:{PENDING:0,RUNNING:0,COMPLETED:0,FAILED:0}
+};
+
+let obsChartInstances={
+  throughput:null,
+  workerLatency:null,
+  taskStatus:null
+};
+
+function initObsCharts(){
+  const ctx1=document.getElementById('obs-chart-throughput');
+  const ctx2=document.getElementById('obs-chart-worker-latency');
+  const ctx3=document.getElementById('obs-chart-task-status');
+  if(!ctx1||!ctx2||!ctx3){
+    console.warn('Chart canvases not found:',{ctx1,ctx2,ctx3});
+    return;
+  }
+  console.log('Initializing observability charts...');
+
+  obsChartInstances.throughput=new Chart(ctx1,{
+    type:'line',
+    data:{
+      labels:obsChartsState.throughputLabels,
+      datasets:[{
+        label:'Requests/min',
+        data:obsChartsState.throughputHistory,
+        borderColor:'#3b82f6',
+        backgroundColor:'rgba(59,130,246,0.1)',
+        borderWidth:2,
+        tension:0.4,
+        fill:true,
+        pointRadius:0,
+        pointHoverRadius:4
+      }]
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:true,
+      plugins:{legend:{display:false}},
+      scales:{
+        y:{beginAtZero:true,ticks:{color:'var(--tx-3)'},grid:{color:'var(--b1)'},title:{display:true,text:'Throughput'}},
+        x:{ticks:{color:'var(--tx-3)'},grid:{color:'var(--b1)'}}
+      }
+    }
+  });
+
+  obsChartInstances.workerLatency=new Chart(ctx2,{
+    type:'bar',
+    data:{labels:[],datasets:[{label:'Latency (ms)',data:[],backgroundColor:'#10b981'}]},
+    options:{
+      responsive:true,
+      maintainAspectRatio:true,
+      plugins:{legend:{display:true,labels:{color:'var(--tx-1)'}}},
+      scales:{
+        y:{beginAtZero:true,ticks:{color:'var(--tx-3)'},grid:{color:'var(--b1)'}},
+        x:{ticks:{color:'var(--tx-3)'},grid:{color:'var(--b1)'}}
+      }
+    }
+  });
+
+  obsChartInstances.taskStatus=new Chart(ctx3,{
+    type:'doughnut',
+    data:{
+      labels:['Pending','Running','Completed','Failed'],
+      datasets:[{
+        data:[25,25,25,25],
+        backgroundColor:['#3b82f6','#10b981','#8b5cf6','#ef4444'],
+        borderColor:'var(--bg-3)',
+        borderWidth:2
+      }]
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:true,
+      plugins:{
+        legend:{
+          display:true,
+          position:'top',
+          labels:{color:'var(--tx-2)',padding:15,font:{size:12,weight:'600'}}
+        }
+      }
+    }
+  });
+  console.log('Charts initialized successfully');
+}
+
+function updateThroughputChart(throughput){
+  if(!obsChartInstances.throughput)return;
+  const now=new Date().toLocaleTimeString();
+  obsChartsState.throughputHistory.push(throughput);
+  obsChartsState.throughputLabels.push(now);
+  if(obsChartsState.throughputHistory.length>60){
+    obsChartsState.throughputHistory.shift();
+    obsChartsState.throughputLabels.shift();
+  }
+  obsChartInstances.throughput.data.labels=obsChartsState.throughputLabels;
+  obsChartInstances.throughput.data.datasets[0].data=obsChartsState.throughputHistory;
+  obsChartInstances.throughput.update('none');
+}
+
+function updateWorkerLatencyChart(workers){
+  if(!obsChartInstances.workerLatency)return;
+  const labels=workers.map(w=>w.id).slice(0,8);
+  const data=workers.map(w=>+w.latency_ms).slice(0,8);
+  obsChartInstances.workerLatency.data.labels=labels;
+  obsChartInstances.workerLatency.data.datasets[0].data=data;
+  obsChartInstances.workerLatency.update('none');
+}
+
+function updateTaskStatusChart(tasks){
+  if(!obsChartInstances.taskStatus)return;
+  const counts={PENDING:0,RUNNING:0,COMPLETED:0,FAILED:0};
+  tasks.forEach(t=>{
+    const s=t.status||'PENDING';
+    if(s in counts)counts[s]++;
+  });
+  const total=counts.PENDING+counts.RUNNING+counts.COMPLETED+counts.FAILED;
+  if(total===0){
+    // No tasks: show mostly empty ring with very low opacity
+    obsChartInstances.taskStatus.data.datasets[0].data=[25,25,25,25];
+    obsChartInstances.taskStatus.data.datasets[0].backgroundColor=['rgba(59,130,246,0.1)','rgba(16,185,129,0.1)','rgba(139,92,246,0.1)','rgba(239,68,68,0.1)'];
+  }else{
+    // Show actual task distribution with full colors
+    obsChartInstances.taskStatus.data.datasets[0].data=[counts.PENDING,counts.RUNNING,counts.COMPLETED,counts.FAILED];
+    obsChartInstances.taskStatus.data.datasets[0].backgroundColor=['#3b82f6','#10b981','#8b5cf6','#ef4444'];
+  }
+  obsChartInstances.taskStatus.update('none');
+}
+
+async function updateObsCharts(){
+  try{
+    const perfRes=await fetch('/api/metrics/snapshot',{cache:'no-store'});
+    const workersRes=await fetch('/api/workers/status',{cache:'no-store'});
+    const tasksRes=await fetch('/api/tasks/active',{cache:'no-store'});
+    
+    if(!perfRes.ok||!workersRes.ok||!tasksRes.ok){
+      console.error('Chart fetch failed:',perfRes.status,workersRes.status,tasksRes.status);
+      return;
+    }
+    
+    const perf=await perfRes.json();
+    const workers=await workersRes.json();
+    const tasks=await tasksRes.json();
+    
+    if(!obsChartInstances.throughput){
+      console.warn('Charts not initialized yet');
+      return;
+    }
+    
+    updateThroughputChart(perf.req_per_min||0);
+    updateWorkerLatencyChart(workers.workers||[]);
+    updateTaskStatusChart(tasks.tasks||[]);
+  }catch(e){console.error('Chart update failed:',e)}
+}
+
+async function fetchObsSystemHealth(){
+  try{
+    const r=await fetch('/api/ring',{cache:'no-store'});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.error){console.error('Ring error:',d.error);return;}
+    const size=d.nodes?.length||0;
+    document.getElementById('obs-ring-size').textContent=size;
+  }catch(e){console.error('fetchObsSystemHealth failed:',e)}
+}
+
+async function fetchObsWorkers(){
+  try{
+    const r=await fetch('/api/workers/status',{cache:'no-store'});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.error){console.error('Workers error:',d.error);return;}
+    const workers=d.workers||[];
+    const live=workers.filter(w=>w.status==='alive').length;
+    const dead=workers.filter(w=>w.status==='dead').length;
+    document.getElementById('obs-live-workers').textContent=live;
+    document.getElementById('obs-dead-workers').textContent=dead;
+    
+    const wlist=document.getElementById('obs-workers-list');
+    if(!workers.length){
+      wlist.innerHTML='<div style="color:var(--tx-3);text-align:center;padding:8px">No workers active</div>';
+      return;
+    }
+    wlist.innerHTML=workers.map(w=>`
+      <div style="padding:6px;background:var(--bg-2);border-radius:4px;display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span style="color:${w.status==='alive'?'#10b981':'#ef4444'};font-weight:600">${w.id}</span>
+        <span style="color:var(--tx-3);font-size:10px">Lat: ${(+w.latency_ms).toFixed(0)}ms | Score: ${(+w.score).toFixed(2)}</span>
+      </div>
+    `).join('');
+  }catch(e){console.error('fetchObsWorkers failed:',e)}
+}
+
+async function fetchObsPerformance(){
+  try{
+    const r=await fetch('/api/metrics/snapshot',{cache:'no-store'});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.error){console.error('Metrics error:',d.error);return;}
+    const tp=(+d.req_per_min||0).toFixed(0);
+    const hops=(+d.avg_hops||0).toFixed(2);
+    const reqs=d.total_requests||0;
+    const lat=(+d.avg_latency_ms||0).toFixed(0);
+    document.getElementById('obs-throughput').textContent=tp;
+    document.getElementById('obs-hops').textContent=hops;
+    document.getElementById('obs-total-reqs').textContent=reqs;
+    document.getElementById('obs-latency').textContent=lat;
+  }catch(e){console.error('fetchObsPerformance failed:',e)}
+}
+
+async function fetchObsReplication(){
+  try{
+    const r=await fetch('/api/ring',{cache:'no-store'});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.error){console.error('Ring error:',d.error);return;}
+    let totalKeys=0;
+    const nodes=d.nodes||[];
+    nodes.forEach(node=>{
+      if(Array.isArray(node.data_keys)){
+        totalKeys+=node.data_keys.filter(k=>typeof k==='string'&&k.includes(':')).length;
+      }
+    });
+    document.getElementById('obs-data-keys').textContent=totalKeys;
+  }catch(e){console.error('fetchObsReplication failed:',e)}
+}
+
+async function fetchObsTasks(){
+  try{
+    const r=await fetch('/api/tasks/active',{cache:'no-store'});
+    if(!r.ok)return; // Silently ignore errors - active tasks is optional
+    const d=await r.json();
+    if(d.error)return;
+    const tasks=d.tasks||[];
+    document.getElementById('obs-active-tasks').textContent=tasks.length;
+  }catch(e){
+    // Silently ignore errors
+  }
+}
+
+async function fetchObsEvents(){
+  try{
+    const r=await fetch('/api/recovery/events?since=0',{cache:'no-store'});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.error){console.error('Events error:',d.error);return;}
+    const events=d.events||[];
+    
+    // Store events globally for filtering
+    window.obsRecoveryEvents = events;
+    
+    // Update stats
+    const retryCount = events.filter(e => e.type === 'retry').length;
+    const waitCount = events.filter(e => e.type === 'wait_retry').length;
+    const giveupCount = events.filter(e => e.type === 'give_up').length;
+    const totalAttempts = d.total_recovery_attempts || 0;
+    
+    document.getElementById('obs-recovery-total').textContent = totalAttempts;
+    document.getElementById('obs-recovery-retry').textContent = retryCount;
+    document.getElementById('obs-recovery-wait').textContent = waitCount;
+    document.getElementById('obs-recovery-giveup').textContent = giveupCount;
+    
+    // Get active filter
+    const activeFilter = document.querySelector('.obs-filter-btn.active')?.getAttribute('data-filter') || 'all';
+    
+    // Filter events
+    let filteredEvents = events;
+    if(activeFilter !== 'all'){
+      filteredEvents = events.filter(e => e.type === activeFilter);
+    }
+    
+    const elist=document.getElementById('obs-events-list');
+    
+    // Empty state messages
+    if(!events.length){
+      elist.innerHTML='<div style="color:var(--tx-3);text-align:center;padding:12px">No recovery events yet<br><span style="font-size:9px;margin-top:4px;display:block;color:var(--tx-4)">Events appear when workers fail or nodes crash</span></div>';
+      return;
+    }
+    
+    if(!filteredEvents.length){
+      elist.innerHTML='<div style="color:var(--tx-3);text-align:center;padding:12px">No events of this type<br><span style="font-size:9px;margin-top:4px;display:block;color:var(--tx-4)">Try viewing "All" events</span></div>';
+      return;
+    }
+    
+    // Show all events, newest first
+    elist.innerHTML=filteredEvents.reverse().map(e=>{
+      const t=new Date(e.timestamp*1000).toLocaleTimeString();
+      const col={retry:'#10b981',wait_retry:'#f59e0b',give_up:'#ef4444',error:'#ef4444',worker_crash:'#ef4444'}[e.type]||'#3b82f6';
+      const typeLabel={retry:'↻ Retry',wait_retry:'⏳ Waiting',give_up:'✗ Gave Up',error:'⚠ Error',worker_crash:'💥 Crash'}[e.type]||e.type;
+      return`
+        <div style="padding:8px;background:var(--bg-2);border-radius:4px;border-left:3px solid ${col};line-height:1.4">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-size:9px;color:${col};font-weight:700;text-transform:uppercase;letter-spacing:.5px">${typeLabel}</span>
+            <span style="font-size:8px;color:var(--tx-4)">${t}</span>
+          </div>
+          <div style="font-size:9px;color:var(--tx-2)">${e.message}</div>
+          ${e.task_id ? `<div style="font-size:8px;color:var(--tx-4);margin-top:3px">Task: <code style="background:var(--bg-1);padding:1px 4px;border-radius:2px">${e.task_id.slice(0,12)}…</code></div>` : ''}
+        </div>
+      `;
+    }).join('');
+  }catch(e){console.error('fetchObsEvents failed:',e)}
+}
+
+function initObsEventFilters(){
+  // Mark "All" button as active by default
+  const allBtn = document.querySelector('.obs-filter-btn[data-filter="all"]');
+  if(allBtn) {
+    allBtn.classList.add('active');
+  }
+  
+  // Attach click handlers to all filter buttons
+  document.querySelectorAll('.obs-filter-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const filterType = btn.getAttribute('data-filter');
+      
+      // Remove active from all buttons and restore their original colors
+      const colorMap = {
+        'all': 'rgba(99,102,241,.2)',
+        'retry': 'rgba(16,185,129,.1)',
+        'wait_retry': 'rgba(245,158,11,.1)',
+        'give_up': 'rgba(239,68,68,.1)'
+      };
+      
+      document.querySelectorAll('.obs-filter-btn').forEach(b => {
+        b.classList.remove('active');
+        b.style.background = colorMap[b.getAttribute('data-filter')] || 'transparent';
+      });
+      
+      // Mark clicked button as active with emphasized color
+      btn.classList.add('active');
+      const activeColorMap = {
+        'all': 'rgba(99,102,241,.3)',
+        'retry': 'rgba(16,185,129,.2)',
+        'wait_retry': 'rgba(245,158,11,.2)',
+        'give_up': 'rgba(239,68,68,.2)'
+      };
+      btn.style.background = activeColorMap[filterType] || 'rgba(99,102,241,.3)';
+      
+      // Re-render with new filter
+      await fetchObsEvents();
+    });
+  });
+}
+
+function switchToGrafana(){
+  document.getElementById('page-observability').style.display='none';
+  document.getElementById('page-observability-grafana').style.display='flex';
+  // Load Grafana iframe
+  loadGrafanaIframe();
+}
+
+function switchFromGrafana(){
+  document.getElementById('page-observability-grafana').style.display='none';
+  document.getElementById('page-observability').style.display='block';
+  pollObservability();
+}
+
+function loadGrafanaIframe(){
+  const existing=document.getElementById('gf-iframe');
+  if(existing)return;
+  
+  const grafanaDiv=document.getElementById('page-observability-grafana');
+  grafanaDiv.innerHTML=`
+    <div style="flex:1;overflow:hidden;display:flex;flex-direction:column;position:relative">
+      <div id="gf-loading" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:var(--bg-2);z-index:10;flex-direction:column;gap:12px">
+        <div style="width:32px;height:32px;border:3px solid var(--b2);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite"></div>
+        <span style="color:var(--tx-3);font-size:12px">Loading Grafana dashboard...</span>
+      </div>
+      <div id="gf-error" style="display:none;padding:24px;background:var(--bg-3);color:var(--tx-1);border-radius:var(--r-md);margin:12px">
+        <div style="font-weight:600;color:var(--danger);margin-bottom:8px">Grafana Not Available</div>
+        <div style="font-size:12px;color:var(--tx-2);margin-bottom:12px">Could not connect to Grafana. Ensure it's running:</div>
+        <code style="display:block;background:var(--bg-1);padding:8px;border-radius:4px;margin-bottom:12px;font-size:11px;font-family:var(--mono)">cd observability && docker-compose up -d</code>
+        <button onclick="loadGrafanaIframe()" style="padding:6px 12px;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;margin-right:8px">Retry</button>
+        <button onclick="switchFromGrafana()" style="padding:6px 12px;background:rgba(96,165,250,.2);border:1px solid rgba(96,165,250,.4);color:#93c5fd;border-radius:4px;cursor:pointer;font-size:12px">Back to Metrics</button>
+      </div>
+      <iframe id="gf-iframe"
+        data-src="about:blank"
+        style="width:100%;height:100%;border:none;display:block;flex:1"
+        title="Grafana Dashboard" allowfullscreen>
+      </iframe>
+    </div>
+    <div style="padding:10px 24px;border-top:1px solid var(--b1);background:var(--bg-1);display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+      <span style="font-size:11px;color:var(--tx-3)">Prometheus scraping all nodes every 5 s · 12 panels · auto-refresh</span>
+      <button onclick="switchFromGrafana()" style="padding:6px 12px;background:rgba(96,165,250,.2);border:1px solid rgba(96,165,250,.4);color:#93c5fd;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap">← Back to Metrics</button>
+    </div>
+  `;
+  
+  // Load Grafana URL
+  (async()=>{
+    try{
+      const resp=await fetch('/api/config');
+      const cfg=await resp.json();
+      const url=cfg.grafana_url+'/d/chord-dht-01?orgId=1&kiosk=tv&theme=dark&refresh=5s';
+      document.getElementById('gf-iframe').dataset.src=url;
+      document.getElementById('gf-iframe').src=url;
+    }catch(e){
+      console.error('Failed to load Grafana config:',e);
+      document.getElementById('gf-loading').style.display='none';
+      document.getElementById('gf-error').style.display='block';
+    }
+  })();
+  
+  document.getElementById('gf-iframe').onload=()=>{
+    document.getElementById('gf-loading').style.display='none';
+  };
+  document.getElementById('gf-iframe').onerror=()=>{
+    document.getElementById('gf-loading').style.display='none';
+    document.getElementById('gf-error').style.display='block';
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3132,6 +3663,7 @@ setInterval(pollJobs,     2500);
 setInterval(pollRequests, 2200);
 setInterval(pollLogs,     4000);
 setInterval(pollWorkers,  3000);
+setInterval(pollObservability, 2000);
 
 initFileSelector();
 pollRing();
