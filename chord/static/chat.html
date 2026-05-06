@@ -391,11 +391,6 @@
       + Add Worker
     </button>
     <span id="worker-count" style="text-align:center;font-size:11px;color:var(--muted)">— workers</span>
-    <a class="nav-btn primary" href="/dashboard" target="_blank" rel="noopener"
-      style="padding:9px 12px;border-radius:8px;text-align:center;text-decoration:none;color:white;font-weight:600;font-size:13px;background:linear-gradient(135deg,#4f7cff,#7c3aed);display:flex;align-items:center;justify-content:center;gap:6px">
-      <span class="ring-icon"></span> Watch Chord Ring
-    </a>
-    <button id="reset" style="padding:7px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);color:var(--text);font-size:12px;cursor:pointer">Reset</button>
   </aside>
 
   <header>
@@ -412,6 +407,10 @@
       <button id="reset">Reset</button>
     </div>
   </header>
+  <div id="dcte-banner" style="display:flex;justify-content:center;align-items:center;padding:18px 0 8px">
+    <img src="/static/dcte-logo.png" alt="DCTE — Distributed Chord Task Execution"
+         style="max-width:340px;width:60%;height:auto;filter:drop-shadow(0 4px 24px rgba(79,124,255,.25))">
+  </div>
   <main id="log"></main>
   <footer>
     <textarea id="input" placeholder="Type a message — try: I want to run a task" rows="1"></textarea>

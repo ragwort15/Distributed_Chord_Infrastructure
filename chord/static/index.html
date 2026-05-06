@@ -796,6 +796,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
     </div>
     <div class="sep"></div>
     <div class="tb-chip"><div class="dot" style="background:var(--info)"></div><span id="tb-queue">Queue: 0</span></div>
+    <div class="tb-chip" title="HT1 = task registry (result:&lt;task_id&gt;), HT2 = worker queues (worker:&lt;worker_id&gt;)"><div class="dot" style="background:#a78bfa"></div><span id="tb-dhts">2 DHTs · 0 + 0</span></div>
   </div>
 
   <!-- Pages -->
@@ -3238,6 +3239,10 @@ async function loadDhtContents(){
     const rsQ = document.getElementById('rs-queue');     if(rsQ) rsQ.textContent = pending;
     const rsD = document.getElementById('rs-done');      if(rsD) rsD.textContent = done;
     const rsF = document.getElementById('rs-fail');      if(rsF) rsF.textContent = failed;
+    // DHTs chip — total tables + key counts in HT1 / HT2.
+    const ht2Count = (d.ht2 || []).length;
+    const dhtChip = document.getElementById('tb-dhts');
+    if(dhtChip) dhtChip.textContent = `2 DHTs · HT1 ${ht1.length} · HT2 ${ht2Count}`;
   }catch(e){
     dhtPollFailures++;
     if(dhtPollFailures > 3){
@@ -3509,12 +3514,17 @@ async function loadTasks(){
     const fmtOut = r => {
       const res = r && r.result;
       if(!res) return '<span style="color:var(--tx-3)">—</span>';
-      const stdout = (typeof res === 'object' ? (res.stdout || '') : String(res));
-      // Show only the line containing "Welcome to Rakesh Ranjan" — drop everything else.
-      const m = stdout.split('\n').find(l => l.includes('Welcome to Rakesh Ranjan'));
-      if(!m) return '<span style="color:var(--tx-3)">(no output)</span>';
-      const text = m.trim();
-      return `<span class="mono" style="font-size:11px;color:#86efac">${text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+      const stdout = (typeof res === 'object' ? (res.stdout || '') : String(res)).trim();
+      if(!stdout) return '<span style="color:var(--tx-3)">(no output)</span>';
+      // Strip the demo runner's framing lines if present, but otherwise
+      // show whatever the script actually printed.
+      const lines = stdout.split('\n')
+        .map(l => l.trim())
+        .filter(l => l && !/^\[task /.test(l));
+      const text = (lines.length ? lines.join(' ') : stdout).trim();
+      const trimmed = text.length > 80 ? text.slice(0,80) + '…' : text;
+      const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      return `<span class="mono" style="font-size:11px;color:#86efac" title="${esc(text)}">${esc(trimmed)}</span>`;
     };
     tbody.innerHTML=rows.map(t=>{
       const tid = t.task_id || '?';
@@ -3582,7 +3592,7 @@ function openNodeDetail(nodeId){
   badge.textContent=isThis?'★ This Node':'Peer';
 
   const qd=nd.metrics?.queue_depth??0,done=nd.metrics?.jobs_completed??0,fail=nd.metrics?.jobs_failed??0;
-  const dataKeys=Object.keys(nd.data_store||nd.data||{});
+  const dataKeys = nd.data_keys || Object.keys(nd.data_store||nd.data||{});
 
   document.getElementById('nd-metrics-grid').innerHTML=`
     <div class="nd-stat"><div class="nd-stat-label">Node ID</div><div class="nd-stat-val" style="color:${c}">${nodeId}</div></div>
@@ -3604,9 +3614,16 @@ function openNodeDetail(nodeId){
     return`<tr><td class="muted">${i}</td><td class="mono muted">${f.start??'—'}</td><td class="mono" style="color:${fc};font-weight:700">${f.node_id??'—'}</td><td class="mono muted">${f.address||''}</td></tr>`;
   }).join('')||'<tr><td colspan="4" style="padding:20px;text-align:center;color:var(--tx-4)">No finger data</td></tr>';
 
-  document.getElementById('nd-data-content').innerHTML=dataKeys.length
-    ?`<div class="table-wrap"><table class="data-table"><thead><tr><th>Key</th><th>Type</th></tr></thead><tbody>${dataKeys.map(k=>{const v=nd.data_store[k]||nd.data[k];return`<tr><td class="mono" style="color:var(--accent-light)">${k}</td><td><span class="badge badge-neutral">${typeof v}</span></td></tr>`;}).join('')}</tbody></table></div>`
-    :'<div class="empty-state"><div class="icon">🗃</div><p>No data keys on this node</p></div>';
+  document.getElementById('nd-data-content').innerHTML = dataKeys.length
+    ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>Key</th><th>HT</th></tr></thead><tbody>${dataKeys.map(k=>{
+        const ht = k.startsWith('result:') ? 'HT1'
+                 : k.startsWith('worker:') ? 'HT2'
+                 : k.startsWith('task:')   ? 'task'
+                 : 'other';
+        const cls = ht==='HT1' ? 'badge-info' : ht==='HT2' ? 'badge-ok' : 'badge-neutral';
+        return `<tr><td class="mono" style="color:var(--accent-light);word-break:break-all">${k}</td><td><span class="badge ${cls}">${ht}</span></td></tr>`;
+      }).join('')}</tbody></table></div>`
+    : '<div class="empty-state"><div class="icon">🗃</div><p>No data keys on this node</p></div>';
 
   document.getElementById('nd-explain-content').innerHTML=`
     <h3 style="font-size:14px;font-weight:700;margin-bottom:8px">Chord DHT Overview</h3>
