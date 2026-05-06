@@ -402,6 +402,7 @@ class RecoveryManager:
                 self._emit_event("wait_retry", task_id, message="No workers available, waiting for retry")
                 return
 
+            old_worker = updated.get("worker_id")
             updated["attempt_count"] = updated.get("attempt_count", 0) + 1
             updated["worker_id"]    = new_worker
             updated["status"]       = "PENDING"
@@ -412,7 +413,18 @@ class RecoveryManager:
             updated["recovery_history"] = history
             self._safe_put(task_id, updated)
 
-            # Re-assign in HT2 so the new worker picks up the task
+            # Re-assign in HT2: remove from the old worker's queue so
+            # _detect_worker_crashes doesn't see this same task on the
+            # dead worker next scan and reassign it again — that loop
+            # was burning attempts and triggering spurious GIVE_UPs.
+            if old_worker and old_worker != new_worker:
+                try:
+                    self._assign_svc.remove(old_worker, task_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[RecoveryManager] HT2 remove failed for %s on %s: %s",
+                        task_id, old_worker, exc,
+                    )
             try:
                 self._assign_svc.append(new_worker, task_id)
                 self._emit_event(

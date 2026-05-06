@@ -1912,10 +1912,29 @@ def create_app(node: ChordNode) -> Flask:
         else:
             worker_id = worker_registry.round_robin_assign()
             if worker_id is None:
-                return jsonify({
-                    "message": "Task rejected",
-                    "reason": "no live workers available for auto-assignment",
-                }), 503
+                # No live workers — auto-spawn one and wait briefly for it
+                # to heartbeat in, then retry the assign. This means a chat
+                # user can submit even when the cluster has been wiped, and
+                # the agent self-heals on demand instead of 503ing.
+                logger.info("[createTask] no live workers — auto-spawning")
+                spawn_result = _spawn_worker_internal()
+                if spawn_result.get("ok"):
+                    new_wid = spawn_result["worker_id"]
+                    try: _obs_event("auto_spawn_on_submit",
+                                    f"auto-spawned {new_wid} for task {task_id}",
+                                    worker_id=new_wid, task_id=task_id)
+                    except Exception: pass
+                    # Wait up to ~6s for the new worker to send its first heartbeat
+                    for _ in range(20):
+                        time.sleep(0.3)
+                        if worker_registry.is_live(new_wid):
+                            break
+                    worker_id = worker_registry.round_robin_assign()
+                if worker_id is None:
+                    return jsonify({
+                        "message": "Task rejected",
+                        "reason": "no live workers available; auto-spawn failed",
+                    }), 503
             assigned_by = "frontend"
 
         # ---- Step 2: build the result record ----

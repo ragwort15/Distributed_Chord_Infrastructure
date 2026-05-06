@@ -1696,7 +1696,10 @@ function navigate(page){
   document.getElementById('topbar-sub').textContent=m.sub||'';
   if(page==='observability'){initObsCharts();initObsEventFilters();pollObservability();}
   if(page==='workloads'){
-    // First-load tab: jobs (already polled). Tasks tab loads on first switch.
+    // Refresh the "Tasks on This Node" card immediately on navigation so
+    // chatbot-submitted tasks show up without waiting for the next 2s tick.
+    if (typeof loadTasks === 'function') loadTasks();
+    if (typeof refreshTaskRegHt2 === 'function') refreshTaskRegHt2();
   }
   if(page==='dht'){loadDhtContents();}
   if(page==='agent'){pollLogs();}
