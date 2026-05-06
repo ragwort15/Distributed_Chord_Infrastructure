@@ -1175,6 +1175,10 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
             <button class="btn btn-danger btn-sm" id="btn-kill-busy" style="padding:5px 12px;font-size:11.5px;align-self:flex-start">🔪 Kill Busy Worker</button>
             <div id="kill-survivor-panel" style="margin-top:8px;display:none;padding:10px;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-family:var(--mono);font-size:11.5px"></div>
           </div>
+          <div style="margin-top:6px;padding-top:8px;border-top:1px dashed rgba(255,255,255,.08)">
+            <div style="font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-bottom:6px">Failure injection · 50 jobs all fail immediately</div>
+            <button class="btn btn-danger" id="btn-fail-all" style="flex:1;justify-content:center;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4);width:100%">💥 Inject 15 Failures</button>
+          </div>
           <div id="task-reg-results" style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:11.5px"></div>
           <div style="margin-top:6px;padding-top:10px;border-top:1px dashed rgba(255,255,255,.08)">
             <div style="font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-bottom:6px">HT2 — Worker Queues</div>
@@ -3621,6 +3625,28 @@ document.getElementById('btn-bulk-tasks')?.addEventListener('click', async ()=>{
     loadTasks();
     refreshTaskRegHt2();
   } finally { btn.disabled = false; }
+});
+
+/* ─── Inject 15 failing jobs ─── */
+document.getElementById('btn-fail-all')?.addEventListener('click', async ()=>{
+  const btn = document.getElementById('btn-fail-all');
+  btn.disabled = true;
+  try{
+    const r = await fetch('/api/demo/fail-all',{method:'POST',headers:{'Content-Type':'application/json'}});
+    const d = await r.json();
+    if(d.ok){
+      _appendTaskResult(`💥 launched ${d.submitting} failing demo tasks — watch recovery events`, true);
+      btn.textContent = `✓ ${d.submitting} failures injected`;
+    } else {
+      _appendTaskResult(`✕ ${d.error||'injection failed'}`, false);
+      btn.textContent = `✕ failed`;
+    }
+  }catch(e){
+    _appendTaskResult(`✕ ${e.message}`, false);
+    btn.textContent = `✕ ${e.message}`;
+  } finally {
+    setTimeout(()=>{ btn.textContent = '💥 Inject 15 Failures'; btn.disabled = false; refreshTaskRegHt2(); loadTasks(); }, 1500);
+  }
 });
 
 // Close / reopen the Register Task card

@@ -1721,6 +1721,37 @@ def create_app(node: ChordNode) -> Flask:
         except Exception: pass
         return jsonify({"ok": True, "submitting": n, "ts": ts})
 
+    @app.post("/api/demo/fail-all")
+    def api_demo_fail_all():
+        """
+        Fire-and-forget: submit 15 demo tasks that all fail immediately.
+        Each task script exits with error code 1.
+        """
+        n = 15
+        ts = int(time.time())
+
+        def background():
+            for idx in range(1, n + 1):
+                tid = f"fail-{ts}-{idx:03d}"
+                script = (
+                    f'echo "[{tid}] starting (will fail)"; '
+                    f'exit 1'
+                )
+                try:
+                    _requests.post(
+                        f"http://{node.address}/createTask",
+                        json={"task_id": tid,
+                              "task_details": {"task_type": "SCRIPT", "path": "", "script": script}},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.05)
+        threading.Thread(target=background, daemon=True).start()
+        try: _obs_event("fail_all_demo", f"launched {n} failing demo tasks", count=n)
+        except Exception: pass
+        return jsonify({"ok": True, "submitting": n, "ts": ts})
+
     @app.post("/api/workers/<wid>/kill")
     def api_kill_worker(wid):
         # Try the dashboard-tracked PID first; if absent, fall back to pgrep
