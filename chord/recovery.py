@@ -108,7 +108,7 @@ class RecoveryManager:
         self._registry    = worker_registry
         self._on_no_workers = on_no_workers   # callable() — fires when recovery has work but zero live workers
         self._last_spawn_trigger = 0.0
-        self._spawn_cooldown_s = 20.0         # at most one auto-spawn every 20s
+        self._spawn_cooldown_s = 3.0          # at most one auto-spawn every 3s
         self._thread: Optional[threading.Thread] = None
         self._stop        = threading.Event()
         # Guard against the same task being recovered concurrently

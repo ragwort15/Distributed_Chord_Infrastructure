@@ -1504,6 +1504,10 @@ def create_app(node: ChordNode) -> Flask:
             logger.info(f"[spawn] worker {wid} pid={proc.pid}")
             try: _obs_event("worker_spawned", f"worker {wid} (pid {proc.pid})", worker_id=wid, pid=proc.pid)
             except Exception: pass
+            # Reflect the spawn in the Activity Log immediately, instead of
+            # waiting ~5s for the new worker's first heartbeat.
+            try: _emit_worker_join(wid)
+            except Exception: pass
             def _rebalance_after_spawn(target_wid=wid):
                 for _ in range(20):
                     time.sleep(0.3)
@@ -1676,6 +1680,43 @@ def create_app(node: ChordNode) -> Flask:
             time.sleep(2.0)
     threading.Thread(target=_obs_loop, daemon=True, name="obs-sampler").start()
 
+    # Auto-respawn watcher: if PENDING tasks exist but zero live workers,
+    # spawn a fresh task_runner so orphans resume without operator action.
+    def _auto_respawn_loop():
+        while True:
+            try:
+                time.sleep(5.0)
+                if worker_registry.live_workers():
+                    continue
+                pending = sum(
+                    1 for k, v in node.data_store.items()
+                    if k.startswith("result:") and isinstance(v, dict) and v.get("status") == "PENDING"
+                )
+                if not pending:
+                    continue
+                n = 1
+                while f"auto{n}" in _worker_pids:
+                    n += 1
+                wid = f"auto{n}"
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                env = os.environ.copy()
+                env.setdefault("DEMO_TASK_DELAY_S", "5")
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "chord.task_runner",
+                     "--worker-id", wid, "--frontend-url", f"http://{node.address}"],
+                    cwd=project_root, env=env,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                _worker_pids[wid] = proc.pid
+                logger.info("[auto-respawn] 0 live + %d pending → spawned %s pid=%d", pending, wid, proc.pid)
+                try: _obs_event("worker_spawned",
+                                 f"auto-respawn {wid} (rescue {pending} pending tasks)",
+                                 worker_id=wid, pid=proc.pid, auto=True)
+                except Exception: pass
+            except Exception:
+                logger.exception("[auto-respawn] loop error")
+    threading.Thread(target=_auto_respawn_loop, daemon=True, name="auto-respawn").start()
+
     # Discrete event log — each entry: {ts, kind, message, data}.
     _obs_events: "_deque[dict]" = _deque(maxlen=200)
 
@@ -1840,11 +1881,45 @@ def create_app(node: ChordNode) -> Flask:
         try:
             os.kill(pid, 9)
             _worker_pids.pop(wid, None)
+            # Immediately mark the worker dead in the registry so live_workers()
+            # reflects reality on the next recovery scan instead of waiting up to
+            # HEARTBEAT_TIMEOUT_S for the heartbeat to expire.
+            try: worker_registry.remove(wid)
+            except Exception: pass
+            # Reflect the kill in the Activity Log immediately. Drop the
+            # worker from _known_workers so a future re-spawn with the same id
+            # logs a fresh WORKER_JOIN.
+            try:
+                with _known_workers_lock:
+                    _known_workers.discard(wid)
+                activity.log(activity.WORKER_LEAVE,
+                             f"Worker '{wid}' killed from dashboard",
+                             {"worker_id": wid})
+            except Exception: pass
+            # Clear the auto-spawn cooldown so the recovery scan we trigger next
+            # is free to spawn a replacement immediately.
+            try: recovery_manager._last_spawn_trigger = 0.0
+            except Exception: pass
+            # Kick the recovery loop so PENDING/RUNNING tasks for this worker
+            # get reassigned (or trigger an auto-spawn) without waiting for the
+            # next periodic scan.
+            try: threading.Thread(target=recovery_manager.trigger, daemon=True).start()
+            except Exception: pass
             try: _obs_event("worker_killed", f"worker {wid} stopped (pid {pid})", worker_id=wid, pid=pid)
             except Exception: pass
             return jsonify({"ok": True, "pid": pid})
         except ProcessLookupError:
             _worker_pids.pop(wid, None)
+            try: worker_registry.remove(wid)
+            except Exception: pass
+            try:
+                with _known_workers_lock:
+                    if wid in _known_workers:
+                        _known_workers.discard(wid)
+                        activity.log(activity.WORKER_LEAVE,
+                                     f"Worker '{wid}' already dead — removed from registry",
+                                     {"worker_id": wid})
+            except Exception: pass
             return jsonify({"ok": True, "note": "already dead"})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
