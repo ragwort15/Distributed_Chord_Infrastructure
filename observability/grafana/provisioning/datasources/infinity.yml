@@ -1,9 +1,14 @@
 apiVersion: 1
 
+deleteDatasources:
+  - name: ChordAPI
+    orgId: 1
+
 datasources:
   - name: ChordAPI
     type: yesoreyeram-infinity-datasource
     uid: infinity-chord
+    orgId: 1
     access: proxy
     # Uses Docker container name — works on chord-network locally and in cloud
     url: http://chord-node-1:5000
