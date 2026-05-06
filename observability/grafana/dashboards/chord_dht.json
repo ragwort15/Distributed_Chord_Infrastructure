@@ -10,8 +10,8 @@
   "panels": [
     {
       "id": 1,
-      "title": "Request Throughput per Node",
-      "description": "File requests per second routed by each node. Shows load distribution across the ring.",
+      "title": "Workers (live / idle / busy / dead)",
+      "description": "Live worker pool composition over time. busy = workers with at least one PENDING task assigned to them.",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
@@ -19,22 +19,21 @@
         "defaults": {
           "color": { "mode": "palette-classic" },
           "custom": { "lineWidth": 2, "fillOpacity": 10 },
-          "unit": "reqps"
+          "unit": "short"
         }
       },
       "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
-        {
-          "expr": "sum(rate(chord_file_requests_total[1m])) by (node_id)",
-          "legendFormat": "Node {{node_id}}",
-          "refId": "A"
-        }
+        { "expr": "sum(chord_workers_live)", "legendFormat": "live", "refId": "A" },
+        { "expr": "sum(chord_workers_idle)", "legendFormat": "idle", "refId": "B" },
+        { "expr": "sum(chord_workers_busy)", "legendFormat": "busy", "refId": "C" },
+        { "expr": "sum(chord_workers_dead)", "legendFormat": "dead", "refId": "D" }
       ]
     },
     {
       "id": 2,
-      "title": "Avg Hop Count",
-      "description": "Average Chord routing hops per request. O(log N) guarantee: with 3 nodes expect ≤ 2 hops.",
+      "title": "Live Workers",
+      "description": "Number of workers currently heartbeating to the ring.",
       "type": "stat",
       "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
@@ -42,21 +41,16 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "thresholds": { "steps": [
-            { "color": "green", "value": 0 },
-            { "color": "yellow", "value": 3 },
-            { "color": "red",    "value": 5 }
+            { "color": "red", "value": 0 },
+            { "color": "yellow", "value": 1 },
+            { "color": "green", "value": 2 }
           ]},
-          "decimals": 2,
           "unit": "short"
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
-        {
-          "expr": "sum(rate(chord_file_request_hops_sum[2m])) / sum(rate(chord_file_request_hops_count[2m]))",
-          "legendFormat": "Avg Hops",
-          "refId": "A"
-        }
+        { "expr": "sum(chord_workers_live)", "legendFormat": "live", "refId": "A" }
       ]
     },
     {
@@ -88,24 +82,20 @@
     },
     {
       "id": 4,
-      "title": "Total Requests",
-      "description": "Cumulative file requests across the entire ring.",
+      "title": "Pending Tasks",
+      "description": "HT1 records currently in PENDING state across the ring.",
       "type": "stat",
       "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "fieldConfig": {
         "defaults": {
-          "color": { "fixedColor": "#58a6ff", "mode": "fixed" },
+          "color": { "fixedColor": "#f59e0b", "mode": "fixed" },
           "unit": "short"
         }
       },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
       "targets": [
-        {
-          "expr": "sum(chord_file_requests_total)",
-          "legendFormat": "Total",
-          "refId": "A"
-        }
+        { "expr": "sum(chord_tasks_pending)", "legendFormat": "pending", "refId": "A" }
       ]
     },
     {
@@ -122,7 +112,7 @@
       },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
-        { "expr": "sum(chord_jobs_total{status='done'})", "legendFormat": "Done", "refId": "A" }
+        { "expr": "sum(chord_tasks_success)", "legendFormat": "Success", "refId": "A" }
       ]
     },
     {
@@ -139,7 +129,7 @@
       },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
       "targets": [
-        { "expr": "sum(chord_jobs_total{status='failed'})", "legendFormat": "Failed", "refId": "A" }
+        { "expr": "sum(chord_tasks_failure)", "legendFormat": "Failed", "refId": "A" }
       ]
     },
     {
@@ -203,7 +193,7 @@
     },
     {
       "id": 10,
-      "title": "Request Latency (p50 / p95 / p99)",
+      "title": "Task Latency (p50 / p95 / p99)",
       "description": "End-to-end file request latency percentiles. p95 spike after fault injection shows recovery overhead.",
       "type": "timeseries",
       "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
@@ -217,9 +207,9 @@
       },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum(rate(chord_file_request_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p50", "refId": "A" },
-        { "expr": "histogram_quantile(0.95, sum(rate(chord_file_request_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p95", "refId": "B" },
-        { "expr": "histogram_quantile(0.99, sum(rate(chord_file_request_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p99", "refId": "C" }
+        { "expr": "histogram_quantile(0.50, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p99", "refId": "C" }
       ]
     },
     {

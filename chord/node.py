@@ -66,7 +66,50 @@ class ChordNode:
         self.fingers[0].node_id = self.node_id
         self.fingers[0].node_address = self.address
 
-        logger.info(f"[Node {self.node_id}] Initialized at {self.address}")
+        # ---- Persistence: snapshot data_store to disk so we can recover from
+        # a full ring restart. CHORD_DATA_DIR env var overrides the default.
+        import os, json
+        data_dir = os.environ.get("CHORD_DATA_DIR") or os.path.join(
+            os.path.expanduser("~"), ".chord-data"
+        )
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+        except Exception:
+            data_dir = None
+        self._persist_path = (
+            os.path.join(data_dir, f"node-{self.node_id}.json")
+            if data_dir else None
+        )
+        self._load_from_disk()
+
+        logger.info(f"[Node {self.node_id}] Initialized at {self.address}"
+                    f" (persistence: {self._persist_path or 'disabled'},"
+                    f" {len(self.data_store)} keys recovered)")
+
+    def _load_from_disk(self) -> None:
+        if not self._persist_path:
+            return
+        import os, json
+        if not os.path.exists(self._persist_path):
+            return
+        try:
+            with open(self._persist_path, "r") as f:
+                self.data_store = json.load(f) or {}
+        except Exception as exc:
+            logger.warning(f"[Node {self.node_id}] failed to load snapshot: {exc}")
+
+    def _save_to_disk(self) -> None:
+        if not self._persist_path:
+            return
+        import json
+        try:
+            tmp = self._persist_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.data_store, f)
+            import os
+            os.replace(tmp, self._persist_path)
+        except Exception as exc:
+            logger.warning(f"[Node {self.node_id}] snapshot write failed: {exc}")
 
     # ------------------------------------------------------------------
     # Properties
@@ -350,6 +393,7 @@ class ChordNode:
         """Store a key locally (called after routing confirms we're responsible)."""
         with self._lock:
             self.data_store[key] = value
+            self._save_to_disk()
             logger.debug(f"[Node {self.node_id}] Stored key={key}")
             return True
 
@@ -360,12 +404,16 @@ class ChordNode:
 
     def delete(self, key: str) -> bool:
         with self._lock:
-            return self.data_store.pop(key, None) is not None
+            removed = self.data_store.pop(key, None) is not None
+            if removed:
+                self._save_to_disk()
+            return removed
 
     def bulk_put(self, items: dict):
         """Accept a batch of keys (used during node join/leave handoff)."""
         with self._lock:
             self.data_store.update(items)
+            self._save_to_disk()
             logger.info(f"[Node {self.node_id}] Bulk received {len(items)} keys")
 
     # Agent metrics

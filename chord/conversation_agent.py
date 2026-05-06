@@ -365,6 +365,31 @@ class ScriptedAgent:
             reply, action = intent_result
             return self._return(history, message, reply, state, action)
 
+        # List intent ("list tasks", "show tasks", …) — always available.
+        if self._is_list_intent(msg):
+            reply, action = self._list_tasks()
+            return self._return(history, message, reply, state, action)
+
+        # Demo intent ("demo", "demo 10", "100 tasks") is only valid AFTER
+        # the user has picked SCRIPT or BINARY — i.e. the state machine is
+        # past INIT. This prevents accidentally firing the batch before the
+        # task-type choice has been made.
+        demo_n = self._parse_demo_intent(msg)
+        if demo_n is not None:
+            data = (state.get("data") or {}) if state else {}
+            if not data.get("task_type"):
+                return self._return(
+                    history,
+                    message,
+                    "Pick a task type first: reply [1] Script or [2] Binary, "
+                    "then say 'demo 10' (or any count up to 100) to fire a batch.",
+                    state or {"step": "INIT", "data": {}},
+                    None,
+                )
+            reply, action = self._run_demo(demo_n)
+            return self._return(history, message, reply,
+                                {"step": "DONE", "data": {}}, action)
+
         step = state.get("step", "INIT")
         data = dict(state.get("data") or {})
 
@@ -564,6 +589,166 @@ class ScriptedAgent:
         if last_tid:
             return last_tid, None
         return None, "Which task ID would you like me to check?"
+
+    # -- List tasks intent ---------------------------------------------------
+
+    def _is_list_intent(self, msg: str) -> bool:
+        s = (msg or "").strip().lower()
+        if not s:
+            return False
+        keywords = (
+            "list tasks", "list task", "list all tasks", "show tasks",
+            "show all tasks", "my tasks", "what tasks", "tasks list",
+            "all tasks",
+        )
+        if any(k in s for k in keywords):
+            return True
+        # bare command words
+        return s in ("list", "tasks", "ls")
+
+    def _list_tasks(self):
+        """
+        Pull HT1 from /api/dht/contents and group tasks by status. Returns
+        a tidy chat reply listing every task_id.
+        """
+        try:
+            r = requests.get(f"{self.base_url}/api/dht/contents", timeout=5)
+            d = r.json()
+        except Exception as exc:
+            return f"Couldn't load tasks: {exc}", None
+        rows = d.get("ht1") or []
+        if not rows:
+            return "No tasks have been registered yet. Try 'demo 10' to fire a batch.", None
+
+        buckets = {"PENDING": [], "SUCCESS": [], "FAILURE": []}
+        other = []
+        for r in rows:
+            st = r.get("status") or "?"
+            if st in buckets:
+                buckets[st].append(r)
+            else:
+                other.append(r)
+
+        def fmt_row(rr):
+            tid = rr.get("task_id") or "?"
+            wk  = rr.get("worker_id") or "?"
+            ow  = rr.get("owner")
+            ow_s = f"N{ow}" if ow is not None else "—"
+            return f"  · {tid}   → worker {wk}   (owner {ow_s})"
+
+        lines = [
+            f"📋 Tasks in the ring: total {len(rows)}"
+            f"  ·  ⏳ {len(buckets['PENDING'])}  ·  ✅ {len(buckets['SUCCESS'])}"
+            f"  ·  ❌ {len(buckets['FAILURE'])}",
+            "",
+        ]
+
+        ICONS = {"PENDING": "⏳", "SUCCESS": "✅", "FAILURE": "❌"}
+        SHOW_LIMIT = 30  # avoid blowing up the chat
+        for st in ("PENDING", "FAILURE", "SUCCESS"):
+            group = buckets[st]
+            if not group:
+                continue
+            lines.append(f"{ICONS[st]} {st}  ({len(group)})")
+            for rr in group[:SHOW_LIMIT]:
+                lines.append(fmt_row(rr))
+            if len(group) > SHOW_LIMIT:
+                lines.append(f"  …and {len(group) - SHOW_LIMIT} more")
+            lines.append("")
+        if other:
+            lines.append(f"Other  ({len(other)})")
+            for rr in other[:SHOW_LIMIT]:
+                lines.append(fmt_row(rr))
+
+        lines.append("Ask me 'status of <task_id>' for full details on any task.")
+        action = {
+            "type": "list_tasks",
+            "result": {
+                "total": len(rows),
+                "pending": len(buckets["PENDING"]),
+                "success": len(buckets["SUCCESS"]),
+                "failure": len(buckets["FAILURE"]),
+            },
+        }
+        return "\n".join(lines), action
+
+    # -- Demo intent ---------------------------------------------------------
+
+    def _parse_demo_intent(self, msg: str) -> Optional[int]:
+        """
+        Returns N if the message is a demo command ("demo", "run demo",
+        "demo 25", "run 100 tasks"). Otherwise None.
+        """
+        import re
+        s = (msg or "").strip().lower()
+        if not s:
+            return None
+        # Must include "demo" OR a numeric "N tasks" pattern. Plain "tasks"
+        # without "demo" or a number falls through to the list intent.
+        has_demo = "demo" in s
+        m_num_tasks = re.search(r"\b(\d+)\s*tasks?\b", s)
+        if not has_demo and not m_num_tasks:
+            return None
+        m = re.search(r"(\d+)", s)
+        n = int(m.group(1)) if m else 10
+        return max(1, min(n, 100))
+
+    def _run_demo(self, n: int):
+        """
+        Fire-and-forget: kick the submissions off in a background thread so
+        the chat reply returns instantly. /createTask is relatively heavy,
+        and submitting many in-line would queue up the server's other
+        endpoints (ring viz, status, dht/contents) for the demo's duration.
+        """
+        import threading
+        import time as _time
+        sleeps = [3, 4, 5, 6, 7]
+        welcome = "Welcome to Rakesh Ranjan's Distributed Class"
+        ts = int(_time.time())
+
+        def background_submit():
+            for idx in range(1, n + 1):
+                sleep_s = sleeps[(idx - 1) % len(sleeps)]
+                tid = f"chat-demo-{ts}-{idx:03d}"
+                script = (
+                    f'echo "[{tid}] starting (sleep {sleep_s}s)"; '
+                    f'sleep {sleep_s}; '
+                    f'echo "{welcome}"; '
+                    f'echo "[{tid}] done"'
+                )
+                try:
+                    requests.post(
+                        f"{self.base_url}/createTask",
+                        json={"task_id": tid,
+                              "task_details": {"task_type": "SCRIPT", "path": "", "script": script}},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+                # Stagger slightly so the placement scorer can react and the
+                # dashboard pollers don't see one big batch.
+                _time.sleep(0.05)
+
+        threading.Thread(target=background_submit, daemon=True).start()
+
+        lines = [
+            f"🧪 Demo: launching {n} tasks in the background (sleeps rotate 3–7 s).",
+            "",
+            "Tasks are being submitted right now — refresh the dashboard:",
+            "  • Queue chip should climb, then drain back to 0 as workers finish.",
+            "  • DHT Store → HT1 fills with PENDING → SUCCESS rows.",
+            "  • Workers panel → BEST CHOICE badge hops as load shifts.",
+            "",
+            f'Each task will print: "{welcome}"',
+            'Ask me "status of <task_id>" once you spot one you want to inspect.',
+        ]
+
+        action = {
+            "type": "run_demo",
+            "input": {"count": n},
+            "result": {"submitted_async": True, "ts": ts},
+        }
+        return "\n".join(lines), action
 
     def _post_submit_state(self, action: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """After a successful submit, persist the new task_id into state."""

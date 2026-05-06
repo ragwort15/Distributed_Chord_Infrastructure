@@ -169,6 +169,15 @@ class Worker:
         with self._inflight_lock:
             self._inflight.add(task_id)
         try:
+            # Demo lever: keep tasks in PENDING long enough to be visible on
+            # the dashboard. Set DEMO_TASK_DELAY_S=0 to disable.
+            import os as _os
+            try:
+                _demo_delay = float(_os.environ.get("DEMO_TASK_DELAY_S", "5"))
+            except ValueError:
+                _demo_delay = 5.0
+            if _demo_delay > 0:
+                time.sleep(_demo_delay)
             try:
                 result = run_task(
                     task_type=task_type, path=path, script=script,

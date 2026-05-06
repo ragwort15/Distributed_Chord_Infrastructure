@@ -1320,6 +1320,25 @@ def create_app(node: ChordNode) -> Flask:
                     "replicas": reps,
                 })
 
+        # Self-heal: any task_id stuck in HT2 whose HT1 status is SUCCESS
+        # should not be there. The 3 s delayed cleanup can be missed when
+        # the server is restarted mid-sleep, so we reconcile on read.
+        success_ids = {r["task_id"] for r in ht1_rows if r.get("status") == "SUCCESS"}
+        if success_ids:
+            for row in ht2_rows:
+                stuck = [t for t in (row.get("task_ids") or []) if t in success_ids]
+                if not stuck:
+                    continue
+                wid = row.get("worker_id")
+                for tid in stuck:
+                    try:
+                        worker_assignment_service.remove(wid, tid)
+                    except Exception:
+                        pass
+                # update the in-memory row so the response reflects cleanup
+                row["task_ids"] = [t for t in row["task_ids"] if t not in success_ids]
+                row["task_count"] = len(row["task_ids"])
+
         per_node = []
         for n in ordered:
             ht1 = sum(1 for k in (n.get("data_keys") or []) if k.startswith("result:"))
@@ -1368,10 +1387,276 @@ def create_app(node: ChordNode) -> Flask:
             )
             _worker_pids[wid] = proc.pid
             logger.info(f"[API] Spawned worker {wid} pid={proc.pid}")
+            try: _obs_event("worker_spawned", f"worker {wid} (pid {proc.pid})", worker_id=wid, pid=proc.pid)
+            except Exception: pass
+            # Wait briefly for the new worker to heartbeat in, then rebalance
+            # any PENDING tasks so it doesn't sit idle while existing workers
+            # have a backlog.
+            def _rebalance_after_spawn(target_wid=wid):
+                for _ in range(20):  # up to ~6 s
+                    time.sleep(0.3)
+                    if target_wid in worker_registry.live_workers():
+                        break
+                try:
+                    _do_rebalance()
+                except Exception:
+                    logger.exception("[spawn] rebalance failed")
+            threading.Thread(target=_rebalance_after_spawn, daemon=True).start()
             return jsonify({"ok": True, "worker_id": wid, "pid": proc.pid})
         except Exception as e:
             logger.error(f"[API] Failed to spawn worker {wid}: {e}", exc_info=True)
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    def _do_rebalance() -> Dict[str, int]:
+        """
+        Re-distribute PENDING tasks across live workers so newly-added
+        workers actually pick up work instead of sitting idle.
+
+        Strategy: collect every PENDING HT1 record, group by current
+        worker_id. Compute the average load. For each over-loaded worker,
+        move its excess tasks to the most under-loaded live workers.
+        """
+        live = worker_registry.live_workers() or []
+        if len(live) < 2:
+            return {"moved": 0, "reason": "need at least 2 live workers"}
+
+        # Gather all PENDING result:* records owned by this node's accessible view
+        pending: List[tuple] = []  # (task_id, current_worker, full_record)
+        for k in list(node.data_store.keys()):
+            if not k.startswith("result:"):
+                continue
+            v = node.data_store.get(k)
+            if isinstance(v, dict) and v.get("status") == "PENDING":
+                pending.append((k[len("result:"):], v.get("worker_id"), v))
+        if not pending:
+            return {"moved": 0, "reason": "no PENDING tasks"}
+
+        # Current load per live worker (only counting tasks we know about)
+        load = {w: 0 for w in live}
+        for (_tid, wid, _rec) in pending:
+            if wid in load:
+                load[wid] += 1
+
+        target = max(1, len(pending) // len(live))  # ceil-ish
+        moved = 0
+        for (tid, src_wid, rec) in pending:
+            # Skip if the current worker is already under-loaded
+            if src_wid not in load:
+                src_wid = None  # treat as orphaned
+            if src_wid is not None and load[src_wid] <= target:
+                continue
+            # Pick the live worker with the lowest current load
+            dst_wid = min(load.keys(), key=lambda w: load[w])
+            if src_wid is not None and load[dst_wid] >= load[src_wid]:
+                continue  # not actually a balancing move
+            # Move it: update HT1 worker_id; update HT2 entries.
+            new_rec = dict(rec)
+            new_rec["worker_id"] = dst_wid
+            # "intelligence" is one of the validator's allowed values; the
+            # rebalancer is effectively the placement scorer reacting to a
+            # new worker joining, so it fits semantically.
+            new_rec["assigned_by"] = "intelligence"
+            try:
+                node.put(f"result:{tid}", new_rec)
+                if src_wid:
+                    worker_assignment_service.remove(src_wid, tid)
+                worker_assignment_service.append(dst_wid, tid)
+                load[dst_wid] += 1
+                if src_wid in load:
+                    load[src_wid] -= 1
+                moved += 1
+            except Exception:
+                logger.exception("[rebalance] failed to move %s", tid)
+        if moved:
+            logger.info("[rebalance] moved %d PENDING tasks across %d workers",
+                        moved, len(live))
+            try: _obs_event("rebalance", f"moved {moved} pending tasks across {len(live)} workers",
+                            moved=moved, workers=len(live))
+            except Exception: pass
+        return {"moved": moved, "live_workers": live, "load": load}
+
+    @app.post("/api/workers/rebalance")
+    def api_rebalance_workers():
+        return jsonify({"ok": True, **_do_rebalance()})
+
+    # ------------------------------------------------------------------
+    # Built-in observability time series
+    # ------------------------------------------------------------------
+    from collections import deque as _deque
+    _obs_buffer: "_deque[dict]" = _deque(maxlen=300)  # 10 min @ 2 s sampling
+
+    def _sample_obs():
+        try:
+            counts = {"live": 0, "idle": 0, "busy": 0, "dead": 0}
+            workers = []
+            now = time.time()
+            for w in worker_registry._workers.keys():  # all known workers
+                last_ts = worker_registry._workers.get(w)
+                age = now - last_ts if last_ts else None
+                is_live = (last_ts is not None
+                           and age is not None
+                           and age <= worker_registry._timeout)
+                # Determine busy/idle from PENDING tasks attributed to this worker.
+                pending = sum(
+                    1 for k, v in node.data_store.items()
+                    if k.startswith("result:") and isinstance(v, dict)
+                    and v.get("worker_id") == w and v.get("status") == "PENDING"
+                )
+                status = "dead" if not is_live else ("busy" if pending > 0 else "idle")
+                counts[status] += 1
+                if is_live:
+                    counts["live"] += 1
+                workers.append({"worker_id": w, "status": status, "pending": pending})
+
+            # HT1 status counts
+            ht1_pending = ht1_success = ht1_failure = 0
+            for k, v in node.data_store.items():
+                if not k.startswith("result:") or not isinstance(v, dict):
+                    continue
+                st = v.get("status")
+                if st == "PENDING":
+                    ht1_pending += 1
+                elif st == "SUCCESS":
+                    ht1_success += 1
+                elif st == "FAILURE":
+                    ht1_failure += 1
+
+            _obs_buffer.append({
+                "ts": now,
+                "workers": counts,
+                "queue": ht1_pending,
+                "success": ht1_success,
+                "failure": ht1_failure,
+            })
+            # Publish to Prometheus too so Grafana can chart them.
+            try:
+                from chord import metrics_registry as _M
+                nid = str(node.node_id)
+                _M.WORKERS_LIVE.labels(node_id=nid).set(counts["live"])
+                _M.WORKERS_IDLE.labels(node_id=nid).set(counts["idle"])
+                _M.WORKERS_BUSY.labels(node_id=nid).set(counts["busy"])
+                _M.WORKERS_DEAD.labels(node_id=nid).set(counts["dead"])
+                _M.TASKS_PENDING.labels(node_id=nid).set(ht1_pending)
+                _M.TASKS_SUCCESS.labels(node_id=nid).set(ht1_success)
+                _M.TASKS_FAILURE.labels(node_id=nid).set(ht1_failure)
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("[observability] sample failed")
+
+    def _obs_loop():
+        while True:
+            _sample_obs()
+            time.sleep(2.0)
+    threading.Thread(target=_obs_loop, daemon=True, name="obs-sampler").start()
+
+    # Discrete event log — each entry: {ts, kind, message, data}.
+    _obs_events: "_deque[dict]" = _deque(maxlen=200)
+
+    def _obs_event(kind: str, message: str, **data) -> None:
+        _obs_events.append({
+            "ts": time.time(),
+            "kind": kind,
+            "message": message,
+            "data": data or {},
+        })
+
+    # Hand it to the rest of the module so other handlers can record events.
+    app.config["obs_event"] = _obs_event
+    _obs_event("system_start", f"node {node.node_id} bound to {node.address}")
+
+    @app.get("/api/observability/events")
+    def api_obs_events():
+        return jsonify({"events": list(_obs_events)})
+
+    @app.get("/api/observability/trace/<task_id>")
+    def api_obs_trace(task_id):
+        """
+        Build a per-task trace from the HT1 record and any related events.
+        Spans:
+          submit  : created_at → first_pending_seen
+          execute : first_pending_seen → updated_at  (worker run window)
+        """
+        try:
+            rec = node.get(f"result:{task_id}")
+        except Exception:
+            rec = None
+        if not isinstance(rec, dict):
+            return jsonify({"ok": False, "error": "task not found"}), 404
+        related = [e for e in _obs_events if e.get("data", {}).get("task_id") == task_id]
+        return jsonify({
+            "ok": True,
+            "task_id": task_id,
+            "record": {
+                "task_type": rec.get("task_type"),
+                "status": rec.get("status"),
+                "worker_id": rec.get("worker_id"),
+                "assigned_by": rec.get("assigned_by"),
+                "created_at": rec.get("created_at"),
+                "updated_at": rec.get("updated_at"),
+                "result": rec.get("result"),
+            },
+            "events": related,
+        })
+
+    @app.get("/api/observability/timeseries")
+    def api_obs_timeseries():
+        # Return the buffer + a few derived rates for the client.
+        series = list(_obs_buffer)
+        # Compute throughput: tasks/min completed in the last minute.
+        if len(series) >= 2:
+            head, tail = series[0], series[-1]
+            window = max(1.0, tail["ts"] - head["ts"])
+            tput = (tail["success"] - head["success"]) / window * 60.0  # per min
+            failrate = (tail["failure"] - head["failure"]) / window * 60.0
+        else:
+            tput = failrate = 0.0
+        return jsonify({
+            "samples": series,
+            "throughput_per_min": round(tput, 2),
+            "failures_per_min": round(failrate, 2),
+            "current": series[-1] if series else None,
+        })
+
+    @app.post("/api/demo/run")
+    def api_demo_run():
+        """
+        Fire-and-forget: submit N demo tasks (rotating sleep 3..7s) in a
+        background thread. Each task script prints the Welcome line.
+        """
+        body = request.get_json(silent=True) or {}
+        try:
+            n = max(1, min(int(body.get("count") or 10), 200))
+        except Exception:
+            n = 10
+        sleeps = [3, 4, 5, 6, 7]
+        welcome = "Welcome to Rakesh Ranjan's Distributed Class"
+        ts = int(time.time())
+
+        def background():
+            for idx in range(1, n + 1):
+                sleep_s = sleeps[(idx - 1) % len(sleeps)]
+                tid = f"demo-{ts}-{idx:03d}"
+                script = (
+                    f'echo "[{tid}] starting (sleep {sleep_s}s)"; '
+                    f'sleep {sleep_s}; '
+                    f'echo "{welcome}"; '
+                    f'echo "[{tid}] done"'
+                )
+                try:
+                    _requests.post(
+                        f"http://{node.address}/createTask",
+                        json={"task_id": tid,
+                              "task_details": {"task_type": "SCRIPT", "path": "", "script": script}},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.05)
+        threading.Thread(target=background, daemon=True).start()
+        try: _obs_event("demo_run", f"launched {n} demo tasks", count=n)
+        except Exception: pass
+        return jsonify({"ok": True, "submitting": n, "ts": ts})
 
     @app.post("/api/workers/<wid>/kill")
     def api_kill_worker(wid):
@@ -1381,6 +1666,8 @@ def create_app(node: ChordNode) -> Flask:
         try:
             os.kill(pid, 9)
             _worker_pids.pop(wid, None)
+            try: _obs_event("worker_killed", f"worker {wid} stopped", worker_id=wid)
+            except Exception: pass
             return jsonify({"ok": True})
         except ProcessLookupError:
             _worker_pids.pop(wid, None)
@@ -1564,6 +1851,14 @@ def create_app(node: ChordNode) -> Flask:
             }), 503
 
         # ---- Step 5: success ----
+        try:
+            app.config.get("obs_event") and app.config["obs_event"](
+                "task_created",
+                f"task {task_id} → worker {worker_id} ({assigned_by})",
+                task_id=task_id, worker_id=worker_id, assigned_by=assigned_by,
+            )
+        except Exception:
+            pass
         return jsonify({
             "message": "Task accepted",
             "task_id": task_id,
@@ -1709,6 +2004,44 @@ def create_app(node: ChordNode) -> Flask:
             logger.exception("[results/complete] write failed for %s", task_id)
             return jsonify({"ok": False, "error": str(exc)}), 500
 
+        # Only remove the task from HT2 on SUCCESS. Failed tasks stay in the
+        # worker queue so the dashboard keeps showing them. Delay 3 s on
+        # success so the assignment is visible before it disappears.
+        worker_id = (existing or {}).get("worker_id")
+        if worker_id and status == "SUCCESS":
+            def _delayed_ht2_cleanup(wid=worker_id, tid=task_id):
+                try:
+                    time.sleep(3.0)
+                    worker_assignment_service.remove(wid, tid)
+                except Exception:
+                    logger.exception(
+                        "[results/complete] HT2 cleanup failed for %s/%s",
+                        wid, tid,
+                    )
+            threading.Thread(target=_delayed_ht2_cleanup, daemon=True).start()
+
+        # Update success-rate stats for placement scoring.
+        try:
+            worker_registry.record_completion(worker_id, status == "SUCCESS")
+        except Exception:
+            pass
+
+        try: _obs_event(
+            "task_succeeded" if status == "SUCCESS" else "task_failed",
+            f"task {task_id} → {status} on {worker_id or '?'}",
+            task_id=task_id, worker_id=worker_id, status=status,
+        )
+        except Exception: pass
+        # Observe task duration so Grafana can plot p50/p95/p99 latency.
+        try:
+            from chord import metrics_registry as _M
+            dur_ms = (result_payload or {}).get("duration_ms")
+            if isinstance(dur_ms, (int, float)) and dur_ms >= 0:
+                _M.TASK_DURATION.labels(
+                    node_id=str(node.node_id), status=status,
+                ).observe(dur_ms / 1000.0)
+        except Exception:
+            pass
         return jsonify({
             "ok": True, "task_id": task_id, "status": status,
         }), 200
