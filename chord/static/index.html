@@ -791,6 +791,9 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
     </div>
     <div class="sep"></div>
     <div class="tb-chip"><div class="dot" style="background:var(--info)"></div><span id="tb-queue">Queue: 0</span></div>
+        <a class="tb-chip" href="/recovery" target="_blank" rel="noopener" style="background:linear-gradient(135deg,#f59e0b,#ef4444);border:none;color:white;text-decoration:none;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:500;cursor:pointer">
+      🔄 Recovery Live
+    </a>
   </div>
 
   <!-- Pages -->
@@ -1021,8 +1024,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
           <div class="card-title">All Jobs</div>
           <div class="card-sub" id="jobs-subtitle">across entire ring</div>
           <div class="card-action btn-row">
-            <button class="btn btn-primary btn-sm" id="btn-open-job-modal">＋ Submit Job</button>
-          </div>
+            <button class="btn btn-primary btn-sm" id="btn-open-job-modal">＋ New Job</button>          </div>
         </div>
         <div class="filter-chips" id="job-filter-chips">
           <button class="filter-chip active" data-filter="all">All</button>
@@ -2511,8 +2513,23 @@ document.getElementById('btn-add-node').addEventListener('click',async()=>{
   }catch(err){
     showToast('Network error: '+err.message,'error');
   }finally{
+    const originalHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Node';
     btn.disabled=false;
-    btn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Node';
+    btn.innerHTML=originalHTML;
+    // 7-second cooldown
+    btn.disabled=true;
+    let countdown=7;
+    btn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Node ('+countdown+'s)';
+    const cooldownInterval=setInterval(()=>{
+      countdown--;
+      if(countdown<=0){
+        clearInterval(cooldownInterval);
+        btn.disabled=false;
+        btn.innerHTML=originalHTML;
+      }else{
+        btn.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Node ('+countdown+'s)';
+      }
+    },1000);
   }
 });
 

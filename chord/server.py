@@ -436,7 +436,9 @@ def create_app(node: ChordNode) -> Flask:
     @app.get("/chat")
     def chat_alias():
         return send_from_directory(_STATIC_DIR, "chat.html")
-
+    @app.get("/recovery")
+    def recovery():
+        return send_from_directory(_STATIC_DIR, "recovery.html")
     # ------------------------------------------------------------------
     # Dashboard API — ring topology
     # ------------------------------------------------------------------

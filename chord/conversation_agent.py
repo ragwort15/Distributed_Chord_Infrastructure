@@ -436,7 +436,7 @@ class ScriptedAgent:
         else:
             state = {"step": "INIT", "data": {}}
             reply = "Hi! Would you like to execute a [1] Script or [2] Binary?"
-
+        
         return self._return(history, message, reply, state, action)
 
     def _submit(self, data: Dict[str, Any], worker_id: Optional[str]):
