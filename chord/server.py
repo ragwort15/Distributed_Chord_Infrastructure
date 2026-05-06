@@ -1048,6 +1048,170 @@ def create_app(node: ChordNode) -> Flask:
     def debug_worker_metrics():
         return jsonify(worker_registry.metrics_snapshot())
 
+    @app.get("/api/dht/contents")
+    def api_dht_contents():
+        """
+        Aggregate the two distributed hash tables across the ring:
+          HT1 = result:<task_id> records (task details)
+          HT2 = worker:<worker_id> queues (assigned task_ids)
+        Returns per-node key counts + per-key primary/replicas.
+        """
+        # Walk ring (mirror of /api/ring's walk) — collect each node's data_keys
+        nodes_seen: Dict[int, Dict] = {}
+        try:
+            self_state = {
+                "node_id": node.node_id,
+                "address": node.address,
+                "successor": node.successor,
+                "data_keys": list(node.data_store.keys()),
+            }
+            nodes_seen[node.node_id] = self_state
+            cur = node.successor
+            guard = 0
+            while cur and cur["id"] not in nodes_seen and guard < 64:
+                guard += 1
+                try:
+                    r = _requests.get(f"http://{cur['address']}/chord/state", timeout=1.0)
+                    if not r.ok:
+                        break
+                    s = r.json()
+                    nodes_seen[s["node_id"]] = s
+                    cur = s.get("successor")
+                except Exception:
+                    break
+        except Exception as e:
+            logger.warning("[dht/contents] ring walk failed: %s", e)
+
+        # Build successor list ordered by node_id walking the ring
+        ordered = sorted(nodes_seen.values(), key=lambda n: n["node_id"])
+        node_count = len(ordered)
+
+        # Unique keys + which node has each
+        all_keys: Dict[str, List[int]] = {}  # key -> list of node_ids that store it
+        for n in ordered:
+            for k in (n.get("data_keys") or []):
+                all_keys.setdefault(k, []).append(n["node_id"])
+
+        def replicas_for(primary_id: int) -> List[int]:
+            if node_count <= 1:
+                return []
+            ids = [n["node_id"] for n in ordered]
+            try:
+                idx = ids.index(primary_id)
+            except ValueError:
+                return []
+            return [ids[(idx + 1) % node_count], ids[(idx + 2) % node_count]][:max(0, node_count - 1)]
+
+        ht1_rows: List[Dict] = []
+        ht2_rows: List[Dict] = []
+        for key in sorted(all_keys.keys()):
+            key_id = sha1_id(key)
+            try:
+                primary = node.find_successor(key_id)
+                primary_id = primary.get("id")
+            except Exception:
+                primary_id = None
+            reps = replicas_for(primary_id) if primary_id is not None else []
+            try:
+                value = node.get(key)
+            except Exception:
+                value = None
+            if key.startswith("result:"):
+                v = value if isinstance(value, dict) else {}
+                ht1_rows.append({
+                    "key": key,
+                    "task_id": key[len("result:"):],
+                    "task_type": v.get("task_type"),
+                    "status": v.get("status"),
+                    "worker_id": v.get("worker_id"),
+                    "result": v.get("result"),
+                    "owner": primary_id,
+                    "replicas": reps,
+                })
+            elif key.startswith("worker:"):
+                if isinstance(value, dict):
+                    tasks = list(value.get("tasks") or [])
+                elif isinstance(value, list):
+                    tasks = value
+                else:
+                    tasks = []
+                ht2_rows.append({
+                    "key": key,
+                    "worker_id": key[len("worker:"):],
+                    "task_count": len(tasks),
+                    "task_ids": tasks,
+                    "owner": primary_id,
+                    "replicas": reps,
+                })
+
+        per_node = []
+        for n in ordered:
+            ht1 = sum(1 for k in (n.get("data_keys") or []) if k.startswith("result:"))
+            ht2 = sum(1 for k in (n.get("data_keys") or []) if k.startswith("worker:"))
+            per_node.append({
+                "node_id": n["node_id"],
+                "address": n["address"],
+                "ht1": ht1,
+                "ht2": ht2,
+                "total": len(n.get("data_keys") or []),
+            })
+
+        return jsonify({
+            "nodes": per_node,
+            "ht1": ht1_rows,
+            "ht2": ht2_rows,
+            "this_node": node.node_id,
+        })
+
+    # Workers spawned via the dashboard — pid tracked here so we can kill them.
+    _worker_pids: Dict[str, int] = {}
+
+    @app.post("/api/workers/spawn")
+    def api_spawn_worker():
+        body = request.get_json(silent=True) or {}
+        requested = (body.get("worker_id") or "").strip()
+        if requested:
+            wid = requested
+        else:
+            existing = set(worker_registry.live_workers()) | set(_worker_pids.keys())
+            n = 1
+            while f"w{n}" in existing:
+                n += 1
+            wid = f"w{n}"
+        if wid in _worker_pids:
+            return jsonify({"ok": False, "error": f"worker {wid} already running"}), 409
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "chord.task_runner",
+                 "--worker-id", wid,
+                 "--frontend-url", f"http://{node.address}"],
+                cwd=project_root,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _worker_pids[wid] = proc.pid
+            logger.info(f"[API] Spawned worker {wid} pid={proc.pid}")
+            return jsonify({"ok": True, "worker_id": wid, "pid": proc.pid})
+        except Exception as e:
+            logger.error(f"[API] Failed to spawn worker {wid}: {e}", exc_info=True)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.post("/api/workers/<wid>/kill")
+    def api_kill_worker(wid):
+        pid = _worker_pids.get(wid)
+        if not pid:
+            return jsonify({"ok": False, "error": f"unknown worker {wid} (not spawned by this server)"}), 404
+        try:
+            os.kill(pid, 9)
+            _worker_pids.pop(wid, None)
+            return jsonify({"ok": True})
+        except ProcessLookupError:
+            _worker_pids.pop(wid, None)
+            return jsonify({"ok": True, "note": "already dead"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     @app.get("/workers/status")
     def workers_status():
         """
