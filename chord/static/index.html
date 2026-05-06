@@ -1373,11 +1373,10 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 
     <!-- ══════════════ PAGE: ACTIVITY LOG ══════════════ -->
     <div class="page" id="page-agent">
-      <div class="grid g4" style="gap:16px;margin-bottom:16px">
+      <div class="grid g3" style="gap:16px;margin-bottom:16px">
         <div class="stat-card"><div class="stat-label">Total Events</div><div class="stat-value" id="ag-total">—</div></div>
         <div class="stat-card ok"><div class="stat-label">Node Events</div><div class="stat-value" id="ag-nodes">—</div></div>
         <div class="stat-card info"><div class="stat-label">Worker Events</div><div class="stat-value" id="ag-workers">—</div></div>
-        <div class="stat-card warn"><div class="stat-label">Job Events</div><div class="stat-value" id="ag-jobs">—</div></div>
       </div>
       <div class="card">
         <div class="card-header">
@@ -2692,34 +2691,36 @@ const ACTIVITY_META = {
 
 const NODE_TYPES   = new Set(['node_join','node_remove','node_fail']);
 const WORKER_TYPES = new Set(['worker_join','worker_leave']);
-const JOB_TYPES    = new Set(['job_submit','job_claim','job_done','job_failed','job_retry','job_recover']);
+// Job events are intentionally excluded — they belong on the Workloads page
+const ACTIVITY_SHOW = new Set([...NODE_TYPES, ...WORKER_TYPES, 'ring']);
 
 function renderAgentLog(entries){
   const wrap=document.getElementById('agent-log-wrap');if(!wrap)return;
 
-  if(!entries.length){
-    wrap.innerHTML='<div class="empty-state"><div class="icon">📡</div><p>No activity yet — add nodes or submit jobs to see the event stream</p></div>';
-    ['ag-total','ag-nodes','ag-workers','ag-jobs'].forEach(id=>{
+  // Filter out job lifecycle events
+  const visible = entries.filter(e => ACTIVITY_SHOW.has(e.type||'ring') || !e.type);
+
+  if(!visible.length){
+    wrap.innerHTML='<div class="empty-state"><div class="icon">📡</div><p>No activity yet — add or remove nodes to see the event stream</p></div>';
+    ['ag-total','ag-nodes','ag-workers'].forEach(id=>{
       const el=document.getElementById(id); if(el) el.textContent='0';
     });
     return;
   }
 
   // Count by group for stat cards
-  let nodeEvts=0, workerEvts=0, jobEvts=0;
-  entries.forEach(e=>{
+  let nodeEvts=0, workerEvts=0;
+  visible.forEach(e=>{
     const t=e.type||'';
     if(NODE_TYPES.has(t))        nodeEvts++;
     else if(WORKER_TYPES.has(t)) workerEvts++;
-    else if(JOB_TYPES.has(t))    jobEvts++;
   });
-  document.getElementById('ag-total').textContent   = entries.length;
+  document.getElementById('ag-total').textContent   = visible.length;
   document.getElementById('ag-nodes').textContent   = nodeEvts;
   document.getElementById('ag-workers').textContent = workerEvts;
-  document.getElementById('ag-jobs').textContent    = jobEvts;
 
   // Render newest-first
-  wrap.innerHTML=[...entries].reverse().map(e=>{
+  wrap.innerHTML=[...visible].reverse().map(e=>{
     const evType = e.type || 'ring';
     const meta   = ACTIVITY_META[evType] || { icon:'📡', cls:'ev-ring' };
     const t      = new Date((e.ts||0)*1000).toLocaleTimeString();
