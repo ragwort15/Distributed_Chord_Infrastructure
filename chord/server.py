@@ -1294,6 +1294,22 @@ def create_app(node: ChordNode) -> Flask:
                 value = None
             if key.startswith("result:"):
                 v = value if isinstance(value, dict) else {}
+                def _to_epoch_ms(x):
+                    if isinstance(x, (int, float)):
+                        return int(x * 1000) if x < 1e12 else int(x)
+                    if isinstance(x, str) and x:
+                        try:
+                            from datetime import datetime as _dt
+                            s = x.replace("Z", "+00:00")
+                            return int(_dt.fromisoformat(s).timestamp() * 1000)
+                        except Exception:
+                            return None
+                    return None
+                created_ms = _to_epoch_ms(v.get("created_at"))
+                updated_ms = _to_epoch_ms(v.get("updated_at"))
+                duration_s = None
+                if created_ms is not None and updated_ms is not None:
+                    duration_s = round((updated_ms - created_ms) / 1000.0, 3)
                 ht1_rows.append({
                     "key": key,
                     "task_id": key[len("result:"):],
@@ -1301,6 +1317,9 @@ def create_app(node: ChordNode) -> Flask:
                     "status": v.get("status"),
                     "worker_id": v.get("worker_id"),
                     "result": v.get("result"),
+                    "created_at": created_ms,
+                    "updated_at": updated_ms,
+                    "duration_s": duration_s,
                     "owner": primary_id,
                     "replicas": reps,
                 })
@@ -1660,15 +1679,31 @@ def create_app(node: ChordNode) -> Flask:
 
     @app.post("/api/workers/<wid>/kill")
     def api_kill_worker(wid):
+        # Try the dashboard-tracked PID first; if absent, fall back to pgrep
+        # so we can also kill workers launched from the terminal.
         pid = _worker_pids.get(wid)
         if not pid:
-            return jsonify({"ok": False, "error": f"unknown worker {wid} (not spawned by this server)"}), 404
+            try:
+                out = subprocess.check_output(
+                    ["pgrep", "-f", f"chord.task_runner.*--worker-id {wid}"],
+                    text=True,
+                ).strip()
+                pids = [int(x) for x in out.splitlines() if x.strip()]
+                if pids:
+                    pid = pids[0]
+            except subprocess.CalledProcessError:
+                pid = None
+            except FileNotFoundError:
+                # pgrep not available — give up
+                pid = None
+        if not pid:
+            return jsonify({"ok": False, "error": f"no process found for worker {wid}"}), 404
         try:
             os.kill(pid, 9)
             _worker_pids.pop(wid, None)
-            try: _obs_event("worker_killed", f"worker {wid} stopped", worker_id=wid)
+            try: _obs_event("worker_killed", f"worker {wid} stopped (pid {pid})", worker_id=wid, pid=pid)
             except Exception: pass
-            return jsonify({"ok": True})
+            return jsonify({"ok": True, "pid": pid})
         except ProcessLookupError:
             _worker_pids.pop(wid, None)
             return jsonify({"ok": True, "note": "already dead"})

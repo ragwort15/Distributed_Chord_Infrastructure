@@ -1161,6 +1161,11 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
               <button class="btn btn-ghost" data-demo-count="100" style="flex:1;justify-content:center;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.4)">Demo 100</button>
             </div>
           </div>
+          <div style="margin-top:6px;padding-top:8px;border-top:1px dashed rgba(255,255,255,.08)">
+            <div style="font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-bottom:6px">Fault-tolerance demo · kill a busy worker, watch tasks survive</div>
+            <button class="btn btn-danger btn-sm" id="btn-kill-busy" style="padding:5px 12px;font-size:11.5px;align-self:flex-start">🔪 Kill Busy Worker</button>
+            <div id="kill-survivor-panel" style="margin-top:8px;display:none;padding:10px;background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-family:var(--mono);font-size:11.5px"></div>
+          </div>
           <div id="task-reg-results" style="display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:11.5px"></div>
           <div style="margin-top:6px;padding-top:10px;border-top:1px dashed rgba(255,255,255,.08)">
             <div style="font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-bottom:6px">HT2 — Worker Queues</div>
@@ -3373,6 +3378,26 @@ function _appendTaskResult(line, ok=true){
   box.prepend(row);
   while(box.children.length > 6) box.lastChild.remove();
 }
+function _showTaskCreatedToast(taskId, workerId){
+  let host = document.getElementById('task-toast-host');
+  if(!host){
+    host = document.createElement('div');
+    host.id = 'task-toast-host';
+    host.style.cssText = 'position:fixed;top:80px;right:24px;z-index:10000;display:flex;flex-direction:column;gap:8px;pointer-events:none';
+    document.body.appendChild(host);
+  }
+  const t = document.createElement('div');
+  t.style.cssText = 'pointer-events:auto;padding:12px 16px;background:linear-gradient(135deg,rgba(16,185,129,.18),rgba(20,25,38,.96));border:1px solid rgba(16,185,129,.5);border-radius:10px;color:var(--tx-1);font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.4);display:flex;align-items:center;gap:10px;min-width:240px;animation:dht-toast-in .25s ease';
+  t.innerHTML = `
+    <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:#10b981;color:#0b1018;font-weight:900">✓</span>
+    <div style="flex:1">
+      <div>Task created</div>
+      <div style="font-weight:400;font-size:11px;color:var(--tx-3);font-family:var(--mono);margin-top:2px">${taskId}${workerId?` → ${workerId}`:''}</div>
+    </div>`;
+  host.appendChild(t);
+  setTimeout(()=>{ t.style.cssText += ';animation:dht-toast-out .3s ease forwards'; setTimeout(()=>t.remove(), 300); }, 2200);
+}
+
 async function submitOneTask(){
   const taskType = document.getElementById('task-reg-type').value;
   const payload  = document.getElementById('task-reg-payload').value.trim();
@@ -3388,6 +3413,7 @@ async function submitOneTask(){
   const d = await r.json();
   if(r.ok && d.task_id){
     _appendTaskResult(`✓ Task ${d.task_id} → assigned to ${d.worker_id || '—'}`, true);
+    _showTaskCreatedToast(d.task_id, d.worker_id);
   } else {
     _appendTaskResult(`✕ ${d.reason || d.error || 'failed'}`, false);
   }
@@ -3419,6 +3445,132 @@ document.getElementById('btn-register-task')?.addEventListener('click', async ()
   finally{ btn.disabled = false; }
 });
 // Demo 10/25/100 buttons — fire N tasks via /api/demo/run (server-side bg thread).
+/* ─── Fault-tolerance demo: kill a busy worker and watch tasks survive ─── */
+document.getElementById('btn-kill-busy')?.addEventListener('click', async ()=>{
+  const btn = document.getElementById('btn-kill-busy');
+  const panel = document.getElementById('kill-survivor-panel');
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  panel.style.display = 'block';
+  panel.innerHTML = '<span style="color:var(--tx-3)">looking for a busy worker…</span>';
+  btn.disabled = true;
+  try{
+    // Find a busy worker via /workers/status (status='busy' means it has pending tasks)
+    const ws = await (await fetch('/workers/status',{cache:'no-store'})).json();
+    const busy = (ws.workers||[]).filter(w=>w.status==='busy');
+    if(!busy.length){
+      panel.innerHTML = '<span style="color:#fcd34d">⚠ no workers are busy — submit a long task first (try a Demo button)</span>';
+      btn.disabled = false; return;
+    }
+    const target = busy[0].worker_id;
+    // Pull its assigned task IDs from HT2
+    const dht = await (await fetch('/api/dht/contents',{cache:'no-store'})).json();
+    const ht2row = (dht.ht2||[]).find(r=>r.worker_id===target);
+    const orphans = (ht2row?.task_ids || []).slice();
+    panel.innerHTML = `
+      <div style="color:#fca5a5;font-weight:700;margin-bottom:6px">🔪 killing ${esc(target)} mid-flight</div>
+      <div style="color:var(--tx-3)">orphaning ${orphans.length} task${orphans.length===1?'':'s'}: ${orphans.map(t=>`<span style="color:#fcd34d">${esc(t)}</span>`).join(', ') || '(none yet)'}</div>
+    `;
+    // Kill it
+    const kr = await fetch(`/api/workers/${encodeURIComponent(target)}/kill`,{method:'POST'});
+    const kd = await kr.json();
+    if(!kd.ok){
+      panel.innerHTML += `<div style="color:#fca5a5;margin-top:4px">✕ kill failed: ${esc(kd.error||'unknown')}</div>`;
+      btn.disabled = false; return;
+    }
+    if(!orphans.length){
+      panel.innerHTML += '<div style="color:var(--tx-3);margin-top:6px">no in-flight tasks to track. try again with a busier worker.</div>';
+      btn.disabled = false; return;
+    }
+    // Render tracker rows + a live recovery-event feed
+    const trackerHtml = orphans.map(t =>
+      `<div data-tid="${esc(t)}" style="display:flex;gap:8px;align-items:center;padding:3px 0"><span style="min-width:14px">⏳</span><span style="color:#fcd34d;flex:1;font-size:11px">${esc(t)}</span><span class="prev" style="color:var(--tx-3);font-size:10.5px">was on <b style="color:#fca5a5">${esc(target)}</b></span><span class="status" style="margin-left:8px">tracking…</span></div>`
+    ).join('');
+    panel.innerHTML += `
+      <div style="margin-top:10px;padding-top:8px;border-top:1px dashed rgba(255,255,255,.08)">
+        <div style="font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-bottom:6px">Survival tracker</div>
+        <div id="kill-survivor-rows">${trackerHtml}</div>
+      </div>
+      <div style="margin-top:10px;padding-top:8px;border-top:1px dashed rgba(255,255,255,.08)">
+        <div style="font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-bottom:6px">Live recovery feed</div>
+        <div id="kill-events" style="font-size:10.5px;display:flex;flex-direction:column;gap:2px;max-height:140px;overflow-y:auto"><span style="color:var(--tx-3)">waiting for recovery agent…</span></div>
+      </div>
+    `;
+    // Poll each task until SUCCESS/FAILURE, with a 120 s budget. Also stream
+    // recovery events from /api/observability/events into the live feed so
+    // the audience sees the recovery agent acting in real time.
+    const rows = panel.querySelector('#kill-survivor-rows');
+    const feed = panel.querySelector('#kill-events');
+    const remaining = new Set(orphans);
+    const deadline = Date.now() + 120_000;
+    const startTs = Math.floor(Date.now() / 1000);
+    let lastEventTs = startTs;
+    let feedPrimed = false;
+    while(remaining.size && Date.now() < deadline){
+      await new Promise(r=>setTimeout(r, 1500));
+      // 1) Status poll for each remaining task
+      for(const tid of Array.from(remaining)){
+        try{
+          const sr = await fetch(`/getStatus/${encodeURIComponent(tid)}`,{cache:'no-store'});
+          const sb = await sr.json();
+          const row = rows.querySelector(`[data-tid="${CSS.escape(tid)}"]`);
+          // Show interim "reassigned to wY" once worker_id changes from killed one
+          if(row && sb.worker_id && sb.worker_id !== target && sb.status === 'PENDING'){
+            row.querySelector('.status').innerHTML =
+              `<span style="color:#a5b4fc">↻ reassigned to <b>${esc(sb.worker_id)}</b></span>`;
+            row.querySelector('span:first-child').textContent = '↻';
+          }
+          if(sb.status === 'SUCCESS' || sb.status === 'FAILURE'){
+            if(row){
+              const ok = sb.status === 'SUCCESS';
+              row.querySelector('span:first-child').textContent = ok ? '✅' : '❌';
+              row.querySelector('.status').innerHTML =
+                `<span style="color:${ok?'#86efac':'#fca5a5'}">${sb.status}</span> on <b>${esc(sb.worker_id || '?')}</b> ${sb.assigned_by ? `<span style="color:var(--tx-3)">(${esc(sb.assigned_by)})</span>` : ''}`;
+            }
+            remaining.delete(tid);
+          }
+        }catch{}
+      }
+      // 2) Recovery / kill events from the obs log
+      try{
+        const er = await fetch('/api/observability/events',{cache:'no-store'});
+        const ed = await er.json();
+        const newEvents = (ed.events||[]).filter(e =>
+          e.ts > lastEventTs &&
+          (e.kind === 'worker_killed' || e.kind === 'rebalance' || e.kind === 'task_succeeded' || e.kind === 'task_failed' || e.kind === 'recovery')
+        );
+        if(newEvents.length){
+          if(!feedPrimed){ feed.innerHTML = ''; feedPrimed = true; }
+          for(const e of newEvents){
+            lastEventTs = Math.max(lastEventTs, e.ts);
+            const dt = new Date(e.ts*1000);
+            const ts = `${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}:${String(dt.getSeconds()).padStart(2,'0')}`;
+            const icon = e.kind === 'worker_killed' ? '🔪'
+                       : e.kind === 'task_succeeded' ? '✅'
+                       : e.kind === 'task_failed' ? '❌'
+                       : e.kind === 'rebalance' ? '⚖️'
+                       : '•';
+            const line = document.createElement('div');
+            line.style.cssText = 'display:flex;gap:6px;align-items:flex-start';
+            line.innerHTML = `<span style="color:var(--tx-3);min-width:54px">${ts}</span><span>${icon}</span><span style="color:var(--tx-2)">${esc(e.message)}</span>`;
+            feed.appendChild(line);
+          }
+          // auto-scroll
+          feed.scrollTop = feed.scrollHeight;
+        }
+      }catch{}
+    }
+    if(remaining.size){
+      panel.innerHTML += `<div style="margin-top:8px;color:#fcd34d">⏱ ${remaining.size} task${remaining.size===1?'':'s'} still pending after 90s — recovery may need more time.</div>`;
+    } else {
+      panel.innerHTML += `<div style="margin-top:8px;color:#86efac;font-weight:700">✓ All ${orphans.length} task${orphans.length===1?'':'s'} survived the worker kill — at-least-once execution proven.</div>`;
+    }
+  }catch(e){
+    panel.innerHTML += `<div style="color:#fca5a5;margin-top:4px">✕ ${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 document.querySelectorAll('[data-demo-count]').forEach(btn=>{
   btn.addEventListener('click', async ()=>{
     const count = parseInt(btn.getAttribute('data-demo-count'), 10) || 10;
