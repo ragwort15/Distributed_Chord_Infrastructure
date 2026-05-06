@@ -61,3 +61,48 @@ PREDECESSOR_FAILURES = Counter(
     'Number of times predecessor was detected as dead',
     ['node_id'],
 )
+
+# ── Worker metrics ─────────────────────────────────────────────────
+WORKERS_LIVE = Gauge(
+    'chord_workers_live',
+    'Number of workers currently heartbeating',
+    ['node_id'],
+)
+WORKERS_IDLE = Gauge(
+    'chord_workers_idle',
+    'Number of live workers with no PENDING tasks',
+    ['node_id'],
+)
+WORKERS_BUSY = Gauge(
+    'chord_workers_busy',
+    'Number of live workers with at least one PENDING task',
+    ['node_id'],
+)
+WORKERS_DEAD = Gauge(
+    'chord_workers_dead',
+    'Number of workers known but not heartbeating',
+    ['node_id'],
+)
+
+# ── Task lifecycle metrics (HT1) ───────────────────────────────────
+TASKS_PENDING = Gauge(
+    'chord_tasks_pending',
+    'Number of HT1 records currently in PENDING state',
+    ['node_id'],
+)
+TASKS_SUCCESS = Gauge(
+    'chord_tasks_success',
+    'Number of HT1 records currently in SUCCESS state',
+    ['node_id'],
+)
+TASKS_FAILURE = Gauge(
+    'chord_tasks_failure',
+    'Number of HT1 records currently in FAILURE state',
+    ['node_id'],
+)
+TASK_DURATION = Histogram(
+    'chord_task_duration_seconds',
+    'End-to-end task execution duration as reported by workers',
+    ['node_id', 'status'],
+    buckets=[0.5, 1, 2, 3, 5, 8, 13, 21, 30, 60],
+)

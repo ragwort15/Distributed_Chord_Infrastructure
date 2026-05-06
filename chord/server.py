@@ -18,6 +18,7 @@ from chord.node import ChordNode, sha1_id
 from chord.transport import HttpTransport
 from chord.job import make_job, job_key, ACTIVE_STATUSES, PENDING
 from chord.dummy_client import file_type
+import chord.activity as activity
 from chord.metrics_registry import (
     FILE_REQUESTS, FILE_REQUEST_HOPS, FILE_REQUEST_DURATION,
     QUEUE_DEPTH, RING_SIZE, DATA_KEYS, STABILIZE_RUNS,
@@ -45,11 +46,26 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # In-memory request log — last 100 entries, shared across all threads
 _request_log: List[Dict] = []
 _request_lock = threading.Lock()
+_request_log_path = pathlib.Path(os.environ.get("REQUEST_LOG_PATH", "request_log.jsonl"))
 
 
 def create_app(node: ChordNode) -> Flask:
+    global _request_log
     app = Flask(__name__)
     app.config["node"] = node
+
+    # Load persisted request log on startup
+    if _request_log_path.exists():
+        try:
+            lines = _request_log_path.read_text().strip().splitlines()
+            for line in lines[-100:]:  # Keep last 100 entries
+                try:
+                    _request_log.append(json.loads(line))
+                except Exception:
+                    pass
+            logger.info(f"[Server] Loaded {len(_request_log)} persisted request log entries")
+        except Exception as e:
+            logger.warning(f"[Server] Failed to load request log: {e}")
     task_service = TaskService(node=node, transport=node._transport)
 
     # Phase 2: live worker registry + conversational agent.  Storage is
@@ -68,9 +84,22 @@ def create_app(node: ChordNode) -> Flask:
     app.config["result_service"] = result_service
     app.config["worker_assignment_service"] = worker_assignment_service
 
-    # Phase 7: recovery manager (started later in start_node after join)
-    recovery_manager = RecoveryManager(result_service, worker_assignment_service, worker_registry)
+    # Phase 7: Recovery manager daemon for intelligent failure recovery.
+    # The spawn callback is bound later (after _spawn_worker_internal is defined);
+    # we pass a thin trampoline so RecoveryManager can call it.
+    _spawn_callback_holder: Dict[str, object] = {}
+    def _spawn_trampoline():
+        fn = _spawn_callback_holder.get("fn")
+        return fn() if fn else None
+    recovery_manager = RecoveryManager(
+        result_service,
+        worker_assignment_service,
+        worker_registry,
+        on_no_workers=_spawn_trampoline,
+    )
     app.config["recovery_manager"] = recovery_manager
+    recovery_manager.start()
+    logger.info("[Server] RecoveryManager started")
 
     _conv_agent_holder: Dict[str, ConversationAgent] = {}
 
@@ -262,80 +291,86 @@ def create_app(node: ChordNode) -> Flask:
         """
         Body: {"type": str, "payload": {}, "replicas": int (optional)}
         The agent selects the target node; the job key is engineered to hash there.
-        Always returns JSON — never lets Flask produce an HTML 500.
         """
-        try:
-            body = request.get_json(force=True) or {}
-            job_type = body.get("type", "echo")
-            payload = body.get("payload", {})
-            requested_replicas = int(body.get("replicas", 1))
+        body = request.get_json(force=True) or {}
+        job_type = body.get("type", "echo")
+        payload = body.get("payload", {})
+        requested_replicas = int(body.get("replicas", 1))
 
-            valid_types = {"echo", "sleep", "compute"}
-            if job_type not in valid_types:
-                return jsonify({"ok": False, "error": f"Unknown job type '{job_type}'. Valid: {sorted(valid_types)}"}), 400
-            if requested_replicas < 1 or requested_replicas > 10:
-                return jsonify({"ok": False, "error": "replicas must be between 1 and 10"}), 400
+        valid_types = {"echo", "sleep", "compute"}
+        if job_type not in valid_types:
+            return jsonify({"error": f"Unknown job type '{job_type}'. Valid: {sorted(valid_types)}"}), 400
+        if requested_replicas < 1 or requested_replicas > 10:
+            return jsonify({"error": "replicas must be between 1 and 10"}), 400
 
-            agent = app.config.get("agent")
-            transport = node._transport
+        agent = app.config.get("agent")
+        transport = node._transport
 
-            # Collect ring metrics (self + reachable fingers)
-            ring_metrics = _collect_ring_metrics(node, transport)
+        # Collect ring metrics (self + reachable fingers)
+        ring_metrics = _collect_ring_metrics(node, transport)
 
-            job = make_job(job_type, payload)
+        job = make_job(job_type, payload)
 
-            # --- Placement decision ---
-            if agent and ring_metrics:
-                placement = agent.select_placement(job, ring_metrics)
-                target_node_id = placement["node_id"]
-                placement_reasoning = placement["reasoning"]
-            else:
-                # No agent or metrics — fall back to standard Chord routing
-                key_id = sha1_id(job_key(job["job_id"]))
-                responsible = node.find_successor(key_id)
-                target_node_id = responsible["id"]
-                placement_reasoning = "no-agent fallback: standard Chord routing"
+        # --- Placement decision ---
+        if agent and ring_metrics:
+            placement = agent.select_placement(job, ring_metrics)
+            target_node_id = placement["node_id"]
+            placement_reasoning = placement["reasoning"]
+        else:
+            # No agent or metrics — fall back to standard Chord routing
+            key_id = sha1_id(job_key(job["job_id"]))
+            responsible = node.find_successor(key_id)
+            target_node_id = responsible["id"]
+            placement_reasoning = "no-agent fallback: standard Chord routing"
 
-            # --- Replication decision ---
-            replica_node_ids = []
-            if agent and ring_metrics and requested_replicas > 1:
-                rep_plan = agent.decide_replication(job, ring_metrics, requested_replicas)
-                target_node_id = rep_plan["primary_node_id"]
-                replica_node_ids = rep_plan.get("replica_node_ids", [])
-                requested_replicas = rep_plan.get("replication_factor", 1)
+        # --- Replication decision ---
+        replica_node_ids = []
+        if agent and ring_metrics and requested_replicas > 1:
+            rep_plan = agent.decide_replication(job, ring_metrics, requested_replicas)
+            target_node_id = rep_plan["primary_node_id"]
+            replica_node_ids = rep_plan.get("replica_node_ids", [])
+            requested_replicas = rep_plan.get("replication_factor", 1)
 
-            # Find address of chosen target
-            target_address = _address_for(node, transport, target_node_id)
+        # Find address of chosen target
+        target_address = _address_for(node, transport, target_node_id)
 
-            # Store primary copy
-            primary_key = _store_job(node, transport, job, target_address, target_node_id)
+        # Store primary copy
+        primary_key = _store_job(node, transport, job, target_address, target_node_id)
 
-            # Store replicas
-            replica_results = []
-            for rid in replica_node_ids:
-                if rid == target_node_id:
-                    continue
-                replica_address = _address_for(node, transport, rid)
-                replica_job = dict(job)
-                replica_job["replica_of"] = job["job_id"]
-                try:
-                    rkey = _store_job(node, transport, replica_job, replica_address, rid)
-                    replica_results.append({"node_id": rid, "key": rkey})
-                except Exception as e:
-                    logger.warning(f"[Server] Replica to node {rid} failed: {e}")
+        # Store replicas
+        replica_results = []
+        for rid in replica_node_ids:
+            if rid == target_node_id:
+                continue
+            replica_address = _address_for(node, transport, rid)
+            replica_job = dict(job)
+            replica_job["replica_of"] = job["job_id"]
+            try:
+                rkey = _store_job(node, transport, replica_job, replica_address, rid)
+                replica_results.append({"node_id": rid, "key": rkey})
+            except Exception as e:
+                logger.warning(f"[Server] Replica to node {rid} failed: {e}")
 
-            return jsonify({
-                "ok": True,
-                "job_id": job["job_id"],
-                "primary_key": primary_key,
-                "stored_at_node": target_node_id,
-                "placement_reasoning": placement_reasoning,
-                "replicas": replica_results,
-            }), 201
+        # Activity log — job submitted
+        jid_short = job["job_id"][:12]
+        strat = placement_reasoning[:60] if placement_reasoning else "—"
+        replica_note = f" + {len(replica_results)} replica(s)" if replica_results else ""
+        activity.log(
+            activity.JOB_SUBMIT,
+            f"Job {jid_short}… ({job_type}) → Node {target_node_id}{replica_note}",
+            {"job_id": job["job_id"], "job_type": job_type,
+             "node_id": target_node_id, "reasoning": strat,
+             "replicas": len(replica_results)},
+        )
 
-        except Exception as exc:
-            logger.error(f"[Server] submit_job unhandled error: {exc}", exc_info=True)
-            return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({
+            "ok": True,
+            "job_id": job["job_id"],
+            "primary_key": primary_key,
+            "stored_at_node": target_node_id,
+            "placement_reasoning": placement_reasoning,
+            "replicas": replica_results,
+        }), 201
 
     @app.get("/jobs")
     def list_jobs():
@@ -434,8 +469,7 @@ def create_app(node: ChordNode) -> Flask:
     def chat_alias():
         return send_from_directory(_STATIC_DIR, "chat.html")
 
-<<<<<<< Updated upstream
-=======
+
     @app.get("/live")
     def live_view():
         return send_from_directory(_STATIC_DIR, "live.html")
@@ -552,13 +586,11 @@ def create_app(node: ChordNode) -> Flask:
             "ring_metrics": ring_metrics,
         }), 201
 
->>>>>>> Stashed changes
+
     @app.get("/recovery")
-    def recovery_dashboard():
-        """Phase 7 — live failure & recovery dashboard."""
+    def recovery():
         return send_from_directory(_STATIC_DIR, "recovery.html")
 
-<<<<<<< Updated upstream
     # ------------------------------------------------------------------
     # Presentation page
     # ------------------------------------------------------------------
@@ -574,13 +606,7 @@ def create_app(node: ChordNode) -> Flask:
     def presentation_assets(filename):
         return send_from_directory(_PRESENTATION_DIR, filename)
 
-=======
-    @app.get("/presentation")
-    def presentation():
-        return send_from_directory(
-            os.path.join(_STATIC_DIR, "presentation"), "index.html"
-        )
->>>>>>> Stashed changes
+
     # ------------------------------------------------------------------
     # Dashboard API — ring topology
     # ------------------------------------------------------------------
@@ -668,22 +694,70 @@ def create_app(node: ChordNode) -> Flask:
         return jsonify({"jobs": jobs[:60]})
 
     # ------------------------------------------------------------------
-    # Dashboard API — agent decision log
+    # Dashboard API — real-time ring activity feed
     # ------------------------------------------------------------------
+
+    @app.get("/chord/activity_local")
+    def chord_activity_local():
+        """Return this node's local activity entries (called by /api/activity aggregator)."""
+        return jsonify({"entries": activity.get_entries(100)})
 
     @app.get("/api/logs")
     def api_logs():
-        log_path = pathlib.Path(os.environ.get("AGENT_LOG_PATH", "agent_decisions.jsonl"))
-        if not log_path.exists():
-            return jsonify({"entries": []})
-        lines = log_path.read_text().strip().splitlines()
-        entries = []
-        for line in lines[-40:]:
+        """
+        Returns the merged activity feed from all reachable ring nodes, newest first.
+        Falls back gracefully if peer nodes are unreachable.
+        """
+        # Collect addresses of all ring nodes via finger table
+        ring_addrs = {node.address}
+        for f in node.fingers:
+            if f.node_address:
+                ring_addrs.add(f.node_address)
+
+        all_entries: List[Dict] = []
+
+        # Fetch local entries
+        all_entries.extend(activity.get_entries(100))
+
+        # Fetch from peer nodes
+        for addr in ring_addrs:
+            if addr == node.address:
+                continue
             try:
-                entries.append(json.loads(line))
+                r = _requests.get(f"http://{addr}/chord/activity_local", timeout=1.5)
+                peer_entries = r.json().get("entries", [])
+                all_entries.extend(peer_entries)
             except Exception:
                 pass
-        return jsonify({"entries": entries})
+
+        # Also include the file-based agent decision log (backward compat)
+        log_path = pathlib.Path(os.environ.get("AGENT_LOG_PATH", "agent_decisions.jsonl"))
+        if log_path.exists():
+            try:
+                lines = log_path.read_text().strip().splitlines()
+                for line in lines[-40:]:
+                    try:
+                        e = json.loads(line)
+                        # Convert to activity format for the renderer
+                        e.setdefault("type", "agent")
+                        e.setdefault("msg", f"{e.get('agent','Agent')} · {e.get('tool','')} · {e.get('strategy','')}")
+                        all_entries.append(e)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Deduplicate by (ts, msg), sort newest last, return last 150
+        seen = set()
+        unique = []
+        for e in all_entries:
+            key = (round(e.get("ts", 0), 2), e.get("msg", ""))
+            if key not in seen:
+                seen.add(key)
+                unique.append(e)
+
+        unique.sort(key=lambda e: e.get("ts", 0))
+        return jsonify({"entries": unique[-150:]})
 
     # ------------------------------------------------------------------
     # Dashboard API — remove a ring node (proxy to avoid CORS)
@@ -691,6 +765,15 @@ def create_app(node: ChordNode) -> Flask:
 
     @app.delete("/api/nodes/<path:address>")
     def api_remove_node(address):
+        # Resolve node_id for the activity log before the node disappears
+        try:
+            st = _requests.get(f"http://{address}/chord/state", timeout=1).json()
+            leaving_id = st.get("node_id", address)
+        except Exception:
+            leaving_id = address
+        activity.log(activity.NODE_REMOVE,
+                     f"Node {leaving_id} gracefully leaving ring",
+                     {"address": address, "node_id": leaving_id})
         try:
             _requests.post(f"http://{address}/admin/leave", timeout=2)
         except Exception:
@@ -804,6 +887,9 @@ def create_app(node: ChordNode) -> Flask:
                     "port": next_port,
                 }), 500
 
+            activity.log(activity.NODE_JOIN,
+                         f"New node spawning on port {next_port} (joining via {join_addr})",
+                         {"port": next_port, "join_via": join_addr})
             return jsonify({
                 "ok": True,
                 "port": next_port,
@@ -858,9 +944,10 @@ def create_app(node: ChordNode) -> Flask:
                 content = {}
 
         # ── Prometheus instrumentation ──
+        duration_s = time.time() - t0
         FILE_REQUESTS.labels(node_id=nid_str, file_type=ftype).inc()
         FILE_REQUEST_HOPS.labels(node_id=nid_str).observe(hops)
-        FILE_REQUEST_DURATION.labels(node_id=nid_str).observe(time.time() - t0)
+        FILE_REQUEST_DURATION.labels(node_id=nid_str).observe(duration_s)
 
         entry = {
             "ts":             time.time(),
@@ -872,11 +959,18 @@ def create_app(node: ChordNode) -> Flask:
             "served_by_node": responsible["id"],
             "served_by_addr": served_addr,
             "hops":           hops,
+            "duration_ms":    round(duration_s * 1000, 1),
         }
         with _request_lock:
             _request_log.append(entry)
             if len(_request_log) > 100:
                 _request_log.pop(0)
+            # Persist to file
+            try:
+                with _request_log_path.open('a') as f:
+                    f.write(json.dumps(entry) + '\n')
+            except Exception as e:
+                logger.warning(f"[Server] Failed to persist request log: {e}")
 
         return jsonify({
             "ok":             True,
@@ -994,6 +1088,115 @@ def create_app(node: ChordNode) -> Flask:
             "jobs_running":   jobs_running,
             "ring_size":      len(seen),
         })
+    # Configuration endpoint for frontend
+    # ------------------------------------------------------------------
+
+    @app.get("/api/config")
+    def config():
+        """Return frontend config including Grafana URL."""
+        grafana_url = os.environ.get("GRAFANA_URL", "http://localhost:3000")
+        return jsonify({"grafana_url": grafana_url}), 200
+
+    # Recovery API endpoints for monitoring failure detection and recovery
+    # ------------------------------------------------------------------
+
+    @app.get("/api/workers/status")
+    def api_workers_status():
+        """Return status of all workers in the cluster."""
+        try:
+            worker_registry = app.config.get("worker_registry")
+            if not worker_registry:
+                return jsonify({"error": "Worker registry not available"}), 500
+
+            workers = []
+            # Get scores once (includes only live workers)
+            scored = worker_registry.score_all_workers()
+            score_map = dict(scored)
+            
+            for worker_id in worker_registry.live_workers():
+                metrics = worker_registry.get_metrics(worker_id)
+                stats = worker_registry.get_stats(worker_id)
+                score = score_map.get(worker_id, 0.0)
+                
+                workers.append({
+                    "id": worker_id,
+                    "status": "alive",
+                    "pending_tasks": metrics.pending_tasks if metrics else 0,
+                    "latency_ms": metrics.latency_ms if metrics else 0,
+                    "success_rate": stats.success_rate if stats else 0.0,
+                    "score": score,
+                })
+            
+            # Also include recently dead workers
+            live_ids = set(worker_registry.live_workers())
+            for worker_id, _ts, _age in worker_registry.all_workers():
+                if worker_id not in live_ids:
+                    workers.append({
+                        "id": worker_id,
+                        "status": "dead",
+                        "pending_tasks": 0,
+                        "latency_ms": 0,
+                        "success_rate": 0.0,
+                        "score": 0.0,
+                    })
+
+            return jsonify({"workers": workers}), 200
+        except Exception as e:
+            logger.error(f"[/api/workers/status] error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.get("/api/tasks/active")
+    def api_tasks_active():
+        """Return active task count for dashboard visualization."""
+        try:
+            # Simplified: return empty list (0 active tasks)
+            # The frontend uses this to display count: tasks.length
+            return jsonify({"tasks": []}), 200
+        except Exception as e:
+            logger.error(f"[/api/tasks/active] error: {e}")
+            return jsonify({"tasks": []}), 200
+
+    @app.get("/api/recovery/events")
+    def api_events():
+        """Return recovery events for the timeline."""
+        try:
+            recovery_manager = app.config.get("recovery_manager")
+            if not recovery_manager:
+                return jsonify({"events": [], "total_recovery_attempts": 0}), 200
+
+            since = request.args.get("since", default=0.0, type=float)
+            events = recovery_manager.get_events(since)
+
+            # Convert ts -> timestamp for frontend compatibility
+            converted = [{
+                "type": e["type"],
+                "timestamp": e["ts"],
+                "task_id": e["task_id"],
+                "worker_id": e["worker_id"],
+                "message": e["message"],
+            } for e in events]
+
+            # Count retry-type events as recovery attempts
+            attempts = sum(1 for e in converted if e["type"] in ("retry", "wait_retry", "give_up"))
+
+            return jsonify({"events": converted, "total_recovery_attempts": attempts}), 200
+        except Exception as e:
+            logger.error(f"[/api/recovery/events] error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.post("/debug/trigger-recovery")
+    def debug_trigger_recovery():
+        """Manually trigger an immediate recovery scan."""
+        try:
+            recovery_manager = app.config.get("recovery_manager")
+            if not recovery_manager:
+                return jsonify({"error": "Recovery manager not available"}), 500
+
+            recovery_manager.trigger()
+            return jsonify({"ok": True, "scanned_at": time.time()}), 200
+        except Exception as e:
+            logger.error(f"[/debug/trigger-recovery] error: {e}")
+            return jsonify({"error": str(e)}), 500
 
     # ------------------------------------------------------------------
     # Fault injection — hard kill (no graceful handoff)
@@ -1043,6 +1246,48 @@ def create_app(node: ChordNode) -> Flask:
             return jsonify({"ok": True, "data": {"task": task}})
         except TaskValidationError as e:
             return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
+
+    @app.post("/api/tasks/clear-completed")
+    def api_clear_completed_tasks():
+        """
+        Wipe all SUCCESS/FAILURE HT1 records owned by this node and remove
+        them from any HT2 worker queues. Leaves PENDING/RUNNING tasks alone.
+        """
+        deleted_ht1 = 0
+        deleted_ht2 = 0
+        try:
+            with node._lock:
+                keys = list(node.data_store.keys())
+            for k in keys:
+                if not k.startswith("result:"):
+                    continue
+                v = node.get(k)
+                if not isinstance(v, dict):
+                    continue
+                if v.get("status") not in ("SUCCESS", "FAILURE"):
+                    continue
+                tid = k[len("result:"):]
+                wid = v.get("worker_id")
+                # Remove from HT2
+                if wid:
+                    try:
+                        worker_assignment_service.remove(wid, tid)
+                        deleted_ht2 += 1
+                    except Exception:
+                        pass
+                # Delete the HT1 record
+                try:
+                    node.delete(k)
+                    deleted_ht1 += 1
+                except Exception:
+                    logger.exception("[clear-completed] failed to delete %s", k)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        try: _obs_event("clear_completed",
+                        f"cleared {deleted_ht1} completed tasks (HT1) + {deleted_ht2} HT2 entries",
+                        ht1=deleted_ht1, ht2=deleted_ht2)
+        except Exception: pass
+        return jsonify({"ok": True, "deleted_ht1": deleted_ht1, "deleted_ht2": deleted_ht2})
 
     @app.delete("/tasks/<task_id>")
     def deregister_task(task_id):
@@ -1160,35 +1405,585 @@ def create_app(node: ChordNode) -> Flask:
 
     _VALID_TASK_TYPES = {"SCRIPT", "BINARY"}
 
+    # Track workers we have already emitted a WORKER_JOIN event for so we
+    # only log each worker once, not on every heartbeat.
+    _known_workers: set = set()
+    _known_workers_lock = threading.Lock()
+
+    def _emit_worker_join(worker_id: str) -> None:
+        with _known_workers_lock:
+            if worker_id in _known_workers:
+                return
+            _known_workers.add(worker_id)
+        activity.log(activity.WORKER_JOIN,
+                     f"Worker '{worker_id}' connected to ring",
+                     {"worker_id": worker_id})
+
+    def _start_worker_leave_watcher() -> None:
+        """Daemon thread: emit WORKER_LEAVE when a live worker times out."""
+        def _watch():
+            while True:
+                time.sleep(5)
+                try:
+                    dead = worker_registry.dead_workers()
+                    with _known_workers_lock:
+                        for wid, age_s in dead:
+                            if wid in _known_workers:
+                                _known_workers.discard(wid)
+                                activity.log(activity.WORKER_LEAVE,
+                                             f"Worker '{wid}' disconnected (last seen {int(age_s)}s ago)",
+                                             {"worker_id": wid, "age_s": round(age_s, 1)})
+                except Exception:
+                    pass
+        threading.Thread(target=_watch, daemon=True, name="worker-leave-watcher").start()
+
+    _start_worker_leave_watcher()
+
     @app.post("/workers/heartbeat")
     def workers_heartbeat():
-        """
-        Phase 2: register a heartbeat for liveness tracking.
-        Phase 6: optionally accept ``pending_tasks`` (int) and
-        ``timestamp`` (epoch float) for the placement scorer.
-        Both extra fields are optional — old clients still work.
-        """
         body = request.get_json(silent=True) or {}
         worker_id = body.get("worker_id")
         if not worker_id:
             return jsonify({"ok": False, "error": "worker_id required"}), 422
-        # Defensive: tolerate non-numeric / missing values from old clients
-        pending = body.get("pending_tasks")
-        try:
-            pending = int(pending) if pending is not None else 0
-        except (TypeError, ValueError):
-            pending = 0
-        ts = body.get("timestamp")
-        try:
-            ts = float(ts) if ts is not None else None
-        except (TypeError, ValueError):
-            ts = None
-        worker_registry.heartbeat(worker_id, pending_tasks=pending, timestamp=ts)
+        _emit_worker_join(worker_id)
+        worker_registry.heartbeat(worker_id)
         return jsonify({"ok": True})
 
     @app.get("/workers/live")
     def workers_live():
         return jsonify({"live_workers": worker_registry.live_workers()})
+
+    @app.get("/debug/worker-metrics")
+    def debug_worker_metrics():
+        return jsonify(worker_registry.metrics_snapshot())
+
+    @app.get("/api/dht/contents")
+    def api_dht_contents():
+        """
+        Aggregate the two distributed hash tables across the ring:
+          HT1 = result:<task_id> records (task details)
+          HT2 = worker:<worker_id> queues (assigned task_ids)
+        Returns per-node key counts + per-key primary/replicas.
+        """
+        # Walk ring (mirror of /api/ring's walk) — collect each node's data_keys
+        nodes_seen: Dict[int, Dict] = {}
+        try:
+            self_state = {
+                "node_id": node.node_id,
+                "address": node.address,
+                "successor": node.successor,
+                "data_keys": list(node.data_store.keys()),
+            }
+            nodes_seen[node.node_id] = self_state
+            cur = node.successor
+            guard = 0
+            while cur and cur["id"] not in nodes_seen and guard < 64:
+                guard += 1
+                try:
+                    r = _requests.get(f"http://{cur['address']}/chord/state", timeout=1.0)
+                    if not r.ok:
+                        break
+                    s = r.json()
+                    nodes_seen[s["node_id"]] = s
+                    cur = s.get("successor")
+                except Exception:
+                    break
+        except Exception as e:
+            logger.warning("[dht/contents] ring walk failed: %s", e)
+
+        # Build successor list ordered by node_id walking the ring
+        ordered = sorted(nodes_seen.values(), key=lambda n: n["node_id"])
+        node_count = len(ordered)
+
+        # Unique keys + which node has each
+        all_keys: Dict[str, List[int]] = {}  # key -> list of node_ids that store it
+        for n in ordered:
+            for k in (n.get("data_keys") or []):
+                all_keys.setdefault(k, []).append(n["node_id"])
+
+        def replicas_for(primary_id: int) -> List[int]:
+            if node_count <= 1:
+                return []
+            ids = [n["node_id"] for n in ordered]
+            try:
+                idx = ids.index(primary_id)
+            except ValueError:
+                return []
+            return [ids[(idx + 1) % node_count], ids[(idx + 2) % node_count]][:max(0, node_count - 1)]
+
+        ht1_rows: List[Dict] = []
+        ht2_rows: List[Dict] = []
+        for key in sorted(all_keys.keys()):
+            key_id = sha1_id(key)
+            try:
+                primary = node.find_successor(key_id)
+                primary_id = primary.get("id")
+            except Exception:
+                primary_id = None
+            reps = replicas_for(primary_id) if primary_id is not None else []
+            try:
+                value = node.get(key)
+            except Exception:
+                value = None
+            if key.startswith("result:"):
+                v = value if isinstance(value, dict) else {}
+                def _to_epoch_ms(x):
+                    if isinstance(x, (int, float)):
+                        return int(x * 1000) if x < 1e12 else int(x)
+                    if isinstance(x, str) and x:
+                        try:
+                            from datetime import datetime as _dt
+                            s = x.replace("Z", "+00:00")
+                            return int(_dt.fromisoformat(s).timestamp() * 1000)
+                        except Exception:
+                            return None
+                    return None
+                created_ms = _to_epoch_ms(v.get("created_at"))
+                updated_ms = _to_epoch_ms(v.get("updated_at"))
+                duration_s = None
+                if created_ms is not None and updated_ms is not None:
+                    duration_s = round((updated_ms - created_ms) / 1000.0, 3)
+                ht1_rows.append({
+                    "key": key,
+                    "task_id": key[len("result:"):],
+                    "task_type": v.get("task_type"),
+                    "status": v.get("status"),
+                    "worker_id": v.get("worker_id"),
+                    "result": v.get("result"),
+                    "created_at": created_ms,
+                    "updated_at": updated_ms,
+                    "duration_s": duration_s,
+                    "owner": primary_id,
+                    "replicas": reps,
+                })
+            elif key.startswith("worker:"):
+                if isinstance(value, dict):
+                    tasks = list(value.get("tasks") or [])
+                elif isinstance(value, list):
+                    tasks = value
+                else:
+                    tasks = []
+                ht2_rows.append({
+                    "key": key,
+                    "worker_id": key[len("worker:"):],
+                    "task_count": len(tasks),
+                    "task_ids": tasks,
+                    "owner": primary_id,
+                    "replicas": reps,
+                })
+
+        # Self-heal: any task_id stuck in HT2 whose HT1 status is SUCCESS
+        # should not be there. The 3 s delayed cleanup can be missed when
+        # the server is restarted mid-sleep, so we reconcile on read.
+        success_ids = {r["task_id"] for r in ht1_rows if r.get("status") == "SUCCESS"}
+        if success_ids:
+            for row in ht2_rows:
+                stuck = [t for t in (row.get("task_ids") or []) if t in success_ids]
+                if not stuck:
+                    continue
+                wid = row.get("worker_id")
+                for tid in stuck:
+                    try:
+                        worker_assignment_service.remove(wid, tid)
+                    except Exception:
+                        pass
+                # update the in-memory row so the response reflects cleanup
+                row["task_ids"] = [t for t in row["task_ids"] if t not in success_ids]
+                row["task_count"] = len(row["task_ids"])
+
+        per_node = []
+        for n in ordered:
+            ht1 = sum(1 for k in (n.get("data_keys") or []) if k.startswith("result:"))
+            ht2 = sum(1 for k in (n.get("data_keys") or []) if k.startswith("worker:"))
+            per_node.append({
+                "node_id": n["node_id"],
+                "address": n["address"],
+                "ht1": ht1,
+                "ht2": ht2,
+                "total": len(n.get("data_keys") or []),
+            })
+
+        return jsonify({
+            "nodes": per_node,
+            "ht1": ht1_rows,
+            "ht2": ht2_rows,
+            "this_node": node.node_id,
+        })
+
+    # Workers spawned via the dashboard — pid tracked here so we can kill them.
+    _worker_pids: Dict[str, int] = {}
+
+    def _spawn_worker_internal(requested_wid: Optional[str] = None) -> Dict[str, object]:
+        """Core worker-spawn logic. Used by /api/workers/spawn and by the
+        RecoveryManager auto-spawn callback when zero live workers exist."""
+        if requested_wid:
+            wid = requested_wid
+        else:
+            existing = set(worker_registry.live_workers()) | set(_worker_pids.keys())
+            n = 1
+            while f"w{n}" in existing:
+                n += 1
+            wid = f"w{n}"
+        if wid in _worker_pids:
+            return {"ok": False, "error": f"worker {wid} already running"}
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "chord.task_runner",
+                 "--worker-id", wid,
+                 "--frontend-url", f"http://{node.address}"],
+                cwd=project_root,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _worker_pids[wid] = proc.pid
+            logger.info(f"[spawn] worker {wid} pid={proc.pid}")
+            try: _obs_event("worker_spawned", f"worker {wid} (pid {proc.pid})", worker_id=wid, pid=proc.pid)
+            except Exception: pass
+            def _rebalance_after_spawn(target_wid=wid):
+                for _ in range(20):
+                    time.sleep(0.3)
+                    if target_wid in worker_registry.live_workers():
+                        break
+                try:
+                    _do_rebalance()
+                except Exception:
+                    logger.exception("[spawn] rebalance failed")
+            threading.Thread(target=_rebalance_after_spawn, daemon=True).start()
+            return {"ok": True, "worker_id": wid, "pid": proc.pid}
+        except Exception as e:
+            logger.error(f"[spawn] failed for {wid}: {e}", exc_info=True)
+            return {"ok": False, "error": str(e)}
+
+    # Bind the helper to the RecoveryManager auto-spawn trampoline so that
+    # when recovery sees PENDING tasks but zero live workers it can self-heal.
+    _spawn_callback_holder["fn"] = _spawn_worker_internal
+
+    @app.post("/api/workers/spawn")
+    def api_spawn_worker():
+        body = request.get_json(silent=True) or {}
+        result = _spawn_worker_internal((body.get("worker_id") or "").strip() or None)
+        if not result.get("ok"):
+            err = result.get("error", "spawn failed")
+            code = 409 if "already running" in err else 500
+            return jsonify(result), code
+        return jsonify(result)
+
+    def _do_rebalance() -> Dict[str, int]:
+        """
+        Re-distribute PENDING tasks across live workers so newly-added
+        workers actually pick up work instead of sitting idle.
+
+        Strategy: collect every PENDING HT1 record, group by current
+        worker_id. Compute the average load. For each over-loaded worker,
+        move its excess tasks to the most under-loaded live workers.
+        """
+        live = worker_registry.live_workers() or []
+        if len(live) < 2:
+            return {"moved": 0, "reason": "need at least 2 live workers"}
+
+        # Gather all PENDING result:* records owned by this node's accessible view
+        pending: List[tuple] = []  # (task_id, current_worker, full_record)
+        for k in list(node.data_store.keys()):
+            if not k.startswith("result:"):
+                continue
+            v = node.data_store.get(k)
+            if isinstance(v, dict) and v.get("status") == "PENDING":
+                pending.append((k[len("result:"):], v.get("worker_id"), v))
+        if not pending:
+            return {"moved": 0, "reason": "no PENDING tasks"}
+
+        # Current load per live worker (only counting tasks we know about)
+        load = {w: 0 for w in live}
+        for (_tid, wid, _rec) in pending:
+            if wid in load:
+                load[wid] += 1
+
+        target = max(1, len(pending) // len(live))  # ceil-ish
+        moved = 0
+        for (tid, src_wid, rec) in pending:
+            # Skip if the current worker is already under-loaded
+            if src_wid not in load:
+                src_wid = None  # treat as orphaned
+            if src_wid is not None and load[src_wid] <= target:
+                continue
+            # Pick the live worker with the lowest current load
+            dst_wid = min(load.keys(), key=lambda w: load[w])
+            if src_wid is not None and load[dst_wid] >= load[src_wid]:
+                continue  # not actually a balancing move
+            # Move it: update HT1 worker_id; update HT2 entries.
+            new_rec = dict(rec)
+            new_rec["worker_id"] = dst_wid
+            # "intelligence" is one of the validator's allowed values; the
+            # rebalancer is effectively the placement scorer reacting to a
+            # new worker joining, so it fits semantically.
+            new_rec["assigned_by"] = "intelligence"
+            try:
+                node.put(f"result:{tid}", new_rec)
+                if src_wid:
+                    worker_assignment_service.remove(src_wid, tid)
+                worker_assignment_service.append(dst_wid, tid)
+                load[dst_wid] += 1
+                if src_wid in load:
+                    load[src_wid] -= 1
+                moved += 1
+            except Exception:
+                logger.exception("[rebalance] failed to move %s", tid)
+        if moved:
+            logger.info("[rebalance] moved %d PENDING tasks across %d workers",
+                        moved, len(live))
+            try: _obs_event("rebalance", f"moved {moved} pending tasks across {len(live)} workers",
+                            moved=moved, workers=len(live))
+            except Exception: pass
+        return {"moved": moved, "live_workers": live, "load": load}
+
+    @app.post("/api/workers/rebalance")
+    def api_rebalance_workers():
+        return jsonify({"ok": True, **_do_rebalance()})
+
+    # ------------------------------------------------------------------
+    # Built-in observability time series
+    # ------------------------------------------------------------------
+    from collections import deque as _deque
+    _obs_buffer: "_deque[dict]" = _deque(maxlen=300)  # 10 min @ 2 s sampling
+
+    def _sample_obs():
+        try:
+            counts = {"live": 0, "idle": 0, "busy": 0, "dead": 0}
+            workers = []
+            now = time.time()
+            for w in worker_registry._workers.keys():  # all known workers
+                last_ts = worker_registry._workers.get(w)
+                age = now - last_ts if last_ts else None
+                is_live = (last_ts is not None
+                           and age is not None
+                           and age <= worker_registry._timeout)
+                # Determine busy/idle from PENDING tasks attributed to this worker.
+                pending = sum(
+                    1 for k, v in node.data_store.items()
+                    if k.startswith("result:") and isinstance(v, dict)
+                    and v.get("worker_id") == w and v.get("status") == "PENDING"
+                )
+                status = "dead" if not is_live else ("busy" if pending > 0 else "idle")
+                counts[status] += 1
+                if is_live:
+                    counts["live"] += 1
+                workers.append({"worker_id": w, "status": status, "pending": pending})
+
+            # HT1 status counts
+            ht1_pending = ht1_success = ht1_failure = 0
+            for k, v in node.data_store.items():
+                if not k.startswith("result:") or not isinstance(v, dict):
+                    continue
+                st = v.get("status")
+                if st == "PENDING":
+                    ht1_pending += 1
+                elif st == "SUCCESS":
+                    ht1_success += 1
+                elif st == "FAILURE":
+                    ht1_failure += 1
+
+            _obs_buffer.append({
+                "ts": now,
+                "workers": counts,
+                "queue": ht1_pending,
+                "success": ht1_success,
+                "failure": ht1_failure,
+            })
+            # Publish to Prometheus too so Grafana can chart them.
+            try:
+                from chord import metrics_registry as _M
+                nid = str(node.node_id)
+                _M.WORKERS_LIVE.labels(node_id=nid).set(counts["live"])
+                _M.WORKERS_IDLE.labels(node_id=nid).set(counts["idle"])
+                _M.WORKERS_BUSY.labels(node_id=nid).set(counts["busy"])
+                _M.WORKERS_DEAD.labels(node_id=nid).set(counts["dead"])
+                _M.TASKS_PENDING.labels(node_id=nid).set(ht1_pending)
+                _M.TASKS_SUCCESS.labels(node_id=nid).set(ht1_success)
+                _M.TASKS_FAILURE.labels(node_id=nid).set(ht1_failure)
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("[observability] sample failed")
+
+    def _obs_loop():
+        while True:
+            _sample_obs()
+            time.sleep(2.0)
+    threading.Thread(target=_obs_loop, daemon=True, name="obs-sampler").start()
+
+    # Discrete event log — each entry: {ts, kind, message, data}.
+    _obs_events: "_deque[dict]" = _deque(maxlen=200)
+
+    def _obs_event(kind: str, message: str, **data) -> None:
+        _obs_events.append({
+            "ts": time.time(),
+            "kind": kind,
+            "message": message,
+            "data": data or {},
+        })
+
+    # Hand it to the rest of the module so other handlers can record events.
+    app.config["obs_event"] = _obs_event
+    _obs_event("system_start", f"node {node.node_id} bound to {node.address}")
+
+    @app.get("/api/observability/events")
+    def api_obs_events():
+        return jsonify({"events": list(_obs_events)})
+
+    @app.get("/api/observability/trace/<task_id>")
+    def api_obs_trace(task_id):
+        """
+        Build a per-task trace from the HT1 record and any related events.
+        Spans:
+          submit  : created_at → first_pending_seen
+          execute : first_pending_seen → updated_at  (worker run window)
+        """
+        try:
+            rec = node.get(f"result:{task_id}")
+        except Exception:
+            rec = None
+        if not isinstance(rec, dict):
+            return jsonify({"ok": False, "error": "task not found"}), 404
+        related = [e for e in _obs_events if e.get("data", {}).get("task_id") == task_id]
+        return jsonify({
+            "ok": True,
+            "task_id": task_id,
+            "record": {
+                "task_type": rec.get("task_type"),
+                "status": rec.get("status"),
+                "worker_id": rec.get("worker_id"),
+                "assigned_by": rec.get("assigned_by"),
+                "created_at": rec.get("created_at"),
+                "updated_at": rec.get("updated_at"),
+                "result": rec.get("result"),
+                "worker_result": rec.get("worker_result"),
+            },
+            "events": related,
+        })
+
+    @app.get("/api/observability/timeseries")
+    def api_obs_timeseries():
+        # Return the buffer + a few derived rates for the client.
+        series = list(_obs_buffer)
+        # Compute throughput: tasks/min completed in the last minute.
+        if len(series) >= 2:
+            head, tail = series[0], series[-1]
+            window = max(1.0, tail["ts"] - head["ts"])
+            tput = (tail["success"] - head["success"]) / window * 60.0  # per min
+            failrate = (tail["failure"] - head["failure"]) / window * 60.0
+        else:
+            tput = failrate = 0.0
+        return jsonify({
+            "samples": series,
+            "throughput_per_min": round(tput, 2),
+            "failures_per_min": round(failrate, 2),
+            "current": series[-1] if series else None,
+        })
+
+    @app.post("/api/demo/run")
+    def api_demo_run():
+        """
+        Fire-and-forget: submit N demo tasks (rotating sleep 3..7s) in a
+        background thread. Each task script prints the Welcome line.
+        """
+        body = request.get_json(silent=True) or {}
+        try:
+            n = max(1, min(int(body.get("count") or 10), 200))
+        except Exception:
+            n = 10
+        sleeps = [3, 4, 5, 6, 7]
+        welcome = "Welcome to Rakesh Ranjan's Distributed Class"
+        ts = int(time.time())
+
+        def background():
+            for idx in range(1, n + 1):
+                sleep_s = sleeps[(idx - 1) % len(sleeps)]
+                tid = f"demo-{ts}-{idx:03d}"
+                script = (
+                    f'echo "[{tid}] starting (sleep {sleep_s}s)"; '
+                    f'sleep {sleep_s}; '
+                    f'echo "{welcome}"; '
+                    f'echo "[{tid}] done"'
+                )
+                try:
+                    _requests.post(
+                        f"http://{node.address}/createTask",
+                        json={"task_id": tid,
+                              "task_details": {"task_type": "SCRIPT", "path": "", "script": script}},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.05)
+        threading.Thread(target=background, daemon=True).start()
+        try: _obs_event("demo_run", f"launched {n} demo tasks", count=n)
+        except Exception: pass
+        return jsonify({"ok": True, "submitting": n, "ts": ts})
+
+    @app.post("/api/demo/fail-all")
+    def api_demo_fail_all():
+        """
+        Fire-and-forget: submit 15 demo tasks that all fail immediately.
+        Each task script exits with error code 1.
+        """
+        n = 15
+        ts = int(time.time())
+
+        def background():
+            for idx in range(1, n + 1):
+                tid = f"fail-{ts}-{idx:03d}"
+                script = (
+                    f'echo "[{tid}] starting (will fail)"; '
+                    f'exit 1'
+                )
+                try:
+                    _requests.post(
+                        f"http://{node.address}/createTask",
+                        json={"task_id": tid,
+                              "task_details": {"task_type": "SCRIPT", "path": "", "script": script}},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.05)
+        threading.Thread(target=background, daemon=True).start()
+        try: _obs_event("fail_all_demo", f"launched {n} failing demo tasks", count=n)
+        except Exception: pass
+        return jsonify({"ok": True, "submitting": n, "ts": ts})
+
+    @app.post("/api/workers/<wid>/kill")
+    def api_kill_worker(wid):
+        # Try the dashboard-tracked PID first; if absent, fall back to pgrep
+        # so we can also kill workers launched from the terminal.
+        pid = _worker_pids.get(wid)
+        if not pid:
+            try:
+                out = subprocess.check_output(
+                    ["pgrep", "-f", f"chord.task_runner.*--worker-id {wid}"],
+                    text=True,
+                ).strip()
+                pids = [int(x) for x in out.splitlines() if x.strip()]
+                if pids:
+                    pid = pids[0]
+            except subprocess.CalledProcessError:
+                pid = None
+            except FileNotFoundError:
+                # pgrep not available — give up
+                pid = None
+        if not pid:
+            return jsonify({"ok": False, "error": f"no process found for worker {wid}"}), 404
+        try:
+            os.kill(pid, 9)
+            _worker_pids.pop(wid, None)
+            try: _obs_event("worker_killed", f"worker {wid} stopped (pid {pid})", worker_id=wid, pid=pid)
+            except Exception: pass
+            return jsonify({"ok": True, "pid": pid})
+        except ProcessLookupError:
+            _worker_pids.pop(wid, None)
+            return jsonify({"ok": True, "note": "already dead"})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
 
     @app.get("/workers/status")
     def workers_status():
@@ -1260,13 +2055,6 @@ def create_app(node: ChordNode) -> Flask:
         task_id = body.get("task_id")
         task_details = body.get("task_details") or {}
         provided_worker = body.get("worker_id")
-        # Phase 7 — per-task recovery policy (body fields, not query params)
-        max_attempts_raw = body.get("max_attempts", 3)
-        try:
-            max_attempts = max(1, int(max_attempts_raw))
-        except (TypeError, ValueError):
-            max_attempts = 3
-        retry_on_failure = bool(body.get("retry_on_failure", False))
 
         # ---- validation ----
         if not task_id:
@@ -1296,32 +2084,36 @@ def create_app(node: ChordNode) -> Flask:
             }), 200
 
         # ---- Step 1: determine worker ----
-        # Phase 6: replace Phase 2 round-robin with load/latency/availability-
-        # weighted scoring when the user doesn't pick a specific worker.
-        placement_explanation = None
         if provided_worker:
             worker_id = provided_worker
             assigned_by = "user"
-            placement_explanation = f"User selected {worker_id}"
         else:
-            scored = worker_registry.score_all_workers()
-            if not scored:
-                return jsonify({
-                    "message": "Task rejected",
-                    "reason": "no live workers available for auto-assignment",
-                }), 503
-            worker_id, score = scored[0]
-            assigned_by = "intelligence"
-            m = worker_registry.get_metrics(worker_id)
-            s = worker_registry.get_stats(worker_id)
-            pending = m.pending_tasks if m else 0
-            latency_ms = m.latency_ms if m else 0.0
-            placement_explanation = (
-                f"{worker_id} chosen "
-                f"(pending: {pending}, "
-                f"latency: {latency_ms:.0f}ms, "
-                f"success: {s.success_rate*100:.0f}%)"
-            )
+            worker_id = worker_registry.round_robin_assign()
+            if worker_id is None:
+                # No live workers — auto-spawn one and wait briefly for it
+                # to heartbeat in, then retry the assign. This means a chat
+                # user can submit even when the cluster has been wiped, and
+                # the agent self-heals on demand instead of 503ing.
+                logger.info("[createTask] no live workers — auto-spawning")
+                spawn_result = _spawn_worker_internal()
+                if spawn_result.get("ok"):
+                    new_wid = spawn_result["worker_id"]
+                    try: _obs_event("auto_spawn_on_submit",
+                                    f"auto-spawned {new_wid} for task {task_id}",
+                                    worker_id=new_wid, task_id=task_id)
+                    except Exception: pass
+                    # Wait up to ~6s for the new worker to send its first heartbeat
+                    for _ in range(20):
+                        time.sleep(0.3)
+                        if worker_registry.is_live(new_wid):
+                            break
+                    worker_id = worker_registry.round_robin_assign()
+                if worker_id is None:
+                    return jsonify({
+                        "message": "Task rejected",
+                        "reason": "no live workers available; auto-spawn failed",
+                    }), 503
+            assigned_by = "frontend"
 
         # ---- Step 2: build the result record ----
         try:
@@ -1334,9 +2126,6 @@ def create_app(node: ChordNode) -> Flask:
                 assigned_by=assigned_by,
                 status="PENDING",
                 result=None,
-                # Phase 7
-                max_attempts=max_attempts,
-                retry_on_failure=retry_on_failure,
             )
         except ResultValidationError as exc:
             return jsonify({"message": "Task rejected", "reason": str(exc)}), 422
@@ -1391,102 +2180,38 @@ def create_app(node: ChordNode) -> Flask:
             }), 503
 
         # ---- Step 5: success ----
+        try:
+            app.config.get("obs_event") and app.config["obs_event"](
+                "task_created",
+                f"task {task_id} → worker {worker_id} ({assigned_by})",
+                task_id=task_id, worker_id=worker_id, assigned_by=assigned_by,
+            )
+        except Exception:
+            pass
         return jsonify({
             "message": "Task accepted",
             "task_id": task_id,
             "worker_id": worker_id,
             "assigned_by": assigned_by,
-            "placement_explanation": placement_explanation,
         }), 201
-
-    # Phase 5 constants (server-side ?wait=)
-    WAIT_PARAM_MAX_SECONDS = 120
-    WAIT_POLL_INTERVAL_S = 0.5
-
-    def _format_status_response(task_id, record):
-        attempt_count   = record.get("attempt_count", 0)
-        recovery_history = record.get("recovery_history") or []
-        status          = record["status"]
-
-        # Phase 7 natural-language recovery note
-        if attempt_count > 0 and status == "PENDING":
-            recovery_note = f"Retrying (attempt {attempt_count})"
-        elif attempt_count > 0 and status == "FAILURE" and recovery_history:
-            recovery_note = f"Permanently failed after {attempt_count} attempt(s)"
-        elif attempt_count > 0:
-            recovery_note = f"Recovered after {attempt_count} attempt(s)"
-        else:
-            recovery_note = None
-
-        return {
-            "task_id":              task_id,
-            "status":               status,
-            "result":               record["result"],
-            "worker_id":            record["worker_id"],
-            "assigned_by":          record["assigned_by"],
-            # Phase 7
-            "attempt_count":        attempt_count,
-            "recovery_history":     recovery_history,
-            "last_failure_reason":  record.get("last_failure_reason"),
-            "recovery_note":        recovery_note,
-        }
 
     @app.get("/getStatus/<task_id>")
     def get_status_v2(task_id):
-        """
-        Phase 3 read + Phase 5 polish:
-          - real HT1 read with replica fallback (via result_service.get)
-          - standardized error_code on 404 / 400 / 500 so the agent can branch
-          - optional ?wait=N (capped at 120) blocks server-side until the
-            status leaves PENDING (or N seconds elapse)
-        """
-        # parse + validate ?wait=
-        wait_raw = request.args.get("wait", "0") or "0"
+        """Phase 3: real HT1 read with replica fallback (in result_service.get)."""
         try:
-            wait_s = float(wait_raw)
-        except ValueError:
-            return jsonify({
-                "error_code": "BAD_REQUEST",
-                "message": "wait parameter must be a number",
-                "task_id": task_id,
-            }), 400
-        if wait_s < 0:
-            wait_s = 0
-        if wait_s > WAIT_PARAM_MAX_SECONDS:
-            return jsonify({
-                "error_code": "BAD_REQUEST",
-                "message": f"wait parameter capped at {WAIT_PARAM_MAX_SECONDS} seconds",
-                "max_wait_seconds": WAIT_PARAM_MAX_SECONDS,
-                "task_id": task_id,
-            }), 400
-
-        deadline = time.time() + wait_s
-
-        while True:
-            try:
-                record = result_service.get(task_id)
-            except Exception as exc:
-                logger.exception("[getStatus] read failed for %s", task_id)
-                return jsonify({
-                    "error_code": "INTERNAL_ERROR",
-                    "message": str(exc),
-                    "task_id": task_id,
-                }), 500
-
-            if record is None:
-                return jsonify({
-                    "error_code": "TASK_NOT_FOUND",
-                    "message": f"No task found with id {task_id!r}",
-                    "task_id": task_id,
-                }), 404
-
-            if record["status"] != "PENDING":
-                return jsonify(_format_status_response(task_id, record)), 200
-            if time.time() >= deadline:
-                # Caller's wait window elapsed — return PENDING normally.
-                return jsonify(_format_status_response(task_id, record)), 200
-
-            time.sleep(WAIT_POLL_INTERVAL_S)
+            record = result_service.get(task_id)
+        except Exception as exc:
+            logger.exception("[getStatus] read failed for %s", task_id)
+            return jsonify({"error": "lookup failed", "details": str(exc)}), 500
+        if record is None:
+            return jsonify({"error": "task not found", "task_id": task_id}), 404
+        return jsonify({
+            "task_id": task_id,
+            "status": record["status"],
+            "result": record["result"],
+            "worker_id": record["worker_id"],
+            "assigned_by": record["assigned_by"],
+        }), 200
 
     # ------------------------------------------------------------------
     # Phase 3 — internal HT1/HT2 RPCs
@@ -1608,171 +2333,47 @@ def create_app(node: ChordNode) -> Flask:
             logger.exception("[results/complete] write failed for %s", task_id)
             return jsonify({"ok": False, "error": str(exc)}), 500
 
-        # Phase 6: feed the completion into the worker's running success rate.
-        # Single caller (this endpoint), so no double-counting risk.
-        try:
-            worker_registry.record_completion(
-                worker_id=existing.get("worker_id"),
-                is_success=(status == "SUCCESS"),
-            )
-        except Exception:
-            logger.exception("[results/complete] record_completion failed for %s", task_id)
+        # Only remove the task from HT2 on SUCCESS. Failed tasks stay in the
+        # worker queue so the dashboard keeps showing them. Delay 3 s on
+        # success so the assignment is visible before it disappears.
+        worker_id = (existing or {}).get("worker_id")
+        if worker_id and status == "SUCCESS":
+            def _delayed_ht2_cleanup(wid=worker_id, tid=task_id):
+                try:
+                    time.sleep(3.0)
+                    worker_assignment_service.remove(wid, tid)
+                except Exception:
+                    logger.exception(
+                        "[results/complete] HT2 cleanup failed for %s/%s",
+                        wid, tid,
+                    )
+            threading.Thread(target=_delayed_ht2_cleanup, daemon=True).start()
 
+        # Update success-rate stats for placement scoring.
+        try:
+            worker_registry.record_completion(worker_id, status == "SUCCESS")
+        except Exception:
+            pass
+
+        try: _obs_event(
+            "task_succeeded" if status == "SUCCESS" else "task_failed",
+            f"task {task_id} → {status} on {worker_id or '?'}",
+            task_id=task_id, worker_id=worker_id, status=status,
+        )
+        except Exception: pass
+        # Observe task duration so Grafana can plot p50/p95/p99 latency.
+        try:
+            from chord import metrics_registry as _M
+            dur_ms = (result_payload or {}).get("duration_ms")
+            if isinstance(dur_ms, (int, float)) and dur_ms >= 0:
+                _M.TASK_DURATION.labels(
+                    node_id=str(node.node_id), status=status,
+                ).observe(dur_ms / 1000.0)
+        except Exception:
+            pass
         return jsonify({
             "ok": True, "task_id": task_id, "status": status,
         }), 200
-
-    # ------------------------------------------------------------------
-    # Phase 6 — placement debug endpoint
-    # ------------------------------------------------------------------
-
-    @app.get("/debug/worker-metrics")
-    def debug_worker_metrics():
-        """
-        Snapshot of every worker's metrics + score, sorted by score desc.
-        workers[0] is the next /createTask placement target.
-        """
-        return jsonify(worker_registry.metrics_snapshot())
-
-    # ------------------------------------------------------------------
-    # Phase 7 — live recovery dashboard APIs
-    #
-    # Three lightweight read-only endpoints powering /recovery:
-    #   GET /api/workers/status   — live/dead workers + load + latency
-    #   GET /api/tasks/active     — tasks currently PENDING or RUNNING
-    #   GET /api/recovery/events?since=<epoch> — events derived from
-    #     recovery_history of HT1 records updated since the cutoff
-    # ------------------------------------------------------------------
-
-    @app.get("/api/workers/status")
-    def api_workers_status():
-        """
-        Adapter over worker_registry.metrics_snapshot() that uses the
-        field names the recovery dashboard expects (id, status).
-        """
-        snap = worker_registry.metrics_snapshot()
-        out = []
-        for w in snap.get("workers", []):
-            out.append({
-                "id": w.get("worker_id"),
-                "status": "alive" if w.get("is_live") else "dead",
-                "pending_tasks": w.get("pending_tasks", 0),
-                "latency_ms": w.get("latency_ms", 0.0),
-                "success_rate": w.get("success_rate", 1.0),
-                "score": w.get("score") if w.get("score") is not None else 0.0,
-            })
-        return jsonify({"workers": out, "timestamp": time.time()})
-
-    @app.get("/api/tasks/active")
-    def api_tasks_active():
-        """
-        Tasks currently in flight (PENDING or RUNNING) on this node's
-        local store. Single-node ring → all tasks visible. Multi-node →
-        each node sees only the records it owns; aggregate at the UI
-        level if you need cluster-wide.
-        """
-        with node._lock:
-            snapshot = list(node.data_store.items())
-        tasks = []
-        for k, v in snapshot:
-            if not isinstance(k, str) or not k.startswith("result:"):
-                continue
-            if not isinstance(v, dict) or v.get("kind") != "result_details":
-                continue
-            if v.get("status") not in ("PENDING", "RUNNING"):
-                continue
-            tasks.append({
-                "task_id": v.get("task_id"),
-                "status": (v.get("status") or "").lower(),
-                "worker_id": v.get("worker_id"),
-                "attempt_count": v.get("attempt_count", 0),
-                "max_attempts": v.get("max_attempts", 3),
-                "last_failure_reason": v.get("last_failure_reason") or "None",
-                "recovery_history": v.get("recovery_history") or [],
-            })
-        # Most recently updated first (best-effort if updated_at present)
-        tasks.sort(key=lambda t: t.get("task_id") or "", reverse=True)
-        return jsonify({"tasks": tasks, "timestamp": time.time()})
-
-    def _classify_event(entry: str) -> str:
-        e = (entry or "").upper()
-        if "GIVE_UP" in e or "DEAD" in e or "CRASH" in e or "FAILURE" in e:
-            return "error"
-        if "RECOVER" in e and "FAIL" not in e:
-            return "success"
-        if "RETRY" in e or "RECOVER" in e:
-            return "warning"
-        return "info"
-
-    @app.get("/api/recovery/events")
-    def api_recovery_events():
-        """
-        Synthesise events from recovery_history of HT1 records updated
-        since `?since=<epoch>`. No instrumentation needed in recovery.py
-        — the data is already on every record we wrote. Each entry of
-        recovery_history becomes one event.
-        """
-        from datetime import datetime
-        try:
-            since = float(request.args.get("since", "0") or "0")
-        except ValueError:
-            since = 0.0
-
-        with node._lock:
-            snapshot = list(node.data_store.items())
-
-        events = []
-        total_attempts = 0
-        for k, v in snapshot:
-            if not isinstance(k, str) or not k.startswith("result:"):
-                continue
-            if not isinstance(v, dict) or v.get("kind") != "result_details":
-                continue
-            history = v.get("recovery_history") or []
-            if not history:
-                continue
-            # Count "real" recovery attempts (anything that's a retry) —
-            # GIVE_UP is recorded but isn't a retry attempt.
-            total_attempts += sum(1 for h in history if "RETRY" in (h or "").upper())
-
-            # Parse updated_at to epoch; fall back to now() if missing.
-            updated_iso = v.get("updated_at") or ""
-            try:
-                ts = datetime.fromisoformat(
-                    updated_iso.replace("Z", "+00:00")
-                ).timestamp()
-            except Exception:
-                ts = time.time()
-
-            if ts <= since:
-                continue
-            tid = v.get("task_id")
-            for entry in history:
-                events.append({
-                    "timestamp": ts,
-                    "type": _classify_event(entry),
-                    "message": f"{tid}: {entry}",
-                    "severity": _classify_event(entry),
-                })
-
-        events.sort(key=lambda e: e["timestamp"])
-        return jsonify({
-            "events": events,
-            "total_recovery_attempts": total_attempts,
-            "timestamp": time.time(),
-        })
-
-    @app.post("/debug/trigger-recovery")
-    def debug_trigger_recovery():
-        """
-        Phase 7: Run one recovery scan cycle immediately.
-        Useful for testing without waiting for RECOVERY_CHECK_INTERVAL_SECONDS.
-        """
-        rm = app.config.get("recovery_manager")
-        if rm is None:
-            return jsonify({"ok": False, "reason": "recovery manager not initialised"}), 503
-        rm.trigger()
-        return jsonify({"ok": True, "message": "Recovery scan triggered"}), 200
 
     @app.post("/agent/chat")
     def agent_chat():
@@ -1932,6 +2533,10 @@ class FailureWatcherThread(threading.Thread):
         if self._last_predecessor_id is not None and current_pred_id is None:
             failed_id = self._last_predecessor_id
             logger.info(f"[FailureWatcher] Predecessor {failed_id} died — starting recovery")
+            activity.log(activity.NODE_FAIL,
+                         f"Node {failed_id} failure detected — recovery starting",
+                         {"failed_node_id": failed_id,
+                          "detected_by": self.node.node_id})
             self._recover(failed_id)
 
         self._last_predecessor_id = current_pred_id
@@ -2028,6 +2633,10 @@ class FailureWatcherThread(threading.Thread):
                     logger.info(
                         f"[FailureWatcher] Recovered job {job['job_id']} → node {target_node_id}"
                     )
+                    activity.log(activity.JOB_RECOVER,
+                                 f"Job {job['job_id'][:12]}… recovered → Node {target_node_id}",
+                                 {"job_id": job["job_id"], "to_node": target_node_id,
+                                  "job_type": job.get("type")})
                 except Exception as e:
                     logger.error(
                         f"[FailureWatcher] Failed to recover job {job['job_id']}: {e}"
@@ -2045,14 +2654,9 @@ class MaintenanceThread(threading.Thread):
         self.interval = interval
         self._stop_event = threading.Event()
 
-    # Evict terminal jobs older than this many seconds (default: 1 hour)
-    _JOB_TTL_S = int(os.environ.get("JOB_TTL_S", str(3600)))
-    _EVICT_EVERY = 30  # run eviction every N maintenance ticks (~60 s at 2 s interval)
-
     def run(self):
         logger.info(f"[Maintenance] Started for node {self.node.node_id}")
         nid = str(self.node.node_id)
-        tick = 0
         while not self._stop_event.is_set():
             try:
                 prev_pred = self.node.predecessor
@@ -2063,31 +2667,9 @@ class MaintenanceThread(threading.Thread):
                 self.node.check_predecessor()
                 if prev_pred and self.node.predecessor is None:
                     PREDECESSOR_FAILURES.labels(node_id=nid).inc()
-                # Periodically evict old terminal jobs to bound memory growth
-                tick += 1
-                if tick % self._EVICT_EVERY == 0:
-                    self._evict_old_jobs()
             except Exception as e:
                 logger.warning(f"[Maintenance] Error: {e}")
             self._stop_event.wait(self.interval)
-
-    def _evict_old_jobs(self):
-        """Remove completed/failed jobs whose finished_at exceeds JOB_TTL_S."""
-        cutoff = time.time() - self._JOB_TTL_S
-        evicted = 0
-        with self.node._lock:
-            keys_to_delete = [
-                k for k, v in self.node.data_store.items()
-                if k.startswith("job:") and isinstance(v, dict)
-                and v.get("status") in ("done", "failed", "cancelled", "deleted")
-                and isinstance(v.get("finished_at"), (int, float))
-                and v["finished_at"] < cutoff
-            ]
-            for k in keys_to_delete:
-                del self.node.data_store[k]
-                evicted += 1
-        if evicted:
-            logger.info(f"[Maintenance] Evicted {evicted} old terminal jobs (TTL={self._JOB_TTL_S}s)")
 
     def stop(self):
         self._stop_event.set()
@@ -2149,12 +2731,6 @@ def start_node(host: str, port: int, known_address: str = None,
     watcher = FailureWatcherThread(node, agent, interval=maintenance_interval)
     watcher.start()
 
-    # Phase 7: recovery manager
-    recovery_manager = app.config.get("recovery_manager")
-    if recovery_manager is not None:
-        recovery_manager.start()
-        logger.info(f"RecoveryManager started on node {node.node_id}")
-
     # Dummy client (optional)
     if enable_dummy_client:
         from chord.dummy_client import DummyClient
@@ -2172,18 +2748,22 @@ def start_node(host: str, port: int, known_address: str = None,
 
     logger.info(f"Starting Chord node {node.node_id} on {address}")
     try:
-        # Prefer waitress (production WSGI server) over Flask's dev server.
-        # waitress handles concurrent requests properly and never drops
-        # health-check pings under maintenance-thread + dashboard-poll load.
+        # Use waitress in production — it handles concurrent inter-node RPCs,
+        # health checks, and UI polls without the GIL-related stalls of the
+        # Flask dev server that caused nodes to appear dead under load.
         try:
-            from waitress import serve as waitress_serve
-            logger.info(f"[Server] Using waitress WSGI server (threads=8)")
-            waitress_serve(app, host=host, port=port, threads=8,
-                           connection_limit=200, channel_timeout=30)
+            from waitress import serve as _waitress_serve
+            logger.info("[Server] Using waitress WSGI server (threads=8)")
+            _waitress_serve(
+                app, host=host, port=port,
+                threads=8,
+                connection_limit=200,
+                channel_timeout=30,
+            )
         except ImportError:
             logger.warning(
                 "[Server] waitress not installed — falling back to Flask dev server. "
-                "Run `pip install waitress` for stable production serving."
+                "Run: pip install waitress"
             )
             app.run(host=host, port=port, threaded=True)
     finally:

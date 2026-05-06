@@ -167,6 +167,67 @@ class WorkerAssignmentService:
             "replication": rep,
         }
 
+    def remove_local(self, worker_id: str, task_id: str,
+                     primary: Optional[dict] = None) -> dict:
+        """
+        Remove `task_id` from worker's HT2 entry. Idempotent — no-op if absent.
+        Holds the per-key lock and replicates after the local write.
+        """
+        key = build_worker_key(worker_id)
+        if primary is None:
+            primary = self._owner(key)
+
+        with _key_lock(key):
+            current = self.node.get(key)
+            tasks = list(current["tasks"]) if is_worker_record(current) else []
+
+            if task_id not in tasks:
+                return {
+                    "key": key,
+                    "tasks": tasks,
+                    "removed": False,
+                    "replication": {"replication_state": "SKIPPED"},
+                }
+
+            tasks = [t for t in tasks if t != task_id]
+            new_record = _bump(current, tasks)
+            self.node.put(key, new_record)
+            rep = self._replicate(worker_id, new_record, primary)
+
+        return {
+            "key": key,
+            "tasks": new_record["tasks"],
+            "removed": True,
+            "replication": rep,
+        }
+
+    def remove(self, worker_id: str, task_id: str) -> dict:
+        """
+        Routed remove. If we own the key locally, do a proper read-modify-write
+        with replication. Otherwise rely on the existing /internal/workers/append
+        gateway pattern by writing through node.put (which routes via Chord).
+        """
+        key = build_worker_key(worker_id)
+        primary = self._owner(key)
+        if primary["id"] == self.node.node_id:
+            return self.remove_local(worker_id, task_id, primary=primary)
+        # Non-local primary: read current, filter, put back through Chord routing.
+        current = None
+        try:
+            current = self.transport.get(primary["address"], key)
+        except Exception:
+            pass
+        tasks = list(current["tasks"]) if is_worker_record(current) else []
+        if task_id not in tasks:
+            return {"key": key, "tasks": tasks, "removed": False}
+        tasks = [t for t in tasks if t != task_id]
+        new_record = _bump(current, tasks)
+        try:
+            self.transport.put(primary["address"], key, new_record)
+        except Exception as exc:
+            logger.warning("[WorkerAssignment] remote remove failed for %s: %s", key, exc)
+        return {"key": key, "tasks": new_record["tasks"], "removed": True}
+
     def get(self, worker_id: str) -> List[str]:
         key = build_worker_key(worker_id)
         primary = self._owner(key)

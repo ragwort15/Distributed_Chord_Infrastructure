@@ -126,14 +126,23 @@ Local job execution with retry.
 - **Job retry** — re-queues on failure up to `MAX_JOB_RETRIES = 3`; timed-out jobs (`JOB_TIMEOUT = 120 s`) follow the same budget
 - **Job types**: `echo`, `sleep`, `compute`
 
-### 6. Metrics (`chord/metrics_registry.py`)
+### 6. Recovery Manager (`chord/recovery.py`)
+Tracks task failures and coordinates recovery across the distributed ring.
+
+- **Event emission** — logs recovery events with timestamp, task ID, worker ID, and failure reason
+- **Event types**: `retry` (green), `wait_retry` (yellow), `give_up` (red), `worker_crash` (red)
+- **Event retrieval** — `/api/recovery/events` endpoint for dashboard and monitoring
+- **Automatic retry** — failed tasks are re-queued to alternative workers up to max retries
+- **Dashboard integration** — Observability tab displays real-time recovery events with filtering and stats
+
+### 7. Metrics (`chord/metrics_registry.py`)
 Prometheus-compatible counters and gauges scraped by Grafana.
 
 - `FILE_REQUESTS`, `FILE_REQUEST_HOPS`, `FILE_REQUEST_DURATION`
 - `QUEUE_DEPTH`, `RING_SIZE`, `DATA_KEYS`
 - `STABILIZE_RUNS`, `FINGER_FIX_RUNS`, `PREDECESSOR_FAILURES`, `JOBS_TOTAL`
 
-### 7. Control Center Dashboard (`chord/static/index.html`)
+### 8. Control Center Dashboard (`chord/static/index.html`)
 A single-file browser UI with 8 tabs served by each node's Flask server.
 
 | Tab | What it shows |
@@ -149,15 +158,15 @@ A single-file browser UI with 8 tabs served by each node's Flask server.
 
 The sidebar has an **"Assistant"** section and a pulsing floating button (bottom-right) that both open the AI Task Chat in a new tab.
 
-### 8. AI Task Chat (`chord/static/chat.html`)
+### 9. AI Task Chat (`chord/static/chat.html`)
 Conversational interface served at `/chat` on every node. Submit tasks and query ring state in natural language.
 
-### 9. External gRPC Interface (`api/`)
+### 10. External gRPC Interface (`api/`)
 - `TaskService` — `RegisterTask`, `GetTask`, `DeregisterTask`, `QueryTasks`, `LookupTaskOwner`, `GetNodeInfo`
 - `InternalReplicationService` — `ReplicateTask`
 - Contract: `api/task_service.proto`
 
-### 10. Simulator (`simulator/`)
+### 11. Simulator (`simulator/`)
 In-process virtual-node simulator for benchmarking and fault injection — no real HTTP servers required.
 
 - **`virtual_node.py`** — lightweight Chord node stub
@@ -166,7 +175,7 @@ In-process virtual-node simulator for benchmarking and fault injection — no re
 - **`metrics.py`** — latency, hop count, throughput collectors
 - Results captured in `simulator/results.md`
 
-### 11. Testing & Validation (`tests/`)
+### 12. Testing & Validation (`tests/`)
 - `test_chord.py` — ring behavior (hashing, join, stabilize, leave)
 - `test_task_service.py` — task CRUD + replica fallback
 - `test_replication.py` — quorum write/delete
@@ -371,31 +380,57 @@ Open **http://127.0.0.1:5001** to see all three nodes on the live ring diagram.
 
 ---
 
-## Control Center Dashboard
+### Control Center Dashboard tabs
 
 Each node serves the dashboard at its root URL (e.g. `http://127.0.0.1:5001`).
 
-### Ring Topology tab
-- Live SVG ring auto-polls every 2 seconds; nodes coloured by position; arcs show finger table shortcuts
-- **Add Node** — auto-spawns a new process using `sys.executable` (works in venvs and Docker); shows the exact run command and polls the ring at 3.5 s / 6 s / 9 s / 13 s to reflect the new node as it stabilises
-- **Remove / Crash / Leave** — all apply an optimistic UI update so the SVG updates immediately without waiting for Chord stabilisation (2–10 s)
+| Tab | What it shows |
+|---|---|
+| **Ring Topology** | Live SVG ring with auto-refresh every 2 sec; nodes coloured by position; finger table shortcuts as arcs; controls: **Add Node**, **Remove / Crash / Leave** |
+| **Observability** | Real-time system metrics: throughput, worker latency, task status distribution, system health, replication status, and **Recovery Events & Timeline** with filtering |
+| **Workloads** | Task registration, demo launchers (10/25/100 tasks), **Inject 15 Failures** button, kill-worker test, and HT2 queue view |
+| **Fault Lab** | Failure injection and recovery testing tools |
+| **Tasks (HT1)** | All tasks on this node — queryable by ID/status with live filtering; shows task lifecycle (PENDING/RUNNING/COMPLETED/FAILED) |
+| **DHT Store** | Raw key-value store — GET/PUT/DELETE; local keys browser; ring key-owner lookup |
+| **Agent Log** | Structured decisions log from the AI placement agent (LLM vs heuristic strategy, node selection reasoning) |
 
-### Analytics tab
-- **Stat cards**: Total Requests, Avg Hops, Jobs Completed, Jobs Failed
-- **Charts** (auto-refresh every 5 s): Request Throughput, Hop Distribution, Node Queue Depth, Agent Strategy Mix (LLM vs heuristic vs fallback)
+---
 
-### Task Registry tab
-- **Register Task** — `job_id` (optional, defaults to `_unlinked`), `type` (required), `payload` (JSON, defaults to `{}`), `priority`
-- **Reset button** — restores all fields to working defaults in one click
-- **Get / Deregister** tasks by ID; hard delete or soft tombstone
-- **Update Status** — PATCH `status`, `result`, `error`, `payload`, or `priority`
-- **Ring Lookup** — find primary owner + replica chain for any task ID
-- Live task table with filter by Job ID or status
+## Recovery System
 
-### DHT Store tab
-- **Retrieve / Store / Delete** — routed key lookup/write/delete across the ring
-- **Local Keys** — snapshot of all keys on this node; click **Get** or **Del** to act on any row
-- **Ring Key Owner** — find which node owns any arbitrary key
+The recovery manager (`chord/recovery.py`) tracks task failures and coordinates recovery attempts across the distributed ring.
+
+### Recovery Event Types
+
+| Type | Color | When triggered |
+|---|---|---|
+| `retry` | Green | Task failed but will be retried on another worker |
+| `wait_retry` | Yellow | Task failed, waiting for retry opportunity |
+| `give_up` | Red | Task exceeded max retries, marked as failed |
+| `worker_crash` | Red | Worker process terminated unexpectedly |
+
+### How it works
+
+1. **Task Failure Detection** — When a worker fails to execute a task (or crashes), the result service records the failure
+2. **Recovery Event Emission** — RecoveryManager logs the event with timestamp, task ID, worker ID, and failure reason
+3. **Dashboard Display** — Observability tab retrieves and displays events with filtering
+4. **Retry Logic** — Failed tasks are automatically re-queued to another worker (up to `MAX_JOB_RETRIES = 3`)
+
+### Failure Injection
+
+Use the **💥 Inject 15 Failures** button in the Workloads tab to trigger a stress test:
+- Submits 15 tasks that fail immediately
+- Observe recovery events populate in real-time in the Observability tab
+- Watch workers retry failing tasks across the ring
+- Monitor how the system recovers under load
+
+### API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/recovery/events?since=<timestamp>` | Fetch recovery events since timestamp (0 for all) |
+| `POST` | `/api/demo/fail-all` | Submit 50 failing demo tasks (triggers recovery) |
+| `POST` | `/api/demo/run` | Submit N demo tasks with varying sleep durations |
 
 ---
 
@@ -414,22 +449,58 @@ The chat lets you submit tasks and query ring state in natural language. It is b
 
 ## Observability Stack
 
-Prometheus and Grafana run alongside the Chord nodes and are included in `docker-compose.yml`.
+Prometheus and Grafana provide real-time observability of the Chord DHT cluster. The Grafana dashboard is **embedded directly in the Chord control center** (Observability tab) as well as available standalone.
 
-**Start just the observability layer** (if you already have nodes running locally):
+### Setup
+
+**Start Prometheus + Grafana:**
 
 ```bash
-docker compose -f observability/docker-compose.yml up -d
+cd observability
+docker-compose up -d
 ```
 
-| Service | URL |
-|---|---|
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 (admin / admin) |
+**Start a Chord node** (in another terminal):
 
-The pre-built **Chord DHT** Grafana dashboard (`observability/grafana/dashboards/chord_dht.json`) is provisioned automatically and shows ring size, request throughput, hop distribution, queue depth, and job counters.
+```bash
+python3 run_node.py --port 5005
+```
 
-Prometheus scrapes `/metrics` on each node every 15 s (configured in `observability/prometheus.yml`).
+**Open the dashboard:**
+
+Visit **http://127.0.0.1:5005/dashboard** and click the **Observability** tab.
+
+You should see the live Grafana dashboard with:
+- **Request Throughput per Node** — file requests/sec routed by each node
+- **Avg Hop Count** — average Chord routing hops (O(log N) guarantee)
+- **Ring Size** — number of live nodes
+- **Total Requests** — cumulative file requests across the ring
+
+The dashboard auto-refreshes every 5 seconds.
+
+### Configuration
+
+| Service | URL | Credentials |
+|---|---|---|
+| Prometheus | http://localhost:9090 | — |
+| Grafana (embedded) | http://127.0.0.1:5005/dashboard → Observability tab | — (anonymous) |
+| Grafana (standalone) | http://localhost:3000 | admin / chord123 |
+
+### How It Works
+
+- **Prometheus** scrapes `/prom_metrics` endpoint on each Chord node every 5 seconds
+- **Grafana** displays the scraped metrics using the pre-built **Chord DHT** dashboard (`observability/grafana/dashboards/chord_dht.json`)
+- The **Observability tab** in the control center loads Grafana dynamically via `/api/config` endpoint, allowing the Grafana URL to be overridden via the `GRAFANA_URL` environment variable (useful for Docker, Kubernetes, or cloud deployments)
+
+### Environment Variable
+
+To use a different Grafana URL (e.g., for Docker-to-container communication):
+
+```bash
+GRAFANA_URL=http://grafana:3000 python3 run_node.py --port 5005
+```
+
+The `/api/config` endpoint will return the custom URL, and the iframe will use it.
 
 ---
 
@@ -596,6 +667,16 @@ Job body: `{"type": "echo|sleep|compute", "payload": {...}, "replicas": 1}`
 | `GET` | `/api/logs` | Last 40 structured agent decision log entries |
 | `GET` | `/api/ring` | Full ring snapshot: all known nodes with IDs and addresses |
 | `GET` | `/api/status` | Health summary: queue depth, jobs completed/failed, ring size |
+| `GET` | `/api/recovery/events?since=<timestamp>` | Recovery events since Unix timestamp; returns `{"events": [...], "total_recovery_attempts": N}` |
+| `GET` | `/api/workers/status` | Worker status including latency, pending tasks, and performance scores |
+| `GET` | `/api/metrics/snapshot` | System-wide metrics: throughput, latency, hops, job counts |
+
+### Demo & Failure Injection
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/demo/run` | Submit N demo tasks; body: `{"count": N}` (default 10, max 200) |
+| `POST` | `/api/demo/fail-all` | Submit 15 tasks that fail immediately; triggers recovery event logging |
 
 ### Internal Task Replication REST Endpoints
 
@@ -750,6 +831,28 @@ pytest tests/test_task_service.py tests/test_replication.py tests/test_grpc_serv
 # Run with coverage (if pytest-cov installed)
 pytest tests --cov=chord --cov=storage --cov=api --cov-report=term-missing
 ```
+
+### Failure Injection Testing
+
+Test the recovery system manually via the dashboard:
+
+1. **Dashboard approach** (easiest):
+   - Open Observability tab → view initial Recovery Events (should be 0)
+   - Click **💥 Inject 15 Failures** in Workloads tab
+   - Watch Recovery Events appear in real-time with filtering by type
+   - Observe retries and recovery progression
+
+2. **API approach**:
+   ```bash
+   curl -X POST http://127.0.0.1:5005/api/demo/fail-all
+   curl http://127.0.0.1:5005/api/recovery/events
+   ```
+
+3. **Simulator approach**:
+   ```bash
+   python run_fault_tests.py --nodes 5
+   ```
+   Tests node crash, partition, and recovery scenarios against virtual ring.
 
 Expected output:
 ```

@@ -24,6 +24,7 @@ written by workers (e.g. result, updated_at) are preserved.
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -100,15 +101,22 @@ class RecoveryManager:
     the recovery decision from choose_recovery_path().
     """
 
-    def __init__(self, result_service, worker_assignment_service, worker_registry):
+    def __init__(self, result_service, worker_assignment_service, worker_registry,
+                 on_no_workers=None):
         self._result_svc  = result_service
         self._assign_svc  = worker_assignment_service
         self._registry    = worker_registry
+        self._on_no_workers = on_no_workers   # callable() — fires when recovery has work but zero live workers
+        self._last_spawn_trigger = 0.0
+        self._spawn_cooldown_s = 20.0         # at most one auto-spawn every 20s
         self._thread: Optional[threading.Thread] = None
         self._stop        = threading.Event()
         # Guard against the same task being recovered concurrently
         self._in_progress: set = set()
         self._in_progress_lock = threading.Lock()
+        # Event logging for recovery timeline
+        self._events = deque(maxlen=100)  # Keep last 100 events
+        self._events_lock = threading.Lock()
 
     # ---- lifecycle --------------------------------------------------------
 
@@ -133,6 +141,31 @@ class RecoveryManager:
             self._scan()
         except Exception as exc:
             logger.warning("[RecoveryManager] trigger scan error: %s", exc)
+
+    def get_events(self, since: float = 0.0) -> list:
+        """
+        Return events since the given timestamp (in seconds).
+        
+        Args:
+            since: Unix timestamp; return events >= this time.
+        
+        Returns:
+            List of event dicts: {ts, type, task_id, worker_id, message}
+        """
+        with self._events_lock:
+            return [e for e in self._events if e["ts"] >= since]
+
+    def _emit_event(self, event_type: str, task_id: str, worker_id: str = "", message: str = "") -> None:
+        """Emit a recovery event for the timeline."""
+        event = {
+            "ts": time.time(),
+            "type": event_type,
+            "task_id": task_id,
+            "worker_id": worker_id,
+            "message": message,
+        }
+        with self._events_lock:
+            self._events.append(event)
 
     # ---- main loop --------------------------------------------------------
 
@@ -169,6 +202,12 @@ class RecoveryManager:
                 if record is None:
                     continue
                 if record.get("status") in ("PENDING", "RUNNING"):
+                    self._emit_event(
+                        "worker_crash",
+                        task_id,
+                        worker_id=worker_id,
+                        message=f"Worker {worker_id} crashed"
+                    )
                     self._attempt_recovery(record, "worker_crash")
 
     def _detect_timed_out_tasks(self) -> None:
@@ -203,11 +242,13 @@ class RecoveryManager:
 
     def _detect_stuck_tasks(self) -> None:
         """
-        A task is 'stuck' if its status is RUNNING but its assigned worker
-        is no longer live.
+        A task is 'stuck' if its status is PENDING or RUNNING but its assigned
+        worker is no longer live. Catches the post-restart case where the
+        registry has no memory of the original worker, so _detect_worker_crashes
+        can't see it.
         """
         for record in self._all_ht1_records():
-            if record.get("status") == "RUNNING":
+            if record.get("status") in ("PENDING", "RUNNING"):
                 worker_id = record.get("worker_id", "")
                 if worker_id and not self._registry.is_live(worker_id):
                     self._attempt_recovery(record, "worker_crash")
@@ -260,6 +301,23 @@ class RecoveryManager:
 
             scored = self._registry.score_all_workers()
             has_workers = len(scored) > 0
+            just_spawned = False
+            if not has_workers and self._on_no_workers is not None:
+                now = time.time()
+                if now - self._last_spawn_trigger >= self._spawn_cooldown_s:
+                    self._last_spawn_trigger = now
+                    try:
+                        result = self._on_no_workers()
+                        if result and result.get("ok"):
+                            just_spawned = True
+                            self._emit_event(
+                                "auto_spawn",
+                                task_id,
+                                worker_id=result.get("worker_id"),
+                                message=f"Auto-spawned worker {result.get('worker_id', '?')} (no live workers)"
+                            )
+                    except Exception as exc:
+                        logger.warning("[RecoveryManager] on_no_workers callback failed: %s", exc)
             path = choose_recovery_path(fresh, failure_type, has_workers)
 
             logger.info(
@@ -271,7 +329,7 @@ class RecoveryManager:
                 path,
             )
 
-            self._execute(fresh, path, failure_type, scored)
+            self._execute(fresh, path, failure_type, scored, short_wait=just_spawned)
         except Exception as exc:
             logger.warning("[RecoveryManager] recovery error for %s: %s", task_id, exc)
         finally:
@@ -284,6 +342,7 @@ class RecoveryManager:
         path: str,
         failure_type: str,
         scored_workers: list,
+        short_wait: bool = False,
     ) -> None:
         task_id = record["task_id"]
         updated = dict(record)
@@ -294,18 +353,29 @@ class RecoveryManager:
         if path == GIVE_UP:
             attempt = updated.get("attempt_count", 0)
             updated["status"] = "FAILURE"
+            # Preserve the worker's original result (stdout/stderr/exit_code)
+            # under worker_result so failures stay debuggable. Only the
+            # top-level summary string gets the "permanently failed" message.
+            original = updated.get("result")
+            if original is not None and not isinstance(original, str):
+                updated["worker_result"] = original
             updated["result"] = f"Permanently failed after {attempt} attempt(s)"
             history.append("GIVE_UP")
             updated["recovery_history"] = history
             self._safe_put(task_id, updated)
+            self._emit_event("give_up", task_id, message=f"Gave up after {attempt} attempt(s)")
 
         elif path == WAIT_AND_RETRY:
-            retry_at = time.time() + RECOVERY_WAIT_SECONDS
+            # When we just auto-spawned a worker, the long 30s wait is wasteful —
+            # the new worker boots and heartbeats in ~5s, so retry sooner.
+            wait_s = 6 if short_wait else RECOVERY_WAIT_SECONDS
+            retry_at = time.time() + wait_s
             updated["recovery_status"] = "WAITING_FOR_RETRY"
             updated["retry_at"] = retry_at
             history.append(f"WAIT_AND_RETRY (retry at {retry_at:.0f})")
             updated["recovery_history"] = history
             self._safe_put(task_id, updated)
+            self._emit_event("wait_retry", task_id, message=f"Waiting {wait_s}s before retry")
 
         else:
             # RETRY_SAME or RETRY_DIFFERENT
@@ -329,8 +399,10 @@ class RecoveryManager:
                 history.append(f"WAIT_AND_RETRY (no workers; retry at {retry_at:.0f})")
                 updated["recovery_history"] = history
                 self._safe_put(task_id, updated)
+                self._emit_event("wait_retry", task_id, message="No workers available, waiting for retry")
                 return
 
+            old_worker = updated.get("worker_id")
             updated["attempt_count"] = updated.get("attempt_count", 0) + 1
             updated["worker_id"]    = new_worker
             updated["status"]       = "PENDING"
@@ -341,13 +413,36 @@ class RecoveryManager:
             updated["recovery_history"] = history
             self._safe_put(task_id, updated)
 
-            # Re-assign in HT2 so the new worker picks up the task
+            # Re-assign in HT2: remove from the old worker's queue so
+            # _detect_worker_crashes doesn't see this same task on the
+            # dead worker next scan and reassign it again — that loop
+            # was burning attempts and triggering spurious GIVE_UPs.
+            if old_worker and old_worker != new_worker:
+                try:
+                    self._assign_svc.remove(old_worker, task_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[RecoveryManager] HT2 remove failed for %s on %s: %s",
+                        task_id, old_worker, exc,
+                    )
             try:
                 self._assign_svc.append(new_worker, task_id)
+                self._emit_event(
+                    "retry",
+                    task_id,
+                    worker_id=new_worker,
+                    message=f"{path} on worker {new_worker}"
+                )
             except Exception as exc:
                 logger.warning(
                     "[RecoveryManager] HT2 append failed for %s → %s: %s",
                     task_id, new_worker, exc,
+                )
+                self._emit_event(
+                    "error",
+                    task_id,
+                    worker_id=new_worker,
+                    message=f"Failed to assign to {new_worker}: {exc}"
                 )
 
     # ---- helpers ----------------------------------------------------------

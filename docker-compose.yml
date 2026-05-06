@@ -117,6 +117,12 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_INSTALL_PLUGINS: grafana-piechart-panel
+      # Allow all origins for embedding in cloud deployments
+      GF_SECURITY_CORS_ENABLED: "true"
+      GF_SECURITY_CORS_ALLOW_CREDENTIALS: "true"
+      GF_SECURITY_CORS_ALLOW_HEADERS: "authorization, content-type"
+      # Set server URL for cloud deployments (can be overridden)
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/"
     volumes:
       - grafana-storage:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
