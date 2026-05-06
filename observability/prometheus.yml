@@ -3,13 +3,27 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
+  # ── Docker Compose: Prometheus reaches chord nodes over chord-network ───────
   - job_name: "chord-nodes"
     metrics_path: "/prom_metrics"
     static_configs:
       - targets:
-          # host.docker.internal resolves to your Mac's localhost from inside Docker
-          - "host.docker.internal:5001"
-          - "host.docker.internal:5002"
-          - "host.docker.internal:5003"
+          - "chord-node-1:5000"
+          - "chord-node-2:5000"
+          - "chord-node-3:5000"
         labels:
-          env: "local"
+          env: "docker"
+
+  # ── Bare-metal / local dev fallback ─────────────────────────────────────────
+  # Uncomment when running nodes with `python run_node.py` (not docker compose)
+  # and comment out the docker block above.
+  #
+  # - job_name: "chord-nodes-local"
+  #   metrics_path: "/prom_metrics"
+  #   static_configs:
+  #     - targets:
+  #         - "host.docker.internal:5001"
+  #         - "host.docker.internal:5002"
+  #         - "host.docker.internal:5003"
+  #       labels:
+  #         env: "local"

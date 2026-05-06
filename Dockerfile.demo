@@ -1,7 +1,6 @@
 # =============================================================================
 # Dockerfile.demo — lightweight image for EC2 demo
-# Uses Python 3.11 (stable LTS) instead of 3.14 (alpha) for better
-# compatibility with pre-built wheels on PyPI.
+# Uses Python 3.11 (stable LTS). Skips heavy dev deps (pytest, anthropic).
 # =============================================================================
 
 # Stage 1: Builder
@@ -17,7 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # Install only runtime deps (skip pytest, anthropic for demo)
-RUN pip install --user --no-cache-dir \
+# --prefix=/install places packages under /install/lib/python3.11/site-packages/
+# which we COPY to /usr/local in the runtime stage — always on sys.path regardless of user
+RUN pip install --no-cache-dir --prefix=/install \
     flask \
     waitress \
     requests \
@@ -35,28 +36,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /root/.local /root/.local
+# Packages land at /usr/local/lib/python3.11/site-packages/ — found by any user
+COPY --from=builder /install /usr/local
 
 # Copy application source
-COPY chord/   ./chord/
-COPY storage/ ./storage/
-COPY api/     ./api/
+COPY chord/      ./chord/
+COPY storage/    ./storage/
+COPY api/        ./api/
 COPY run_node.py .
 COPY submit_job.py .
+COPY entrypoint.sh .
 
-ENV PATH=/root/.local/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    CHORD_PORT=${CHORD_PORT:-5000} \
-    CHORD_ID=${CHORD_ID:-1} \
-    CHORD_JOIN=${CHORD_JOIN:-""}
+RUN chmod +x entrypoint.sh
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 RUN useradd -m -u 1000 chord && chown -R chord:chord /app
 USER chord
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
-    CMD curl -sf http://localhost:${CHORD_PORT}/chord/ping || exit 1
+    CMD curl -sf http://localhost:${CHORD_PORT:-5000}/chord/ping || exit 1
 
 EXPOSE 5000
 
-CMD ["python", "run_node.py"]
+ENTRYPOINT ["sh", "entrypoint.sh"]
