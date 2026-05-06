@@ -85,7 +85,18 @@ def create_app(node: ChordNode) -> Flask:
     app.config["worker_assignment_service"] = worker_assignment_service
 
     # Phase 7: Recovery manager daemon for intelligent failure recovery.
-    recovery_manager = RecoveryManager(result_service, worker_assignment_service, worker_registry)
+    # The spawn callback is bound later (after _spawn_worker_internal is defined);
+    # we pass a thin trampoline so RecoveryManager can call it.
+    _spawn_callback_holder: Dict[str, object] = {}
+    def _spawn_trampoline():
+        fn = _spawn_callback_holder.get("fn")
+        return fn() if fn else None
+    recovery_manager = RecoveryManager(
+        result_service,
+        worker_assignment_service,
+        worker_registry,
+        on_no_workers=_spawn_trampoline,
+    )
     app.config["recovery_manager"] = recovery_manager
     recovery_manager.start()
     logger.info("[Server] RecoveryManager started")
@@ -1424,12 +1435,11 @@ def create_app(node: ChordNode) -> Flask:
     # Workers spawned via the dashboard — pid tracked here so we can kill them.
     _worker_pids: Dict[str, int] = {}
 
-    @app.post("/api/workers/spawn")
-    def api_spawn_worker():
-        body = request.get_json(silent=True) or {}
-        requested = (body.get("worker_id") or "").strip()
-        if requested:
-            wid = requested
+    def _spawn_worker_internal(requested_wid: Optional[str] = None) -> Dict[str, object]:
+        """Core worker-spawn logic. Used by /api/workers/spawn and by the
+        RecoveryManager auto-spawn callback when zero live workers exist."""
+        if requested_wid:
+            wid = requested_wid
         else:
             existing = set(worker_registry.live_workers()) | set(_worker_pids.keys())
             n = 1
@@ -1437,7 +1447,7 @@ def create_app(node: ChordNode) -> Flask:
                 n += 1
             wid = f"w{n}"
         if wid in _worker_pids:
-            return jsonify({"ok": False, "error": f"worker {wid} already running"}), 409
+            return {"ok": False, "error": f"worker {wid} already running"}
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         try:
             proc = subprocess.Popen(
@@ -1449,14 +1459,11 @@ def create_app(node: ChordNode) -> Flask:
                 stderr=subprocess.DEVNULL,
             )
             _worker_pids[wid] = proc.pid
-            logger.info(f"[API] Spawned worker {wid} pid={proc.pid}")
+            logger.info(f"[spawn] worker {wid} pid={proc.pid}")
             try: _obs_event("worker_spawned", f"worker {wid} (pid {proc.pid})", worker_id=wid, pid=proc.pid)
             except Exception: pass
-            # Wait briefly for the new worker to heartbeat in, then rebalance
-            # any PENDING tasks so it doesn't sit idle while existing workers
-            # have a backlog.
             def _rebalance_after_spawn(target_wid=wid):
-                for _ in range(20):  # up to ~6 s
+                for _ in range(20):
                     time.sleep(0.3)
                     if target_wid in worker_registry.live_workers():
                         break
@@ -1465,10 +1472,24 @@ def create_app(node: ChordNode) -> Flask:
                 except Exception:
                     logger.exception("[spawn] rebalance failed")
             threading.Thread(target=_rebalance_after_spawn, daemon=True).start()
-            return jsonify({"ok": True, "worker_id": wid, "pid": proc.pid})
+            return {"ok": True, "worker_id": wid, "pid": proc.pid}
         except Exception as e:
-            logger.error(f"[API] Failed to spawn worker {wid}: {e}", exc_info=True)
-            return jsonify({"ok": False, "error": str(e)}), 500
+            logger.error(f"[spawn] failed for {wid}: {e}", exc_info=True)
+            return {"ok": False, "error": str(e)}
+
+    # Bind the helper to the RecoveryManager auto-spawn trampoline so that
+    # when recovery sees PENDING tasks but zero live workers it can self-heal.
+    _spawn_callback_holder["fn"] = _spawn_worker_internal
+
+    @app.post("/api/workers/spawn")
+    def api_spawn_worker():
+        body = request.get_json(silent=True) or {}
+        result = _spawn_worker_internal((body.get("worker_id") or "").strip() or None)
+        if not result.get("ok"):
+            err = result.get("error", "spawn failed")
+            code = 409 if "already running" in err else 500
+            return jsonify(result), code
+        return jsonify(result)
 
     def _do_rebalance() -> Dict[str, int]:
         """
@@ -1658,6 +1679,7 @@ def create_app(node: ChordNode) -> Flask:
                 "created_at": rec.get("created_at"),
                 "updated_at": rec.get("updated_at"),
                 "result": rec.get("result"),
+                "worker_result": rec.get("worker_result"),
             },
             "events": related,
         })

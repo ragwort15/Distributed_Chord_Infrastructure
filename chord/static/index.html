@@ -1205,9 +1205,9 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
         </div>
         <div style="overflow-y:auto;max-height:400px">
           <table class="data-table">
-            <thead><tr><th>Task ID</th><th>Type</th><th>Status</th><th>Worker</th><th>Output</th><th>Owner</th></tr></thead>
+            <thead><tr><th>Task ID</th><th>Type</th><th>Status</th><th>Worker</th><th>Started</th><th>Completed</th><th>Duration</th><th>Output</th><th>Owner</th></tr></thead>
             <tbody id="tasks-tbody">
-              <tr><td colspan="6"><div class="empty-state"><div class="icon">🗂</div><p>No tasks yet</p></div></td></tr>
+              <tr><td colspan="9"><div class="empty-state"><div class="icon">🗂</div><p>No tasks yet</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -3695,7 +3695,7 @@ async function loadTasks(){
       cnt?.classList.remove('show'); wlCnt?.classList.remove('show');
     }
     if(!rows.length){
-      tbody.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="icon">🗂</div><p>No tasks on this node</p></div></td></tr>';
+      tbody.innerHTML='<tr><td colspan="9"><div class="empty-state"><div class="icon">🗂</div><p>No tasks on this node</p></div></td></tr>';
       return;
     }
     const stColor = s => ({PENDING:'#f59e0b',RUNNING:'#3b82f6',SUCCESS:'#10b981',FAILURE:'#ef4444'})[s] || '#94a3b8';
@@ -3714,19 +3714,36 @@ async function loadTasks(){
       const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
       return `<span class="mono" style="font-size:11px;color:#86efac" title="${esc(text)}">${esc(trimmed)}</span>`;
     };
+    const fmtTs = ms => {
+      if(ms == null) return '<span style="color:var(--tx-3)">—</span>';
+      const d = new Date(typeof ms === 'number' ? ms : ms);
+      if(isNaN(d.getTime())) return '<span style="color:var(--tx-3)">—</span>';
+      return `<span class="mono" style="font-size:11px" title="${d.toISOString()}">${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}</span>`;
+    };
+    const fmtDur = (s, t) => {
+      // Prefer worker-reported result.duration_ms; fall back to created→updated diff.
+      const ms = t?.result?.duration_ms;
+      if(typeof ms === 'number' && ms >= 0) return `<span class="mono" style="font-size:11px;color:#a5b4fc">${(ms/1000).toFixed(2)}s</span>`;
+      if(typeof s === 'number' && s >= 0)    return `<span class="mono" style="font-size:11px;color:#a5b4fc">${s.toFixed(2)}s</span>`;
+      return '<span style="color:var(--tx-3)">—</span>';
+    };
     tbody.innerHTML=rows.map(t=>{
       const tid = t.task_id || '?';
       const c = stColor(t.status);
+      const completedTs = (t.status === 'SUCCESS' || t.status === 'FAILURE') ? t.updated_at : null;
       return `<tr>
-        <td class="mono" style="word-break:break-all;font-size:11px">${tid}</td>
+        <td class="mono" style="word-break:break-all;font-size:11px"><span>${tid}</span><button class="copy-tid-btn" data-tid="${tid}" title="Copy task ID" style="margin-left:6px;padding:1px 5px;font-size:10px;border:1px solid rgba(255,255,255,0.18);background:transparent;color:inherit;border-radius:3px;cursor:pointer;opacity:0.6">📋</button></td>
         <td class="muted">${t.task_type||'—'}</td>
         <td><span style="display:inline-block;padding:2px 7px;font-size:9.5px;font-weight:700;letter-spacing:.04em;border-radius:4px;background:${c}22;color:${c};border:1px solid ${c}55">${t.status||'—'}</span></td>
         <td class="mono">${t.worker_id||'—'}</td>
+        <td>${fmtTs(t.created_at)}</td>
+        <td>${fmtTs(completedTs)}</td>
+        <td>${fmtDur(t.duration_s, t)}</td>
         <td>${fmtOut(t)}</td>
         <td class="mono">N${t.owner ?? '?'}</td>
       </tr>`;
     }).join('');
-  }catch(e){tbody.innerHTML=`<tr><td colspan="6" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
+  }catch(e){tbody.innerHTML=`<tr><td colspan="9" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
 }
 // Delegated listener for refresh button
 document.addEventListener('click',e=>{
@@ -3734,6 +3751,20 @@ document.addEventListener('click',e=>{
 });
 document.getElementById('task-filter-jobid').addEventListener('input',loadTasks);
 document.getElementById('task-filter-status').addEventListener('change',loadTasks);
+// Copy-task-id button (event-delegated since the table re-renders)
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.copy-tid-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const tid = btn.getAttribute('data-tid');
+  if (!tid) return;
+  navigator.clipboard.writeText(tid).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓';
+    btn.style.opacity = '1';
+    setTimeout(() => { btn.textContent = orig; btn.style.opacity = '0.6'; }, 1200);
+  });
+});
 // Auto-refresh while the Tasks tab is visible (cheap — same endpoint as DHT page)
 setInterval(()=>{
   const pane = document.querySelector('.wl-pane-tasks');
