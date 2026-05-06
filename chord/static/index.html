@@ -707,10 +707,6 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/></svg>
       Ring Topology
     </div>
-    <div class="nav-item" data-page="analytics">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-      Analytics
-    </div>
     <div class="nav-item" data-page="observability">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       Observability
@@ -897,62 +893,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
       </div>
     </div><!-- /page-ring -->
 
-    <!-- ══════════════ PAGE: ANALYTICS ══════════════ -->
-    <div class="page" id="page-analytics">
-      <!-- 4 stat cards — spaced comfortably -->
-      <div class="grid g4" style="margin-bottom:20px">
-        <div class="stat-card info">
-          <div class="stat-label">Total Requests</div>
-          <div class="stat-value" id="an-reqs">—</div>
-          <div style="font-size:10px;color:var(--tx-3);margin-top:4px">File routing calls since start</div>
-        </div>
-        <div class="stat-card warn">
-          <div class="stat-label">Avg Hops</div>
-          <div class="stat-value" id="an-hops">—</div>
-          <div style="font-size:10px;color:var(--tx-3);margin-top:4px">Last 30 requests · target O(log N)</div>
-        </div>
-        <div class="stat-card ok">
-          <div class="stat-label">Jobs Completed</div>
-          <div class="stat-value" id="an-done">—</div>
-          <div style="font-size:10px;color:var(--tx-3);margin-top:4px">Across all ring nodes</div>
-        </div>
-        <div class="stat-card danger">
-          <div class="stat-label">Jobs Failed</div>
-          <div class="stat-value" id="an-fail">—</div>
-          <div style="font-size:10px;color:var(--tx-3);margin-top:4px">Across all ring nodes</div>
-        </div>
-      </div>
-
-      <!-- 2×2 chart grid — gap:28px gives enough breathing room between rows -->
-      <div class="grid g2" style="gap:28px 20px">
-        <!-- Throughput -->
-        <div class="chart-card" style="height:300px">
-          <div class="chart-title">Request Throughput</div>
-          <div class="chart-sub">Requests routed per minute · rolling 60-second window</div>
-          <canvas id="chart-throughput"></canvas>
-        </div>
-        <!-- Hop distribution -->
-        <div class="chart-card" style="height:300px">
-          <div class="chart-title">Hop Count Distribution</div>
-          <div class="chart-sub">O(log N) routing efficiency — green = 1 hop ideal</div>
-          <canvas id="chart-hops"></canvas>
-        </div>
-        <!-- Node queue depth -->
-        <div class="chart-card" style="height:300px">
-          <div class="chart-title">Node Queue Depth</div>
-          <div class="chart-sub">Jobs pending per node right now — spot load imbalances</div>
-          <canvas id="chart-load"></canvas>
-        </div>
-        <!-- Agent strategy -->
-        <div class="chart-card" style="height:300px">
-          <div class="chart-title">Agent Strategy Mix</div>
-          <div class="chart-sub" id="agent-chart-sub">LLM vs heuristic vs fallback placement decisions</div>
-          <canvas id="chart-agent"></canvas>
-        </div>
-      </div>
-    </div>
-
-       <!-- ══════════════ PAGE: OBSERVABILITY ══════════════ -->
+    <!-- ══════════════ PAGE: OBSERVABILITY ══════════════ -->
     <div class="page" id="page-observability" style="padding:0">
       <div style="flex:1;overflow:hidden;display:flex;flex-direction:column;position:relative">
         <div id="gf-loading" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:var(--bg-2);z-index:10;flex-direction:column;gap:12px">
@@ -1553,16 +1494,12 @@ let prevIds=new Set();
 const prevAddrById=new Map(); // node_id → address from last poll (for dead-node detection)
 const faultEvents=[];
 let allJobs=[],jobFilter='all';
-let chartsInited=false;
-const analyticsHist=[];
-let chartTP,chartHops,chartLoad,chartAgent;
 
 /* ═══════════════════════════════════════════════════════════════════
    NAVIGATION
 ═══════════════════════════════════════════════════════════════════ */
 const PAGE_META={
   ring:    {title:'Ring Topology',    sub:'Live Chord DHT ring visualization'},
-  analytics:{title:'Analytics',       sub:'Performance metrics and charts'},
   observability:{title:'Observability',sub:'Grafana / Prometheus dashboards'},
   workloads:{title:'Workloads',       sub:'Jobs and Task Registry'},
   requests:{title:'File Requests',    sub:'DHT file routing log'},
@@ -1581,7 +1518,6 @@ function navigate(page){
   const m=PAGE_META[page]||{};
   document.getElementById('topbar-title').textContent=m.title||page;
   document.getElementById('topbar-sub').textContent=m.sub||'';
-  if(page==='analytics'){initCharts();pollMetrics();}
   if(page==='workloads'){
     // First-load tab: jobs (already polled). Tasks tab loads on first switch.
   }
@@ -2010,15 +1946,6 @@ async function pollLogs(){
     const r=await fetch('/api/logs',{cache:'no-store'});
     const entries=(await r.json()).entries||[];
     renderAgentLog(entries);
-    if(chartsInited)updateAgentChart(entries);
-  }catch{}
-}
-
-async function pollMetrics(){
-  try{
-    const r=await fetch('/api/metrics/snapshot',{cache:'no-store'});
-    const snap=await r.json();
-    if(chartsInited)updateCharts(snap);
   }catch{}
 }
 
@@ -2210,154 +2137,11 @@ function addFaultEvent(msg){
 const GRID_C={color:'rgba(255,255,255,.05)',drawBorder:false};
 const TICK_C={color:'#475569',font:{size:10}};
 
-function initCharts(){
-  if(chartsInited)return;chartsInited=true;
-  Chart.defaults.color='#64748b';Chart.defaults.font.size=10;
-  const c=id=>document.getElementById(id).getContext('2d');
-
-  // Throughput — line chart
-  chartTP=new Chart(c('chart-throughput'),{
-    type:'line',
-    data:{
-      labels:[],
-      datasets:[{
-        label:'Req/min',data:[],
-        borderColor:'#6366f1',backgroundColor:'rgba(99,102,241,.12)',
-        fill:true,tension:.4,pointRadius:3,pointHoverRadius:5,
-        pointBackgroundColor:'#6366f1',borderWidth:2
-      }]
-    },
-    options:{
-      responsive:true,maintainAspectRatio:false,animation:{duration:200},
-      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false}},
-      scales:{
-        x:{grid:GRID_C,ticks:{...TICK_C,maxTicksLimit:6}},
-        y:{grid:GRID_C,ticks:TICK_C,beginAtZero:true,
-           title:{display:true,text:'req / min',color:'#475569',font:{size:9}}}
-      }
-    }
-  });
-
-  // Hop distribution — bar chart
-  chartHops=new Chart(c('chart-hops'),{
-    type:'bar',
-    data:{
-      labels:['1 hop','2 hops','3 hops','4+ hops'],
-      datasets:[{
-        data:[0,0,0,0],
-        backgroundColor:['#10b981','#3b82f6','#f59e0b','#ef4444'],
-        borderRadius:6,borderSkipped:false
-      }]
-    },
-    options:{
-      responsive:true,maintainAspectRatio:false,animation:{duration:200},
-      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.parsed.y} requests`}}},
-      scales:{
-        x:{grid:GRID_C,ticks:TICK_C},
-        y:{grid:GRID_C,ticks:{...TICK_C,stepSize:1},beginAtZero:true,
-           title:{display:true,text:'requests',color:'#475569',font:{size:9}}}
-      }
-    }
-  });
-
-  // Node queue depth — bar chart
-  chartLoad=new Chart(c('chart-load'),{
-    type:'bar',
-    data:{labels:[],datasets:[{label:'Queue depth',data:[],backgroundColor:[],borderRadius:6,borderSkipped:false}]},
-    options:{
-      responsive:true,maintainAspectRatio:false,animation:{duration:200},
-      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.parsed.y} jobs queued`}}},
-      scales:{
-        x:{grid:GRID_C,ticks:TICK_C},
-        y:{grid:GRID_C,ticks:{...TICK_C,stepSize:1},beginAtZero:true,
-           title:{display:true,text:'jobs',color:'#475569',font:{size:9}}}
-      }
-    }
-  });
-
-  // Agent strategy mix — doughnut
-  chartAgent=new Chart(c('chart-agent'),{
-    type:'doughnut',
-    data:{
-      labels:['LLM','Heuristic','Fallback'],
-      datasets:[{
-        data:[0,0,0],
-        backgroundColor:['#10b981','#f59e0b','#334155'],
-        borderWidth:2,borderColor:'#0d1117',hoverOffset:6
-      }]
-    },
-    options:{
-      responsive:true,maintainAspectRatio:false,animation:{duration:300},
-      cutout:'60%',
-      plugins:{
-        legend:{display:true,position:'bottom',labels:{color:'#64748b',font:{size:10},padding:12,usePointStyle:true}},
-        tooltip:{callbacks:{label:ctx=>{
-          const total=ctx.dataset.data.reduce((a,b)=>a+b,0);
-          const pct=total?Math.round(ctx.parsed/total*100):0;
-          return ` ${ctx.label}: ${ctx.parsed} (${pct}%)`;
-        }}}
-      }
-    }
-  });
-
-  // Immediately fetch so charts aren't blank for 5.5 s
-  pollMetrics();
-}
-
 function _pushTimePoint(chart,ts,val){
   const lbl=new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
   chart.data.labels.push(lbl);
   chart.data.datasets[0].data.push(val);
   if(chart.data.labels.length>30){chart.data.labels.shift();chart.data.datasets[0].data.shift();}
-}
-
-function updateCharts(snap){
-  analyticsHist.push(snap);
-  if(analyticsHist.length>30)analyticsHist.shift();
-
-  // Throughput
-  _pushTimePoint(chartTP,snap.ts,snap.req_per_min||0);
-  chartTP.update('none');
-
-  // Hop distribution (cumulative all-time buckets)
-  const hd=snap.hop_dist||{};
-  chartHops.data.datasets[0].data=[
-    hd['1']||0, hd['2']||0, hd['3']||0,
-    Object.entries(hd).filter(([k])=>+k>=4).reduce((s,[,v])=>s+v,0)
-  ];
-  chartHops.update('none');
-
-  // Node queue depth
-  const loads=snap.node_loads||{};
-  const nids=Object.keys(loads).sort((a,b)=>+a-+b);
-  chartLoad.data.labels=nids.map(id=>`N${id}`);
-  chartLoad.data.datasets[0].data=nids.map(id=>loads[id]||0);
-  chartLoad.data.datasets[0].backgroundColor=nids.map(id=>colorMap[+id]||'#6366f1');
-  chartLoad.update('none');
-
-  // Stat cards — only the 4 we kept
-  document.getElementById('an-reqs').textContent=snap.total_requests??'—';
-  document.getElementById('an-hops').textContent=snap.avg_hops!=null?snap.avg_hops.toFixed(2):'—';
-  document.getElementById('an-done').textContent=snap.jobs_completed??'—';
-  document.getElementById('an-fail').textContent=snap.jobs_failed??'—';
-}
-
-function updateAgentChart(entries){
-  if(!chartsInited)return;
-  let llm=0,h=0,fallback=0;
-  entries.forEach(e=>{
-    const s=(e.strategy||'').toLowerCase();
-    if(s==='llm'||s==='claude')llm++;
-    else if(s.startsWith('heuristic')||s==='rule-based')h++;
-    else fallback++;
-  });
-  chartAgent.data.datasets[0].data=[llm,h,fallback];
-  chartAgent.update('none');
-  const total=llm+h+fallback;
-  const sub=document.getElementById('agent-chart-sub');
-  if(sub)sub.textContent=total
-    ?`${total} decisions — LLM: ${llm} · Heuristic: ${h} · Fallback: ${fallback}`
-    :'No agent decisions yet — submit jobs to populate';
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3347,7 +3131,6 @@ setInterval(pollRing,     2000);
 setInterval(pollJobs,     2500);
 setInterval(pollRequests, 2200);
 setInterval(pollLogs,     4000);
-setInterval(pollMetrics,  5500);
 setInterval(pollWorkers,  3000);
 
 initFileSelector();
