@@ -744,7 +744,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
     </div>
     <div class="nav-item" data-page="agent">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/><path d="M12 6v6l4 2"/></svg>
-      Agent Log
+      Activity Log
     </div>
   </div>
 
@@ -759,14 +759,14 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 
   <div class="nav-section">
     <div class="nav-section-label">Assistant</div>
-    <a class="nav-item-chat" href="/chat" target="_blank" rel="noopener" title="Open AI Task Chat in new tab">
+    <a class="nav-item-chat" href="/chat" target="_blank" rel="noopener" title="Open Task Chat in new tab">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
         <circle cx="9" cy="10" r=".8" fill="currentColor" stroke="none"/>
         <circle cx="12" cy="10" r=".8" fill="currentColor" stroke="none"/>
         <circle cx="15" cy="10" r=".8" fill="currentColor" stroke="none"/>
       </svg>
-      AI Task Chat
+      Task Chat
       <span class="nav-chat-badge">new</span>
     </a>
   </div>
@@ -1362,21 +1362,20 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
     <!-- DHT toast region (bottom-right) -->
     <div id="dht-toast-region" style="position:fixed;right:20px;bottom:80px;display:flex;flex-direction:column;gap:8px;z-index:9999;pointer-events:none"></div>
 
-    <!-- ══════════════ PAGE: AGENT LOG ══════════════ -->
+    <!-- ══════════════ PAGE: ACTIVITY LOG ══════════════ -->
     <div class="page" id="page-agent">
-      <div class="grid g4" style="gap:16px;margin-bottom:16px">
+      <div class="grid g3" style="gap:16px;margin-bottom:16px">
         <div class="stat-card"><div class="stat-label">Total Events</div><div class="stat-value" id="ag-total">—</div></div>
-        <div class="stat-card ok"><div class="stat-label">Jobs Done</div><div class="stat-value" id="ag-done">—</div></div>
-        <div class="stat-card warn"><div class="stat-label">Jobs Failed</div><div class="stat-value" id="ag-fail">—</div></div>
-        <div class="stat-card info"><div class="stat-label">Agent Decisions</div><div class="stat-value" id="ag-h">—</div></div>
+        <div class="stat-card ok"><div class="stat-label">Node Joins</div><div class="stat-value" id="ag-joins">—</div></div>
+        <div class="stat-card warn"><div class="stat-label">Node Failures</div><div class="stat-value" id="ag-fails">—</div></div>
       </div>
       <div class="card">
         <div class="card-header">
           <div class="card-title">Live Ring Activity</div>
-          <div class="card-sub">Real-time feed from all nodes — job lifecycle · agent decisions · ring events · updates every 4s</div>
+          <div class="card-sub">Real-time event stream from all nodes — ring topology changes · node joins &amp; failures · job recovery · updates every 4s</div>
         </div>
         <div style="overflow-y:auto;max-height:calc(100vh - 340px)" id="agent-log-wrap">
-          <div class="empty-state"><div class="icon">🤖</div><p>No activity yet — submit a job to see the feed</p></div>
+          <div class="empty-state"><div class="icon">📡</div><p>No activity yet — add nodes or submit jobs to see the event stream</p></div>
         </div>
       </div>
     </div>
@@ -1599,7 +1598,7 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
           <div class="field">
             <label class="field-label">Target Node</label>
             <select class="inp" id="jtarget-modal">
-              <option value="">Auto (AI agent)</option>
+              <option value="">Auto (agent)</option>
             </select>
           </div>
           <div class="field">
@@ -1668,7 +1667,7 @@ const PAGE_META={
   workloads:{title:'Workloads',       sub:'Jobs and Task Registry'},
   requests:{title:'File Requests',    sub:'DHT file routing log'},
   dht:     {title:'DHT Store',        sub:'Direct key-value operations'},
-  agent:   {title:'Agent Log',        sub:'AI placement & recovery decisions'},
+  agent:   {title:'Activity Log',      sub:'Live ring event stream — topology changes & recovery'},
   fault:   {title:'Fault Lab',        sub:'Fault injection & ring recovery testing'},
 };
 
@@ -1954,7 +1953,7 @@ function updateSidebar(){
   const jsel=document.getElementById('jtarget');
   if(jsel){
     const cur=jsel.value;
-    jsel.innerHTML='<option value="">Auto (AI agent)</option>';
+    jsel.innerHTML='<option value="">Auto (agent)</option>';
     for(const nd of ring.nodes){
       const o=document.createElement('option');
       o.value=nd.address;
@@ -2656,64 +2655,61 @@ function updateFileTypeChart(reqs){
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   RENDER: AGENT LOG
+   RENDER: ACTIVITY LOG
+   Shows ring-level events only: node joins, node failures, job recovery.
+   Job lifecycle events (submit/claim/done/failed/retry) are tracked on
+   the Workloads page and are filtered out here to avoid duplication.
 ═══════════════════════════════════════════════════════════════════ */
+
+// Event types shown in the Activity Log (ring topology + recovery only)
+const ACTIVITY_TYPES = new Set(['node_join','node_fail','job_recover','ring']);
+
 function renderAgentLog(entries){
   const wrap=document.getElementById('agent-log-wrap');if(!wrap)return;
-  if(!entries.length){
-    wrap.innerHTML='<div class="empty-state"><div class="icon">🤖</div><p>No activity yet — submit a job to see the live feed</p></div>';
+
+  // Filter: keep only ring/recovery events
+  const ringEntries = entries.filter(e => {
+    const t = e.type || '';
+    return ACTIVITY_TYPES.has(t) || (!t && !e.agent);
+  });
+
+  if(!ringEntries.length){
+    wrap.innerHTML='<div class="empty-state"><div class="icon">📡</div><p>No ring activity yet — add nodes or submit jobs to see the event stream</p></div>';
+    // Update stat cards to zero
+    document.getElementById('ag-total').textContent=0;
+    document.getElementById('ag-joins').textContent=0;
+    document.getElementById('ag-fails').textContent=0;
     return;
   }
 
   // Count by type for stat cards
-  let done=0,failed=0,agentDecisions=0;
-  entries.forEach(e=>{
+  let joins=0, fails=0;
+  ringEntries.forEach(e=>{
     const t=e.type||'';
-    if(t==='job_done')done++;
-    else if(t==='job_failed')failed++;
-    else if(t==='agent'||e.agent)agentDecisions++;
+    if(t==='node_join') joins++;
+    else if(t==='node_fail') fails++;
   });
-  document.getElementById('ag-total').textContent=entries.length;
-  document.getElementById('ag-done').textContent=done;
-  document.getElementById('ag-fail').textContent=failed;
-  document.getElementById('ag-h').textContent=agentDecisions;
+  document.getElementById('ag-total').textContent=ringEntries.length;
+  document.getElementById('ag-joins').textContent=joins;
+  document.getElementById('ag-fails').textContent=fails;
 
   // Icon map per event type
   const ICONS={
-    job_submit:'🚀', job_claim:'⚙️', job_done:'✅', job_failed:'❌',
-    job_retry:'🔁', job_recover:'♻️', node_join:'🔗', node_fail:'💀',
-    agent:'🤖', ring:'🔄'
+    job_recover:'♻️', node_join:'🔗', node_fail:'💀', ring:'🔄'
   };
 
   // Show newest first
-  wrap.innerHTML=[...entries].reverse().map(e=>{
-    const evType=e.type||(e.agent?'agent':'ring');
-    const icon=ICONS[evType]||'📌';
+  wrap.innerHTML=[...ringEntries].reverse().map(e=>{
+    const evType=e.type||'ring';
+    const icon=ICONS[evType]||'📡';
     const t=new Date((e.ts||0)*1000).toLocaleTimeString();
-
-    // Build message: prefer e.msg (activity log), fall back to legacy agent decision format
-    let msg=e.msg||'';
-    let detail='';
-    if(!msg && e.agent){
-      // Legacy agent decision entry from agent_decisions.jsonl
-      const s=e.strategy||'';
-      const sCls=s==='llm'?'a-strat-llm':s.startsWith('heuristic')?'a-strat-h':'a-muted';
-      msg=`<span class="a-name">${e.agent}</span><span class="a-muted"> · ${e.tool||''} · </span><span class="${sCls}">${s}</span><span class="a-muted"> · ${e.latency_ms||0}ms</span>`;
-      const rea=e.decision?.reasoning||'';
-      if(rea)detail=`<div class="a-reason" title="${rea}">${rea}</div>`;
-    } else {
-      msg=`<span class="a-msg ev-${evType}">${msg}</span>`;
-      // Show agent reasoning from details if present
-      const rea=(e.details||{}).reasoning||'';
-      if(rea)detail=`<div class="a-reason" title="${rea}">${rea}</div>`;
-    }
+    const msg=`<span class="a-msg ev-${evType}">${e.msg||evType}</span>`;
 
     return`<div class="agent-item">
       <span class="a-icon">${icon}</span>
       <div class="a-body">
         ${msg}
         <span class="a-muted"> · ${t}</span>
-        ${detail}
       </div>
     </div>`;
   }).join('');
@@ -2772,7 +2768,7 @@ function setFb(id,msg,type='info'){
     // Populate target-node options directly from the ring (sidebar form was removed)
     const dst = document.getElementById('jtarget-modal');
     const cur = dst.value;
-    dst.innerHTML = '<option value="">Auto (AI agent)</option>';
+    dst.innerHTML = '<option value="">Auto (agent)</option>';
     for(const nd of (ring.nodes||[])){
       const o = document.createElement('option');
       o.value = nd.address;
@@ -3783,8 +3779,8 @@ function openNodeDetail(nodeId){
     <div style="background:var(--bg-1);border:1px solid var(--b2);border-radius:var(--r-md);padding:12px 14px;font-family:var(--mono);font-size:12px;color:var(--warn);margin:12px 0">finger[i] = successor(n + 2ⁱ mod 2ᴹ),  i = 0…M-1</div>
     <h3 style="font-size:13px;font-weight:700;margin:14px 0 6px">This Node (${nodeId})</h3>
     <p style="font-size:12px;line-height:1.75;color:var(--tx-2)">Owns keys in range <code style="font-family:var(--mono);background:var(--bg-1);padding:1px 5px;border-radius:3px;color:var(--ok)">(${pred.id??'?'}, ${nodeId}]</code>. Stores <strong>${dataKeys.length}</strong> local keys. Stabilization runs every 2 s to maintain ring health and fix finger entries.</p>
-    <h3 style="font-size:13px;font-weight:700;margin:14px 0 6px">AI Agent Integration</h3>
-    <p style="font-size:12px;line-height:1.75;color:var(--tx-2)">The PlacementAgent selects which node executes each job based on queue depth and failure rates. The RecoveryAgent detects node failures and re-submits orphaned jobs. Both use Claude LLM or heuristic fallback.</p>
+    <h3 style="font-size:13px;font-weight:700;margin:14px 0 6px">Agent Integration</h3>
+    <p style="font-size:12px;line-height:1.75;color:var(--tx-2)">The placement agent selects which node executes each job based on queue depth and failure rates. The recovery agent detects node failures and re-submits orphaned jobs automatically.</p>
   `;
 
   // Reset tabs
@@ -4031,8 +4027,8 @@ pollLogs();
 </script>
 
 <!-- ═══════════════════════ FLOATING CHAT BUTTON ═══════════════════════ -->
-<a class="chat-fab" href="/chat" target="_blank" rel="noopener" title="Open AI Task Chat">
-  <span class="chat-fab-tooltip">AI Task Chat</span>
+<a class="chat-fab" href="/chat" target="_blank" rel="noopener" title="Open Task Chat">
+  <span class="chat-fab-tooltip">Task Chat</span>
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
     <circle cx="9" cy="10" r=".9" fill="white" stroke="none"/>
