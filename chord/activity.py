@@ -21,16 +21,19 @@ _log: deque = deque(maxlen=300)
 _lock = threading.Lock()
 
 # Event types (used as CSS class hooks in the frontend too)
-JOB_SUBMIT  = "job_submit"
-JOB_CLAIM   = "job_claim"
-JOB_DONE    = "job_done"
-JOB_FAILED  = "job_failed"
-JOB_RETRY   = "job_retry"
-JOB_RECOVER = "job_recover"
-NODE_JOIN   = "node_join"
-NODE_FAIL   = "node_fail"
-AGENT       = "agent"
-RING        = "ring"
+JOB_SUBMIT   = "job_submit"
+JOB_CLAIM    = "job_claim"
+JOB_DONE     = "job_done"
+JOB_FAILED   = "job_failed"
+JOB_RETRY    = "job_retry"
+JOB_RECOVER  = "job_recover"
+NODE_JOIN    = "node_join"
+NODE_REMOVE  = "node_remove"
+NODE_FAIL    = "node_fail"
+WORKER_JOIN  = "worker_join"
+WORKER_LEAVE = "worker_leave"
+AGENT        = "agent"
+RING         = "ring"
 
 
 def log(event_type: str, msg: str, details: dict = None) -> None:

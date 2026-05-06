@@ -618,6 +618,15 @@ def create_app(node: ChordNode) -> Flask:
 
     @app.delete("/api/nodes/<path:address>")
     def api_remove_node(address):
+        # Resolve node_id for the activity log before the node disappears
+        try:
+            st = _requests.get(f"http://{address}/chord/state", timeout=1).json()
+            leaving_id = st.get("node_id", address)
+        except Exception:
+            leaving_id = address
+        activity.log(activity.NODE_REMOVE,
+                     f"Node {leaving_id} gracefully leaving ring",
+                     {"address": address, "node_id": leaving_id})
         try:
             _requests.post(f"http://{address}/admin/leave", timeout=2)
         except Exception:
@@ -1207,12 +1216,47 @@ def create_app(node: ChordNode) -> Flask:
 
     _VALID_TASK_TYPES = {"SCRIPT", "BINARY"}
 
+    # Track workers we have already emitted a WORKER_JOIN event for so we
+    # only log each worker once, not on every heartbeat.
+    _known_workers: set = set()
+    _known_workers_lock = threading.Lock()
+
+    def _emit_worker_join(worker_id: str) -> None:
+        with _known_workers_lock:
+            if worker_id in _known_workers:
+                return
+            _known_workers.add(worker_id)
+        activity.log(activity.WORKER_JOIN,
+                     f"Worker '{worker_id}' connected to ring",
+                     {"worker_id": worker_id})
+
+    def _start_worker_leave_watcher() -> None:
+        """Daemon thread: emit WORKER_LEAVE when a live worker times out."""
+        def _watch():
+            while True:
+                time.sleep(5)
+                try:
+                    dead = worker_registry.dead_workers()
+                    with _known_workers_lock:
+                        for wid, age_s in dead:
+                            if wid in _known_workers:
+                                _known_workers.discard(wid)
+                                activity.log(activity.WORKER_LEAVE,
+                                             f"Worker '{wid}' disconnected (last seen {int(age_s)}s ago)",
+                                             {"worker_id": wid, "age_s": round(age_s, 1)})
+                except Exception:
+                    pass
+        threading.Thread(target=_watch, daemon=True, name="worker-leave-watcher").start()
+
+    _start_worker_leave_watcher()
+
     @app.post("/workers/heartbeat")
     def workers_heartbeat():
         body = request.get_json(silent=True) or {}
         worker_id = body.get("worker_id")
         if not worker_id:
             return jsonify({"ok": False, "error": "worker_id required"}), 422
+        _emit_worker_join(worker_id)
         worker_registry.heartbeat(worker_id)
         return jsonify({"ok": True})
 

@@ -592,13 +592,22 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 .a-strat-h{color:var(--warn)}
 .a-muted{color:var(--tx-3)}
 .a-msg{color:var(--tx-1)}
-.a-msg.ev-job_submit{color:#818cf8}
-.a-msg.ev-job_done{color:var(--ok)}
-.a-msg.ev-job_failed{color:var(--danger)}
-.a-msg.ev-job_recover{color:#f59e0b}
-.a-msg.ev-node_join{color:#34d399}
-.a-msg.ev-node_fail{color:var(--danger)}
-.a-msg.ev-agent{color:var(--accent-light)}
+/* Node topology */
+.a-msg.ev-node-join   {color:#34d399}
+.a-msg.ev-node-remove {color:#94a3b8}
+.a-msg.ev-node-fail   {color:var(--danger)}
+/* Workers */
+.a-msg.ev-worker-join {color:#60a5fa}
+.a-msg.ev-worker-leave{color:#94a3b8}
+/* Job lifecycle */
+.a-msg.ev-job-submit  {color:#818cf8}
+.a-msg.ev-job-claim   {color:#a78bfa}
+.a-msg.ev-job-done    {color:var(--ok)}
+.a-msg.ev-job-fail    {color:var(--danger)}
+.a-msg.ev-job-retry   {color:var(--warn)}
+.a-msg.ev-job-recover {color:#f59e0b}
+/* Generic */
+.a-msg.ev-ring        {color:var(--tx-2)}
 .a-reason{
   color:var(--tx-3);font-size:10px;margin-top:2px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -1364,15 +1373,16 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 
     <!-- ══════════════ PAGE: ACTIVITY LOG ══════════════ -->
     <div class="page" id="page-agent">
-      <div class="grid g3" style="gap:16px;margin-bottom:16px">
+      <div class="grid g4" style="gap:16px;margin-bottom:16px">
         <div class="stat-card"><div class="stat-label">Total Events</div><div class="stat-value" id="ag-total">—</div></div>
-        <div class="stat-card ok"><div class="stat-label">Node Joins</div><div class="stat-value" id="ag-joins">—</div></div>
-        <div class="stat-card warn"><div class="stat-label">Node Failures</div><div class="stat-value" id="ag-fails">—</div></div>
+        <div class="stat-card ok"><div class="stat-label">Node Events</div><div class="stat-value" id="ag-nodes">—</div></div>
+        <div class="stat-card info"><div class="stat-label">Worker Events</div><div class="stat-value" id="ag-workers">—</div></div>
+        <div class="stat-card warn"><div class="stat-label">Job Events</div><div class="stat-value" id="ag-jobs">—</div></div>
       </div>
       <div class="card">
         <div class="card-header">
           <div class="card-title">Live Ring Activity</div>
-          <div class="card-sub">Real-time event stream from all nodes — ring topology changes · node joins &amp; failures · job recovery · updates every 4s</div>
+          <div class="card-sub">Complete event stream — node joins &amp; removals · worker connections · job lifecycle · ring recovery · updates every 4s</div>
         </div>
         <div style="overflow-y:auto;max-height:calc(100vh - 340px)" id="agent-log-wrap">
           <div class="empty-state"><div class="icon">📡</div><p>No activity yet — add nodes or submit jobs to see the event stream</p></div>
@@ -2656,59 +2666,69 @@ function updateFileTypeChart(reqs){
 
 /* ═══════════════════════════════════════════════════════════════════
    RENDER: ACTIVITY LOG
-   Shows ring-level events only: node joins, node failures, job recovery.
-   Job lifecycle events (submit/claim/done/failed/retry) are tracked on
-   the Workloads page and are filtered out here to avoid duplication.
+   Full ring event stream — node topology, worker connections, job
+   lifecycle, and recovery events all in one chronological feed.
 ═══════════════════════════════════════════════════════════════════ */
 
-// Event types shown in the Activity Log (ring topology + recovery only)
-const ACTIVITY_TYPES = new Set(['node_join','node_fail','job_recover','ring']);
+// Icon and colour-class per event type
+const ACTIVITY_META = {
+  // ── Node topology ─────────────────────────────────────────────
+  node_join:    { icon:'🔗', cls:'ev-node-join'   },
+  node_remove:  { icon:'🔌', cls:'ev-node-remove' },
+  node_fail:    { icon:'💀', cls:'ev-node-fail'   },
+  // ── Workers ───────────────────────────────────────────────────
+  worker_join:  { icon:'🤝', cls:'ev-worker-join' },
+  worker_leave: { icon:'👋', cls:'ev-worker-leave'},
+  // ── Job lifecycle ─────────────────────────────────────────────
+  job_submit:   { icon:'🚀', cls:'ev-job-submit'  },
+  job_claim:    { icon:'⚙️',  cls:'ev-job-claim'   },
+  job_done:     { icon:'✅', cls:'ev-job-done'    },
+  job_failed:   { icon:'❌', cls:'ev-job-fail'    },
+  job_retry:    { icon:'🔁', cls:'ev-job-retry'   },
+  job_recover:  { icon:'♻️',  cls:'ev-job-recover' },
+  // ── Generic ───────────────────────────────────────────────────
+  ring:         { icon:'🔄', cls:'ev-ring'        },
+};
+
+const NODE_TYPES   = new Set(['node_join','node_remove','node_fail']);
+const WORKER_TYPES = new Set(['worker_join','worker_leave']);
+const JOB_TYPES    = new Set(['job_submit','job_claim','job_done','job_failed','job_retry','job_recover']);
 
 function renderAgentLog(entries){
   const wrap=document.getElementById('agent-log-wrap');if(!wrap)return;
 
-  // Filter: keep only ring/recovery events
-  const ringEntries = entries.filter(e => {
-    const t = e.type || '';
-    return ACTIVITY_TYPES.has(t) || (!t && !e.agent);
-  });
-
-  if(!ringEntries.length){
-    wrap.innerHTML='<div class="empty-state"><div class="icon">📡</div><p>No ring activity yet — add nodes or submit jobs to see the event stream</p></div>';
-    // Update stat cards to zero
-    document.getElementById('ag-total').textContent=0;
-    document.getElementById('ag-joins').textContent=0;
-    document.getElementById('ag-fails').textContent=0;
+  if(!entries.length){
+    wrap.innerHTML='<div class="empty-state"><div class="icon">📡</div><p>No activity yet — add nodes or submit jobs to see the event stream</p></div>';
+    ['ag-total','ag-nodes','ag-workers','ag-jobs'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.textContent='0';
+    });
     return;
   }
 
-  // Count by type for stat cards
-  let joins=0, fails=0;
-  ringEntries.forEach(e=>{
+  // Count by group for stat cards
+  let nodeEvts=0, workerEvts=0, jobEvts=0;
+  entries.forEach(e=>{
     const t=e.type||'';
-    if(t==='node_join') joins++;
-    else if(t==='node_fail') fails++;
+    if(NODE_TYPES.has(t))        nodeEvts++;
+    else if(WORKER_TYPES.has(t)) workerEvts++;
+    else if(JOB_TYPES.has(t))    jobEvts++;
   });
-  document.getElementById('ag-total').textContent=ringEntries.length;
-  document.getElementById('ag-joins').textContent=joins;
-  document.getElementById('ag-fails').textContent=fails;
+  document.getElementById('ag-total').textContent   = entries.length;
+  document.getElementById('ag-nodes').textContent   = nodeEvts;
+  document.getElementById('ag-workers').textContent = workerEvts;
+  document.getElementById('ag-jobs').textContent    = jobEvts;
 
-  // Icon map per event type
-  const ICONS={
-    job_recover:'♻️', node_join:'🔗', node_fail:'💀', ring:'🔄'
-  };
-
-  // Show newest first
-  wrap.innerHTML=[...ringEntries].reverse().map(e=>{
-    const evType=e.type||'ring';
-    const icon=ICONS[evType]||'📡';
-    const t=new Date((e.ts||0)*1000).toLocaleTimeString();
-    const msg=`<span class="a-msg ev-${evType}">${e.msg||evType}</span>`;
+  // Render newest-first
+  wrap.innerHTML=[...entries].reverse().map(e=>{
+    const evType = e.type || 'ring';
+    const meta   = ACTIVITY_META[evType] || { icon:'📡', cls:'ev-ring' };
+    const t      = new Date((e.ts||0)*1000).toLocaleTimeString();
+    const msgTxt = e.msg || evType;
 
     return`<div class="agent-item">
-      <span class="a-icon">${icon}</span>
+      <span class="a-icon">${meta.icon}</span>
       <div class="a-body">
-        ${msg}
+        <span class="a-msg ${meta.cls}">${msgTxt}</span>
         <span class="a-muted"> · ${t}</span>
       </div>
     </div>`;
