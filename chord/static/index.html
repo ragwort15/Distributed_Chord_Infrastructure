@@ -1677,7 +1677,7 @@ let allJobs=[],jobFilter='all';
 const PAGE_META={
   ring:    {title:'Ring Topology',    sub:'Live Chord DHT ring visualization'},
   observability:{title:'Observability',sub:'Grafana / Prometheus dashboards'},
-  workloads:{title:'Workloads',       sub:'Jobs and Task Registry'},
+  workloads:{title:'Workloads',       sub:'Task Registry'},
   requests:{title:'File Requests',    sub:'DHT file routing log'},
   dht:     {title:'DHT Store',        sub:'Direct key-value operations'},
   agent:   {title:'Activity Log',      sub:'Live ring event stream — topology changes & recovery'},
@@ -3728,7 +3728,10 @@ async function loadTasks(){
     }).join('');
   }catch(e){tbody.innerHTML=`<tr><td colspan="6" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
 }
-document.getElementById('btn-refresh-tasks').addEventListener('click',loadTasks);
+// Delegated listener for refresh button
+document.addEventListener('click',e=>{
+  if(e.target.closest('#btn-refresh-tasks'))loadTasks();
+});
 document.getElementById('task-filter-jobid').addEventListener('input',loadTasks);
 document.getElementById('task-filter-status').addEventListener('change',loadTasks);
 // Auto-refresh while the Tasks tab is visible (cheap — same endpoint as DHT page)
