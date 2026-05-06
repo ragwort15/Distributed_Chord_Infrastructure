@@ -1111,6 +1111,48 @@ def create_app(node: ChordNode) -> Flask:
         except TaskValidationError as e:
             return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
 
+    @app.post("/api/tasks/clear-completed")
+    def api_clear_completed_tasks():
+        """
+        Wipe all SUCCESS/FAILURE HT1 records owned by this node and remove
+        them from any HT2 worker queues. Leaves PENDING/RUNNING tasks alone.
+        """
+        deleted_ht1 = 0
+        deleted_ht2 = 0
+        try:
+            with node._lock:
+                keys = list(node.data_store.keys())
+            for k in keys:
+                if not k.startswith("result:"):
+                    continue
+                v = node.get(k)
+                if not isinstance(v, dict):
+                    continue
+                if v.get("status") not in ("SUCCESS", "FAILURE"):
+                    continue
+                tid = k[len("result:"):]
+                wid = v.get("worker_id")
+                # Remove from HT2
+                if wid:
+                    try:
+                        worker_assignment_service.remove(wid, tid)
+                        deleted_ht2 += 1
+                    except Exception:
+                        pass
+                # Delete the HT1 record
+                try:
+                    node.delete(k)
+                    deleted_ht1 += 1
+                except Exception:
+                    logger.exception("[clear-completed] failed to delete %s", k)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        try: _obs_event("clear_completed",
+                        f"cleared {deleted_ht1} completed tasks (HT1) + {deleted_ht2} HT2 entries",
+                        ht1=deleted_ht1, ht2=deleted_ht2)
+        except Exception: pass
+        return jsonify({"ok": True, "deleted_ht1": deleted_ht1, "deleted_ht2": deleted_ht2})
+
     @app.delete("/tasks/<task_id>")
     def deregister_task(task_id):
         hard_delete = request.args.get("hard", "false").lower() == "true"

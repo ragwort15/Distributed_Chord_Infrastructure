@@ -1200,7 +1200,8 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
               <option value="SUCCESS">SUCCESS</option>
               <option value="FAILURE">FAILURE</option>
             </select>
-            <button class="btn btn-ghost btn-sm" id="btn-refresh-tasks">↻ Refresh</button>
+            <button class="btn btn-ghost btn-sm" id="btn-refresh-tasks" onclick="window._refreshTasksWithFeedback && window._refreshTasksWithFeedback()">↻ Refresh</button>
+            <button class="btn btn-danger btn-sm" id="btn-clear-completed" title="Delete all SUCCESS/FAILURE tasks from HT1 + HT2" onclick="window._clearCompletedTasks && window._clearCompletedTasks()">🗑 Clear Completed</button>
           </div>
         </div>
         <div style="overflow-y:auto;max-height:400px">
@@ -3748,10 +3749,60 @@ async function loadTasks(){
     }).join('');
   }catch(e){tbody.innerHTML=`<tr><td colspan="9" style="color:var(--danger);padding:14px;text-align:center">Error: ${e.message}</td></tr>`;}
 }
-// Delegated listener for refresh button
-document.addEventListener('click',e=>{
-  if(e.target.closest('#btn-refresh-tasks'))loadTasks();
+// Refresh button: visible feedback so a click is obvious
+let _refreshing = false;
+async function _refreshTasksWithFeedback() {
+  if (_refreshing) return;
+  _refreshing = true;
+  const btn = document.getElementById('btn-refresh-tasks');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = '⟳ Refreshing…'; }
+  const startedAt = Date.now();
+  try {
+    await loadTasks();
+    await refreshTaskRegHt2();
+  } finally {
+    // Hold the visual feedback for at least 400ms so the click is perceptible
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < 400) await new Promise(r => setTimeout(r, 400 - elapsed));
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '✓ Refreshed';
+      setTimeout(() => { if (btn) btn.innerHTML = orig; }, 600);
+    }
+    _refreshing = false;
+  }
+}
+window._refreshTasksWithFeedback = _refreshTasksWithFeedback;
+document.addEventListener('click', e => {
+  if (e.target.closest('#btn-refresh-tasks')) _refreshTasksWithFeedback();
 });
+
+// Clear-completed button: wipes SUCCESS/FAILURE rows from HT1 + HT2
+async function _clearCompletedTasks() {
+  if (!confirm('Delete all SUCCESS and FAILURE tasks from this node? Pending/running tasks are not affected.')) return;
+  const btn = document.getElementById('btn-clear-completed');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = '🗑 Clearing…'; }
+  try {
+    const r = await fetch('/api/tasks/clear-completed', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      if (btn) btn.innerHTML = `✓ Cleared ${d.deleted_ht1}`;
+      await loadTasks();
+      await refreshTaskRegHt2();
+    } else {
+      if (btn) btn.innerHTML = '✕ Failed';
+      console.error('clear-completed failed:', d);
+    }
+  } catch (e) {
+    if (btn) btn.innerHTML = '✕ Error';
+    console.error(e);
+  } finally {
+    setTimeout(() => { if (btn) { btn.disabled = false; btn.innerHTML = orig; } }, 900);
+  }
+}
+window._clearCompletedTasks = _clearCompletedTasks;
 document.getElementById('task-filter-jobid').addEventListener('input',loadTasks);
 document.getElementById('task-filter-status').addEventListener('change',loadTasks);
 // Copy-task-id button (event-delegated since the table re-renders)
