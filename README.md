@@ -414,22 +414,58 @@ The chat lets you submit tasks and query ring state in natural language. It is b
 
 ## Observability Stack
 
-Prometheus and Grafana run alongside the Chord nodes and are included in `docker-compose.yml`.
+Prometheus and Grafana provide real-time observability of the Chord DHT cluster. The Grafana dashboard is **embedded directly in the Chord control center** (Observability tab) as well as available standalone.
 
-**Start just the observability layer** (if you already have nodes running locally):
+### Setup
+
+**Start Prometheus + Grafana:**
 
 ```bash
-docker compose -f observability/docker-compose.yml up -d
+cd observability
+docker-compose up -d
 ```
 
-| Service | URL |
-|---|---|
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 (admin / admin) |
+**Start a Chord node** (in another terminal):
 
-The pre-built **Chord DHT** Grafana dashboard (`observability/grafana/dashboards/chord_dht.json`) is provisioned automatically and shows ring size, request throughput, hop distribution, queue depth, and job counters.
+```bash
+python3 run_node.py --port 5005
+```
 
-Prometheus scrapes `/metrics` on each node every 15 s (configured in `observability/prometheus.yml`).
+**Open the dashboard:**
+
+Visit **http://127.0.0.1:5005/dashboard** and click the **Observability** tab.
+
+You should see the live Grafana dashboard with:
+- **Request Throughput per Node** — file requests/sec routed by each node
+- **Avg Hop Count** — average Chord routing hops (O(log N) guarantee)
+- **Ring Size** — number of live nodes
+- **Total Requests** — cumulative file requests across the ring
+
+The dashboard auto-refreshes every 5 seconds.
+
+### Configuration
+
+| Service | URL | Credentials |
+|---|---|---|
+| Prometheus | http://localhost:9090 | — |
+| Grafana (embedded) | http://127.0.0.1:5005/dashboard → Observability tab | — (anonymous) |
+| Grafana (standalone) | http://localhost:3000 | admin / chord123 |
+
+### How It Works
+
+- **Prometheus** scrapes `/prom_metrics` endpoint on each Chord node every 5 seconds
+- **Grafana** displays the scraped metrics using the pre-built **Chord DHT** dashboard (`observability/grafana/dashboards/chord_dht.json`)
+- The **Observability tab** in the control center loads Grafana dynamically via `/api/config` endpoint, allowing the Grafana URL to be overridden via the `GRAFANA_URL` environment variable (useful for Docker, Kubernetes, or cloud deployments)
+
+### Environment Variable
+
+To use a different Grafana URL (e.g., for Docker-to-container communication):
+
+```bash
+GRAFANA_URL=http://grafana:3000 python3 run_node.py --port 5005
+```
+
+The `/api/config` endpoint will return the custom URL, and the iframe will use it.
 
 ---
 
