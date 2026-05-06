@@ -1,8 +1,13 @@
 version: '3.8'
 
 # =============================================================================
-# Chord DHT — Demo Compose (optimized for single EC2 t3.small / t2.micro)
-# All services share one network; resource limits keep RAM under ~900 MB total.
+# Chord DHT — Demo Compose (optimized for single EC2 t3.small)
+# t3.small has 2 GB RAM. Budget:
+#   3 × chord node @ 350 MB = 1050 MB
+#   prometheus           @ 150 MB =  150 MB
+#   grafana              @ 150 MB =  150 MB
+#   OS + Docker overhead         =  ~300 MB
+#   Total                        ~ 1650 MB  (safe headroom on 2 GB)
 # =============================================================================
 
 services:
@@ -23,19 +28,20 @@ services:
       CHORD_ID: "10"
       CHORD_JOIN: ""          # Bootstrap — no join target
       PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: "INFO"
     networks:
       - chord-net
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:5000/chord/ping"]
       interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      timeout: 8s
+      retries: 6
+      start_period: 45s       # Python + Flask + waitress cold start needs ~30-40s
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 200M
+          memory: 350M        # Raised from 200M — 200M caused OOMKill on startup
     logging:
       driver: "json-file"
       options:
@@ -55,6 +61,7 @@ services:
       CHORD_ID: "80"
       CHORD_JOIN: "chord-node-1:5000"
       PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: "INFO"
     networks:
       - chord-net
     depends_on:
@@ -63,14 +70,14 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:5000/chord/ping"]
       interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      timeout: 8s
+      retries: 6
+      start_period: 45s
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 200M
+          memory: 350M
     logging:
       driver: "json-file"
       options:
@@ -90,6 +97,7 @@ services:
       CHORD_ID: "150"
       CHORD_JOIN: "chord-node-1:5000"
       PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: "INFO"
     networks:
       - chord-net
     depends_on:
@@ -98,14 +106,14 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:5000/chord/ping"]
       interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      timeout: 8s
+      retries: 6
+      start_period: 45s
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 200M
+          memory: 350M
     logging:
       driver: "json-file"
       options:
@@ -126,7 +134,7 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=6h'   # Keep only 6h for demo (saves disk)
+      - '--storage.tsdb.retention.time=6h'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
     networks:
@@ -161,7 +169,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_INSTALL_PLUGINS: ""            # No extra plugins → faster startup
+      GF_INSTALL_PLUGINS: ""
       GF_LOG_LEVEL: warn
     volumes:
       - grafana-data:/var/lib/grafana

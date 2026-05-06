@@ -13,14 +13,18 @@ echo "[bootstrap] Starting Chord DHT demo bootstrap at $(date)"
 # ---------------------------------------------------------------------------
 # 1. System updates
 # ---------------------------------------------------------------------------
+# Amazon Linux 2023 ships with curl-minimal. The full 'curl' package conflicts
+# with it, so we use --allowerasing to let dnf swap the minimal variant out.
+# We only install what's actually needed: docker, git, htop.
+# curl-minimal is already present and sufficient for the bootstrap curl calls.
+# ---------------------------------------------------------------------------
 dnf update -y
-dnf install -y \
+dnf install -y --allowerasing \
     docker \
     git \
-    curl \
-    wget \
-    unzip \
     htop
+
+echo "[bootstrap] Packages installed"
 
 # ---------------------------------------------------------------------------
 # 2. Docker setup
@@ -28,21 +32,24 @@ dnf install -y \
 systemctl enable docker
 systemctl start docker
 
-# Add ec2-user to docker group so we can run docker without sudo
+# Add ec2-user to docker group (takes effect on next login; deploy.sh uses sudo)
 usermod -aG docker ec2-user
+
+echo "[bootstrap] Docker started"
 
 # ---------------------------------------------------------------------------
 # 3. Docker Compose v2 (plugin style)
 # ---------------------------------------------------------------------------
-DOCKER_COMPOSE_VERSION="v2.27.0"
+COMPOSE_VERSION="v2.27.0"
 mkdir -p /usr/local/lib/docker/cli-plugins
-curl -SL \
-  "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+
+curl -fsSL \
+  "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
+
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-# Verify
-docker compose version
+echo "[bootstrap] Docker Compose installed: $(docker compose version)"
 
 # ---------------------------------------------------------------------------
 # 4. Create app directory with right ownership
@@ -51,9 +58,9 @@ mkdir -p /home/ec2-user/chord-app
 chown -R ec2-user:ec2-user /home/ec2-user/chord-app
 
 # ---------------------------------------------------------------------------
-# 5. Signal that bootstrap is done
+# 5. Signal that bootstrap is complete
 # ---------------------------------------------------------------------------
 touch /tmp/bootstrap-complete
 echo "[bootstrap] Bootstrap complete at $(date)"
-echo "[bootstrap] Docker version: $(docker --version)"
-echo "[bootstrap] Compose version: $(docker compose version)"
+echo "[bootstrap] Docker  : $(docker --version)"
+echo "[bootstrap] Compose : $(docker compose version)"
