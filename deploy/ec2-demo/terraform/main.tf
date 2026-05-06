@@ -172,7 +172,7 @@ resource "aws_instance" "chord_demo" {
   }
 
   # Bootstrap: install Docker + Docker Compose on first boot
-  user_data = base64encode(templatefile("${path.module}/../scripts/ec2-bootstrap.sh", {}))
+  user_data = base64encode(file("${path.module}/../scripts/ec2-bootstrap.sh"))
 
   # Prevent accidental termination during the demo
   disable_api_termination = false
