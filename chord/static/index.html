@@ -1842,12 +1842,7 @@ function renderRing(){
 
       if(showIds)ng.appendChild(st(p.x,p.y,n.node_id,{fill:c,'font-size':11,'font-weight':700,'font-family':'monospace'}));
 
-      const qd=n.metrics?.queue_depth??0;
-      if(qd>0){
-        const bx=ff(p.x+NR*.75),by=ff(p.y-NR*.75);
-        ng.appendChild(se('circle',{cx:bx,cy:by,r:9,fill:'#f59e0b','fill-opacity':.95}));
-        ng.appendChild(st(parseFloat(bx),parseFloat(by),qd,{fill:'#060810','font-size':8.5,'font-weight':800,'font-family':'monospace'}));
-      }
+      // Queue depth badge removed — jobs not in use
 
       if(showPorts){
         const port=(n.address||'').split(':')[1]||'';
@@ -1918,8 +1913,6 @@ function updateSidebar(){
   if(deadNodes.size>0){dot.style.background='var(--danger)';lbl.textContent=`${deadNodes.size} node(s) dead`;}
   else if(n<2){dot.style.background='var(--warn)';lbl.textContent='Single-node ring';}
   else{dot.style.background='var(--ok)';lbl.textContent='Ring healthy';}
-
-  // tb-queue is now driven by loadDhtContents() (counts HT1 PENDING tasks).
 
   // Self info
   if(ring.this_node!=null){
@@ -3729,7 +3722,7 @@ function openRingModal(){
   if(!ring.nodes.length){body.innerHTML='<div class="empty-state">No nodes</div>';overlay.classList.remove('hidden');return;}
   body.innerHTML=ring.nodes.map(nd=>{
     const c=nc(nd.node_id);const isThis=nd.node_id===ring.this_node;
-    const qd=nd.metrics?.queue_depth??0;const done=nd.metrics?.jobs_completed??0;
+    const dataKeys = nd.data_keys || [];
     return`<div onclick="openNodeDetail(${nd.node_id});document.getElementById('ring-status-overlay').classList.add('hidden')" style="display:flex;align-items:center;gap:14px;padding:13px 20px;border-bottom:1px solid var(--b1);cursor:pointer;transition:background .12s" onmouseover="this.style.background='var(--bg-3)'" onmouseout="this.style.background=''">
       <div style="width:38px;height:38px;border-radius:50%;background:${c}22;border:2px solid ${c};display:flex;align-items:center;justify-content:center;font-weight:800;font-family:var(--mono);color:${c};font-size:13px">${nd.node_id}</div>
       <div style="flex:1">
@@ -3737,8 +3730,8 @@ function openRingModal(){
         <div style="font-size:11px;color:var(--tx-3);font-family:var(--mono)">${nd.address}</div>
       </div>
       <div style="text-align:right">
-        <div style="font-family:var(--mono);font-weight:700;color:${qd>0?'var(--warn)':'var(--ok)'}">${qd} queued</div>
-        <div style="font-size:10px;color:var(--tx-3)">${done} done</div>
+        <div style="font-family:var(--mono);font-weight:700;color:var(--ok)">${dataKeys.length} keys</div>
+        <div style="font-size:10px;color:var(--tx-3)">succ: ${nd.successor?.id??'—'}</div>
       </div>
     </div>`;
   }).join('');
@@ -3760,19 +3753,18 @@ function openNodeDetail(nodeId){
   badge.className=isThis?'badge badge-purple':'badge badge-neutral';
   badge.textContent=isThis?'★ This Node':'Peer';
 
-  const qd=nd.metrics?.queue_depth??0,done=nd.metrics?.jobs_completed??0,fail=nd.metrics?.jobs_failed??0;
   const dataKeys = nd.data_keys || Object.keys(nd.data_store||nd.data||{});
+  const succ=nd.successor||{},pred=nd.predecessor||{};
 
   document.getElementById('nd-metrics-grid').innerHTML=`
-    <div class="nd-stat"><div class="nd-stat-label">Node ID</div><div class="nd-stat-val" style="color:${c}">${nodeId}</div></div>
-    <div class="nd-stat"><div class="nd-stat-label">Queue Depth</div><div class="nd-stat-val" style="color:${qd>0?'var(--warn)':'var(--ok)'}">${qd}</div></div>
-    <div class="nd-stat"><div class="nd-stat-label">Jobs Done</div><div class="nd-stat-val" style="color:var(--ok)">${done}</div></div>
-    <div class="nd-stat"><div class="nd-stat-label">Jobs Failed</div><div class="nd-stat-val" style="color:${fail>0?'var(--danger)':'var(--tx-3)'}">${fail}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Node ID</div><div class="nd-stat-val" style="color:${c};font-family:var(--mono)">${nodeId}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Successor</div><div class="nd-stat-val" style="color:${nc(succ.id)};font-family:var(--mono)">${succ.id??'—'}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Predecessor</div><div class="nd-stat-val" style="color:${nc(pred.id)};font-family:var(--mono)">${pred.id??'—'}</div></div>
     <div class="nd-stat"><div class="nd-stat-label">Keys Stored</div><div class="nd-stat-val">${dataKeys.length}</div></div>
     <div class="nd-stat"><div class="nd-stat-label">Fingers</div><div class="nd-stat-val">${(nd.fingers||[]).length}</div></div>
+    <div class="nd-stat"><div class="nd-stat-label">Status</div><div class="nd-stat-val" style="color:var(--ok);font-size:12px">● Live</div></div>
   `;
 
-  const succ=nd.successor||{},pred=nd.predecessor||{};
   document.getElementById('nd-ptrs').innerHTML=`
     <div class="nd-ptr"><span class="nd-ptr-label">Successor</span><span class="nd-ptr-id" style="color:${nc(succ.id)}">${succ.id??'—'}</span><span class="nd-ptr-addr">${succ.address||''}</span></div>
     <div class="nd-ptr"><span class="nd-ptr-label">Predecessor</span><span class="nd-ptr-id" style="color:${nc(pred.id)}">${pred.id??'—'}</span><span class="nd-ptr-addr">${pred.address||''}</span></div>
@@ -3800,8 +3792,8 @@ function openNodeDetail(nodeId){
     <div style="background:var(--bg-1);border:1px solid var(--b2);border-radius:var(--r-md);padding:12px 14px;font-family:var(--mono);font-size:12px;color:var(--warn);margin:12px 0">finger[i] = successor(n + 2ⁱ mod 2ᴹ),  i = 0…M-1</div>
     <h3 style="font-size:13px;font-weight:700;margin:14px 0 6px">This Node (${nodeId})</h3>
     <p style="font-size:12px;line-height:1.75;color:var(--tx-2)">Owns keys in range <code style="font-family:var(--mono);background:var(--bg-1);padding:1px 5px;border-radius:3px;color:var(--ok)">(${pred.id??'?'}, ${nodeId}]</code>. Stores <strong>${dataKeys.length}</strong> local keys. Stabilization runs every 2 s to maintain ring health and fix finger entries.</p>
-    <h3 style="font-size:13px;font-weight:700;margin:14px 0 6px">Agent Integration</h3>
-    <p style="font-size:12px;line-height:1.75;color:var(--tx-2)">The placement agent selects which node executes each job based on queue depth and failure rates. The recovery agent detects node failures and re-submits orphaned jobs automatically.</p>
+    <h3 style="font-size:13px;font-weight:700;margin:14px 0 6px">Key Ownership</h3>
+    <p style="font-size:12px;line-height:1.75;color:var(--tx-2)">Each node is responsible for keys in the range <code style="font-family:var(--mono);background:var(--bg-1);padding:1px 5px;border-radius:3px;color:var(--ok)">(predecessor, node_id]</code>. When nodes join or leave, keys are migrated automatically to maintain balanced distribution across the ring.</p>
   `;
 
   // Reset tabs
