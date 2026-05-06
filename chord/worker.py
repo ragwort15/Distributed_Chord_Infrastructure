@@ -8,6 +8,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from chord.job import PENDING, CLAIMED, RUNNING, DONE, FAILED, job_key
+import chord.activity as activity
 
 logger = logging.getLogger(__name__)
 
@@ -115,19 +116,28 @@ class WorkerThread(threading.Thread):
             current["claimed_by"] = self.node.address
             current["started_at"] = time.time()
             self.node.data_store[key] = current
+        jid = job.get("job_id", key)[:12]
+        activity.log(activity.JOB_CLAIM,
+                     f"Node {self.node.node_id} claimed job {jid}… ({job.get('type','?')})",
+                     {"job_id": job.get("job_id"), "node_id": self.node.node_id,
+                      "job_type": job.get("type")})
         logger.debug(f"[Worker {self.node.node_id}] Claimed {key}")
         return True
 
     def _run_job(self, key: str, job: dict):
         node = self.node
+        jid = job.get("job_id", key)[:12]
+        jtype = job.get("type", "?")
         with node._lock:
             entry = node.data_store.get(key)
             if entry:
                 entry["status"] = RUNNING
                 node.data_store[key] = entry
 
+        t0 = time.time()
         try:
             result = _execute(job)
+            elapsed = round((time.time() - t0) * 1000)
             with node._lock:
                 entry = node.data_store.get(key)
                 if entry:
@@ -136,6 +146,10 @@ class WorkerThread(threading.Thread):
                     entry["result"] = result
                     node.data_store[key] = entry
             node.jobs_completed += 1
+            activity.log(activity.JOB_DONE,
+                         f"Job {jid}… ({jtype}) ✓ done on Node {node.node_id} in {elapsed}ms",
+                         {"job_id": job.get("job_id"), "node_id": node.node_id,
+                          "elapsed_ms": elapsed, "job_type": jtype})
             logger.info(f"[Worker {node.node_id}] Completed {key}")
             try:
                 from chord.metrics_registry import JOBS_TOTAL
@@ -143,21 +157,16 @@ class WorkerThread(threading.Thread):
             except Exception:
                 pass
         except Exception as e:
-            # Previous behaviour: immediately mark FAILED on first exception.
-            # Fix: check retry_count; re-queue with a short delay if budget
-            # remains.  Only genuinely exhausted jobs are marked FAILED.
-            #
-            # "Transient" here means any exception from _execute() — network
-            # hiccup, downstream service blip, temporary resource contention.
-            # Permanent failures (e.g. unknown job type) will also exhaust
-            # retries, but that is acceptable: three fast attempts take < 10 s
-            # and the job lands in FAILED with a clear error message.
             with node._lock:
                 entry = node.data_store.get(key)
                 retry_count = entry.get("retry_count", 0) if entry else MAX_JOB_RETRIES
 
             if retry_count < MAX_JOB_RETRIES:
                 next_retry = retry_count + 1
+                activity.log(activity.JOB_RETRY,
+                             f"Job {jid}… retrying (attempt {next_retry}/{MAX_JOB_RETRIES}): {e}",
+                             {"job_id": job.get("job_id"), "node_id": node.node_id,
+                              "attempt": next_retry, "error": str(e)})
                 logger.warning(
                     "[Worker %s] Job %s failed (attempt %d/%d): %s — "
                     "re-queuing in %ds",
@@ -171,9 +180,7 @@ class WorkerThread(threading.Thread):
                         entry["status"] = PENDING
                         entry["retry_count"] = next_retry
                         entry["started_at"] = None
-                        entry["error"] = (
-                            f"attempt {next_retry} failed: {e}"
-                        )
+                        entry["error"] = f"attempt {next_retry} failed: {e}"
                         node.data_store[key] = entry
             else:
                 with node._lock:
@@ -184,6 +191,10 @@ class WorkerThread(threading.Thread):
                         entry["error"] = str(e)
                         node.data_store[key] = entry
                 node.jobs_failed += 1
+                activity.log(activity.JOB_FAILED,
+                             f"Job {jid}… ({jtype}) ✗ failed on Node {node.node_id}: {e}",
+                             {"job_id": job.get("job_id"), "node_id": node.node_id,
+                              "error": str(e), "job_type": jtype})
                 logger.warning(
                     "[Worker %s] Job %s permanently failed after %d retries: %s",
                     node.node_id, key, MAX_JOB_RETRIES, e,

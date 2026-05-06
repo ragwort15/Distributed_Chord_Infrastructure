@@ -580,14 +580,25 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 
 /* Agent log */
 .agent-item{
-  padding:8px 18px;border-bottom:1px solid var(--b1);
+  padding:7px 18px;border-bottom:1px solid var(--b1);
   font-family:var(--mono);font-size:11px;line-height:1.6;
+  display:flex;align-items:flex-start;gap:10px;
 }
 .agent-item:last-child{border-bottom:none}
+.a-icon{font-size:13px;flex-shrink:0;margin-top:1px;width:16px;text-align:center}
+.a-body{flex:1;min-width:0}
 .a-name{color:var(--accent-light);font-weight:700}
 .a-strat-llm{color:var(--ok)}
 .a-strat-h{color:var(--warn)}
 .a-muted{color:var(--tx-3)}
+.a-msg{color:var(--tx-1)}
+.a-msg.ev-job_submit{color:#818cf8}
+.a-msg.ev-job_done{color:var(--ok)}
+.a-msg.ev-job_failed{color:var(--danger)}
+.a-msg.ev-job_recover{color:#f59e0b}
+.a-msg.ev-node_join{color:#34d399}
+.a-msg.ev-node_fail{color:var(--danger)}
+.a-msg.ev-agent{color:var(--accent-light)}
 .a-reason{
   color:var(--tx-3);font-size:10px;margin-top:2px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -1328,19 +1339,19 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 
     <!-- ══════════════ PAGE: AGENT LOG ══════════════ -->
     <div class="page" id="page-agent">
-      <div class="grid g2" style="gap:16px;margin-bottom:16px">
-        <div class="stat-card"><div class="stat-label">Total Decisions</div><div class="stat-value" id="ag-total">—</div></div>
-        <div class="stat-card ok"><div class="stat-label">LLM Decisions</div><div class="stat-value" id="ag-llm">—</div></div>
-        <div class="stat-card warn"><div class="stat-label">Heuristic</div><div class="stat-value" id="ag-h">—</div></div>
-        <div class="stat-card info"><div class="stat-label">Avg Latency</div><div class="stat-value" id="ag-lat">—<span style="font-size:14px">ms</span></div></div>
+      <div class="grid g4" style="gap:16px;margin-bottom:16px">
+        <div class="stat-card"><div class="stat-label">Total Events</div><div class="stat-value" id="ag-total">—</div></div>
+        <div class="stat-card ok"><div class="stat-label">Jobs Done</div><div class="stat-value" id="ag-done">—</div></div>
+        <div class="stat-card warn"><div class="stat-label">Jobs Failed</div><div class="stat-value" id="ag-fail">—</div></div>
+        <div class="stat-card info"><div class="stat-label">Agent Decisions</div><div class="stat-value" id="ag-h">—</div></div>
       </div>
       <div class="card">
         <div class="card-header">
-          <div class="card-title">Agent Decision Log</div>
-          <div class="card-sub">GET /api/logs — last 40 decisions from agent_decisions.jsonl</div>
+          <div class="card-title">Live Ring Activity</div>
+          <div class="card-sub">Real-time feed from all nodes — job lifecycle · agent decisions · ring events · updates every 4s</div>
         </div>
         <div style="overflow-y:auto;max-height:calc(100vh - 340px)" id="agent-log-wrap">
-          <div class="empty-state"><div class="icon">🤖</div><p>No decisions yet</p></div>
+          <div class="empty-state"><div class="icon">🤖</div><p>No activity yet — submit a job to see the feed</p></div>
         </div>
       </div>
     </div>
@@ -1594,6 +1605,7 @@ const deadNodes=new Map();
 const intentionallyRemoved=new Set(); // addresses of nodes we deliberately removed
 let prevIds=new Set();
 const prevAddrById=new Map(); // node_id → address from last poll (for dead-node detection)
+const missedPolls=new Map(); // node_id → consecutive missed poll count (grace period before marking dead)
 const faultEvents=[];
 let allJobs=[],jobFilter='all';
 
@@ -1970,17 +1982,28 @@ async function pollRing(){
     ring.nodes.forEach(n=>prevAddrById.set(n.node_id,n.address));
 
     for(const id of prevIds){
-      if(!newIds.has(id)&&!deadNodes.has(id)){
-        // Use the snapshot address saved before ring was overwritten
+      if(!newIds.has(id)){
         const addr=prevAddrById.get(id);
         // If we intentionally removed this address, skip the ghost entirely
-        if(addr&&intentionallyRemoved.has(addr)) continue;
-        deadNodes.set(id,{ts:Date.now()});
-        addFaultEvent(`💀 Node ${id} disappeared from ring`);
-        setTimeout(()=>addFaultEvent('🔄 Ring stabilizing — finger tables updating…'),3000);
-        setTimeout(()=>addFaultEvent(`✅ Ring re-stabilized after Node ${id} loss`),8000);
-        const b=document.getElementById('badge-faults');
-        b.textContent=deadNodes.size;b.classList.add('show');
+        if(addr&&intentionallyRemoved.has(addr)){missedPolls.delete(id);continue;}
+        if(!deadNodes.has(id)){
+          // Grace period: require 2 consecutive missed polls before declaring dead.
+          // This prevents transient stabilize/fix_fingers windows from triggering
+          // false-positive "dead" alerts during normal ring operation.
+          const misses=(missedPolls.get(id)||0)+1;
+          missedPolls.set(id,misses);
+          if(misses>=2){
+            missedPolls.delete(id);
+            deadNodes.set(id,{ts:Date.now()});
+            addFaultEvent(`💀 Node ${id} disappeared from ring`);
+            setTimeout(()=>addFaultEvent('🔄 Ring stabilizing — finger tables updating…'),3000);
+            setTimeout(()=>addFaultEvent(`✅ Ring re-stabilized after Node ${id} loss`),8000);
+            const b=document.getElementById('badge-faults');
+            b.textContent=deadNodes.size;b.classList.add('show');
+          }
+        }
+      } else {
+        missedPolls.delete(id); // node is back — reset grace period counter
       }
     }
     // Remove intentionally-removed nodes from deadNodes if they snuck in,
@@ -2620,30 +2643,61 @@ function updateFileTypeChart(reqs){
 ═══════════════════════════════════════════════════════════════════ */
 function renderAgentLog(entries){
   const wrap=document.getElementById('agent-log-wrap');if(!wrap)return;
-  if(!entries.length){wrap.innerHTML='<div class="empty-state"><div class="icon">🤖</div><p>No decisions yet</p></div>';return;}
+  if(!entries.length){
+    wrap.innerHTML='<div class="empty-state"><div class="icon">🤖</div><p>No activity yet — submit a job to see the live feed</p></div>';
+    return;
+  }
 
-  let llm=0,heur=0,totalLat=0;
+  // Count by type for stat cards
+  let done=0,failed=0,agentDecisions=0;
   entries.forEach(e=>{
-    const s=e.strategy||'';
-    if(s==='llm')llm++;else if(s.startsWith('heuristic'))heur++;
-    totalLat+=e.latency_ms||0;
+    const t=e.type||'';
+    if(t==='job_done')done++;
+    else if(t==='job_failed')failed++;
+    else if(t==='agent'||e.agent)agentDecisions++;
   });
   document.getElementById('ag-total').textContent=entries.length;
-  document.getElementById('ag-llm').textContent=llm;
-  document.getElementById('ag-h').textContent=heur;
-  document.getElementById('ag-lat').textContent=entries.length?Math.round(totalLat/entries.length):'—';
+  document.getElementById('ag-done').textContent=done;
+  document.getElementById('ag-fail').textContent=failed;
+  document.getElementById('ag-h').textContent=agentDecisions;
 
+  // Icon map per event type
+  const ICONS={
+    job_submit:'🚀', job_claim:'⚙️', job_done:'✅', job_failed:'❌',
+    job_retry:'🔁', job_recover:'♻️', node_join:'🔗', node_fail:'💀',
+    agent:'🤖', ring:'🔄'
+  };
+
+  // Show newest first
   wrap.innerHTML=[...entries].reverse().map(e=>{
-    const s=e.strategy||'';
-    const sCls=s==='llm'?'a-strat-llm':s.startsWith('heuristic')?'a-strat-h':'a-muted';
-    const t=new Date(e.ts*1000).toLocaleTimeString();
-    const rea=e.decision?.reasoning||'';
+    const evType=e.type||(e.agent?'agent':'ring');
+    const icon=ICONS[evType]||'📌';
+    const t=new Date((e.ts||0)*1000).toLocaleTimeString();
+
+    // Build message: prefer e.msg (activity log), fall back to legacy agent decision format
+    let msg=e.msg||'';
+    let detail='';
+    if(!msg && e.agent){
+      // Legacy agent decision entry from agent_decisions.jsonl
+      const s=e.strategy||'';
+      const sCls=s==='llm'?'a-strat-llm':s.startsWith('heuristic')?'a-strat-h':'a-muted';
+      msg=`<span class="a-name">${e.agent}</span><span class="a-muted"> · ${e.tool||''} · </span><span class="${sCls}">${s}</span><span class="a-muted"> · ${e.latency_ms||0}ms</span>`;
+      const rea=e.decision?.reasoning||'';
+      if(rea)detail=`<div class="a-reason" title="${rea}">${rea}</div>`;
+    } else {
+      msg=`<span class="a-msg ev-${evType}">${msg}</span>`;
+      // Show agent reasoning from details if present
+      const rea=(e.details||{}).reasoning||'';
+      if(rea)detail=`<div class="a-reason" title="${rea}">${rea}</div>`;
+    }
+
     return`<div class="agent-item">
-      <span class="a-name">${e.agent}</span>
-      <span class="a-muted"> · ${e.tool} · </span>
-      <span class="${sCls}">${s}</span>
-      <span class="a-muted"> · ${e.latency_ms}ms · ${t}</span>
-      ${rea?`<div class="a-reason" title="${rea}">${rea}</div>`:''}
+      <span class="a-icon">${icon}</span>
+      <div class="a-body">
+        ${msg}
+        <span class="a-muted"> · ${t}</span>
+        ${detail}
+      </div>
     </div>`;
   }).join('');
 }
@@ -2872,17 +2926,24 @@ function optimisticRemove(addr){
 rmBtn.addEventListener('click',async()=>{
   const addr=rmSel.value;if(!addr)return;
   const nd=ring.nodes.find(n=>n.address===addr);
-  if(!confirm(`Remove Node ${nd?.node_id} (${addr})?\n\nThis will gracefully shut down the node.`))return;
+  if(!confirm(`Remove Node ${nd?.node_id} (${addr})?\n\nThis will gracefully shut down the node and transfer its data to its successor.`))return;
   rmBtn.disabled=true;
+  rmBtn.textContent='Removing…';
   try{
-    await fetch(`/api/nodes/${encodeURIComponent(addr)}`,{method:'DELETE'});
-    addFaultEvent(`🗑 Removed Node ${nd?.node_id} (${addr})`);
+    const resp=await fetch(`/api/nodes/${encodeURIComponent(addr)}`,{method:'DELETE'});
+    if(!resp.ok)throw new Error(`Server returned ${resp.status}`);
+    addFaultEvent(`🗑 Node ${nd?.node_id} (${addr}) removal initiated`);
     optimisticRemove(addr);
   }catch(e){
     intentionallyRemoved.delete(addr);
-    alert(`Error: ${e.message}`);
+    // Node dying before it can reply is EXPECTED — treat as success
+    addFaultEvent(`🗑 Node ${nd?.node_id} left ring (connection reset is expected)`);
+    optimisticRemove(addr);
   }
-  finally{rmBtn.disabled=false;}
+  finally{
+    rmBtn.disabled=false;
+    rmBtn.textContent='Remove';
+  }
 });
 
 // Toggles
