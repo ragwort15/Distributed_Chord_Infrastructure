@@ -468,9 +468,145 @@ def create_app(node: ChordNode) -> Flask:
     @app.get("/chat")
     def chat_alias():
         return send_from_directory(_STATIC_DIR, "chat.html")
+
+
+    @app.get("/live")
+    def live_view():
+        return send_from_directory(_STATIC_DIR, "live.html")
+
+    # ------------------------------------------------------------------
+    # Live view API — job submit with full placement trace
+    # ------------------------------------------------------------------
+
+    @app.post("/api/live/submit")
+    def live_submit():
+        """
+        Submit a job and return the full placement trace for the live view:
+        - which node was chosen and why (agent reasoning)
+        - the Chord routing hop path to reach that node
+        - replica node IDs
+        - the resulting job_id and stored_at_node
+        """
+        body = request.get_json(force=True) or {}
+        job_type = body.get("type", "echo")
+        payload = body.get("payload", {})
+        requested_replicas = int(body.get("replicas", 1))
+
+        valid_types = {"echo", "sleep", "compute"}
+        if job_type not in valid_types:
+            return jsonify({"error": f"Unknown job type. Valid: {sorted(valid_types)}"}), 400
+
+        agent = app.config.get("agent")
+        transport = node._transport
+        ring_metrics = _collect_ring_metrics(node, transport)
+
+        job = make_job(job_type, payload)
+
+        # Placement decision
+        if agent and ring_metrics:
+            placement = agent.select_placement(job, ring_metrics)
+            target_node_id = placement["node_id"]
+            placement_reasoning = placement["reasoning"]
+            strategy = "llm"
+        else:
+            key_id = sha1_id(job_key(job["job_id"]))
+            responsible = node.find_successor(key_id)
+            target_node_id = responsible["id"]
+            placement_reasoning = "Chord consistent hashing — key hashes to this node's range"
+            strategy = "heuristic"
+
+        # Replication decision
+        replica_node_ids = []
+        if agent and ring_metrics and requested_replicas > 1:
+            rep_plan = agent.decide_replication(job, ring_metrics, requested_replicas)
+            target_node_id = rep_plan["primary_node_id"]
+            replica_node_ids = rep_plan.get("replica_node_ids", [])
+
+        target_address = _address_for(node, transport, target_node_id)
+
+        # Trace the Chord hop path from this entry node to target
+        hop_path = []
+        try:
+            current_id = node.node_id
+            current_addr = node.address
+            key_id_for_trace = sha1_id(job_key(job["job_id"]))
+            visited_hops = set()
+            for _ in range(16):
+                hop_path.append(current_id)
+                if current_id == target_node_id:
+                    break
+                if current_id in visited_hops:
+                    break
+                visited_hops.add(current_id)
+                if current_addr == node.address:
+                    nxt = node.find_successor(key_id_for_trace)
+                else:
+                    try:
+                        r = _requests.get(
+                            f"http://{current_addr}/chord/find_successor",
+                            params={"id": key_id_for_trace}, timeout=1.0
+                        )
+                        nxt = r.json()
+                    except Exception:
+                        break
+                current_id = nxt["id"]
+                current_addr = nxt["address"]
+        except Exception:
+            hop_path = [node.node_id, target_node_id]
+
+        # Store primary copy
+        primary_key = _store_job(node, transport, job, target_address, target_node_id)
+
+        # Store replicas
+        replica_results = []
+        for rid in replica_node_ids:
+            if rid == target_node_id:
+                continue
+            replica_address = _address_for(node, transport, rid)
+            replica_job = dict(job)
+            replica_job["replica_of"] = job["job_id"]
+            try:
+                rkey = _store_job(node, transport, replica_job, replica_address, rid)
+                replica_results.append({"node_id": rid, "key": rkey})
+            except Exception as e:
+                logger.warning(f"[live/submit] Replica to node {rid} failed: {e}")
+
+        return jsonify({
+            "ok": True,
+            "job_id": job["job_id"],
+            "job_type": job_type,
+            "stored_at_node": target_node_id,
+            "entry_node": node.node_id,
+            "hop_path": hop_path,
+            "hop_count": len(hop_path) - 1,
+            "placement_reasoning": placement_reasoning,
+            "placement_strategy": strategy,
+            "replicas": replica_results,
+            "replica_node_ids": replica_node_ids,
+            "ring_metrics": ring_metrics,
+        }), 201
+
+
     @app.get("/recovery")
     def recovery():
         return send_from_directory(_STATIC_DIR, "recovery.html")
+
+    # ------------------------------------------------------------------
+    # Presentation page
+    # ------------------------------------------------------------------
+
+    _PRESENTATION_DIR = os.path.join(_STATIC_DIR, "presentation")
+
+    @app.get("/presentation")
+    @app.get("/presentation/")
+    def presentation():
+        return send_from_directory(_PRESENTATION_DIR, "index.html")
+
+    @app.get("/presentation/<path:filename>")
+    def presentation_assets(filename):
+        return send_from_directory(_PRESENTATION_DIR, filename)
+
+
     # ------------------------------------------------------------------
     # Dashboard API — ring topology
     # ------------------------------------------------------------------
@@ -874,15 +1010,69 @@ def create_app(node: ChordNode) -> Flask:
 
     @app.get("/prom_metrics")
     def prom_metrics():
-        """Prometheus text-format scrape endpoint."""
+        """
+        Prometheus text-format scrape endpoint.
+        Refreshes ALL gauge metrics inline so Grafana always gets fresh values
+        regardless of whether the obs_loop has fired recently.
+        """
         from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from chord import metrics_registry as _M
         nid_str = str(node.node_id)
-        m       = node.metrics()
+
+        # ── Ring / DHT gauges ────────────────────────────────────────────────
+        m = node.metrics()
         QUEUE_DEPTH.labels(node_id=nid_str).set(m["queue_depth"])
         DATA_KEYS.labels(node_id=nid_str).set(len(node.data_store))
-        # Ring size: count unique non-self fingers + self
         unique = {f.node_id for f in node.fingers if f.node_id is not None}
+        unique.add(node.node_id)  # always include self
         RING_SIZE.labels(node_id=nid_str).set(len(unique))
+
+        # ── Worker gauges — recompute from registry ──────────────────────────
+        try:
+            reg = app.config.get("worker_registry")
+            if reg:
+                live_ids = set(reg.live_workers())
+                assign_svc = app.config.get("worker_assignment_service")
+                live = len(live_ids)
+                dead = len([w for w, _t, _a in reg.all_workers() if w not in live_ids])
+                busy = idle = 0
+                if assign_svc:
+                    for wid in live_ids:
+                        pending_tasks = assign_svc.get(wid)
+                        if pending_tasks:
+                            busy += 1
+                        else:
+                            idle += 1
+                else:
+                    idle = live
+                _M.WORKERS_LIVE.labels(node_id=nid_str).set(live)
+                _M.WORKERS_IDLE.labels(node_id=nid_str).set(idle)
+                _M.WORKERS_BUSY.labels(node_id=nid_str).set(busy)
+                _M.WORKERS_DEAD.labels(node_id=nid_str).set(dead)
+        except Exception:
+            pass
+
+        # ── Task lifecycle gauges — scan local data_store ────────────────────
+        try:
+            with node._lock:
+                store_snapshot = dict(node.data_store)
+            pending = success = failure = 0
+            for k, v in store_snapshot.items():
+                if not (isinstance(k, str) and k.startswith("result:") and isinstance(v, dict)):
+                    continue
+                st = v.get("status", "")
+                if st == "PENDING":
+                    pending += 1
+                elif st == "SUCCESS":
+                    success += 1
+                elif st == "FAILURE":
+                    failure += 1
+            _M.TASKS_PENDING.labels(node_id=nid_str).set(pending)
+            _M.TASKS_SUCCESS.labels(node_id=nid_str).set(success)
+            _M.TASKS_FAILURE.labels(node_id=nid_str).set(failure)
+        except Exception:
+            pass
+
         return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
     # ------------------------------------------------------------------

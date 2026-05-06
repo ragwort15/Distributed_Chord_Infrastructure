@@ -1,177 +1,839 @@
 {
-  "title": "Chord DHT — Live Observability",
+  "title": "Chord DHT \u2014 Live Observability",
   "uid": "chord-dht-01",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 3,
   "refresh": "5s",
-  "time": { "from": "now-5m", "to": "now" },
+  "time": {
+    "from": "now-10m",
+    "to": "now"
+  },
   "timezone": "browser",
-  "tags": ["chord", "dht", "distributed"],
+  "tags": [
+    "chord",
+    "dht",
+    "distributed"
+  ],
   "panels": [
     {
       "id": 1,
-      "title": "Workers (live / idle / busy / dead)",
-      "description": "Live worker pool composition over time. busy = workers with at least one PENDING task assigned to them.",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "title": "Ring Size (live nodes)",
+      "description": "Number of unique nodes in the Chord ring (as seen by the most-informed node's finger table).",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "green",
+                "value": 3
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "expr": "max(chord_ring_size)",
+          "legendFormat": "ring size",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Live Workers",
+      "description": "Workers currently sending heartbeats.",
+      "type": "stat",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#3b82f6",
+            "mode": "fixed"
+          },
           "unit": "short"
         }
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
       "targets": [
-        { "expr": "sum(chord_workers_live)", "legendFormat": "live", "refId": "A" },
-        { "expr": "sum(chord_workers_idle)", "legendFormat": "idle", "refId": "B" },
-        { "expr": "sum(chord_workers_busy)", "legendFormat": "busy", "refId": "C" },
-        { "expr": "sum(chord_workers_dead)", "legendFormat": "dead", "refId": "D" }
+        {
+          "expr": "sum(chord_workers_live)",
+          "legendFormat": "live workers",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "DHT Keys (total)",
+      "description": "Total keys stored across all nodes in the ring.",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#8b5cf6",
+            "mode": "fixed"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "expr": "sum(chord_data_keys_total)",
+          "legendFormat": "keys",
+          "refId": "A"
+        }
       ]
     },
     {
       "id": 4,
       "title": "Pending Tasks",
-      "description": "HT1 records currently in PENDING state across the ring.",
+      "description": "HT1 records in PENDING state.",
       "type": "stat",
-      "gridPos": { "x": 12, "y": 0, "w": 8, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "fixedColor": "#f59e0b", "mode": "fixed" },
+          "color": {
+            "fixedColor": "#f59e0b",
+            "mode": "fixed"
+          },
           "unit": "short"
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
       "targets": [
-        { "expr": "sum(chord_tasks_pending)", "legendFormat": "pending", "refId": "A" }
+        {
+          "expr": "sum(chord_tasks_pending)",
+          "legendFormat": "pending",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Tasks Completed",
+      "description": "HT1 records in SUCCESS state.",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#10b981",
+            "mode": "fixed"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "expr": "sum(chord_tasks_success)",
+          "legendFormat": "success",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Tasks Failed",
+      "description": "HT1 records in FAILURE state.",
+      "type": "stat",
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#ef4444",
+            "mode": "fixed"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "expr": "sum(chord_tasks_failure)",
+          "legendFormat": "failure",
+          "refId": "A"
+        }
       ]
     },
     {
       "id": 7,
-      "title": "Stabilizations / sec",
-      "type": "stat",
-      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "title": "Worker Pool \u2014 Live / Idle / Busy / Dead",
+      "description": "Live=heartbeating. Busy=live with PENDING tasks assigned. Idle=live, no tasks. Dead=known but timed out.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "fixedColor": "#d29922", "mode": "fixed" },
-          "unit": "ops",
-          "decimals": 2
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "short",
+          "min": 0
         }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
-        { "expr": "sum(rate(chord_stabilize_runs_total[1m]))", "legendFormat": "stab/s", "refId": "A" }
+        {
+          "expr": "sum(chord_workers_live)",
+          "legendFormat": "live",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(chord_workers_idle)",
+          "legendFormat": "idle",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(chord_workers_busy)",
+          "legendFormat": "busy",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(chord_workers_dead)",
+          "legendFormat": "dead",
+          "refId": "D"
+        }
       ]
     },
     {
       "id": 8,
-      "title": "Hop Count Distribution (O(log N) proof)",
-      "description": "Distribution of routing hops. With N nodes the Chord guarantee is O(log N) ≈ log₂(N) hops maximum.",
-      "type": "bargauge",
-      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "title": "Task Lifecycle \u2014 Pending / Success / Failure",
+      "description": "HT1 record counts by status over time. Pending rises on submit; Success/Failure rise as workers complete.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "unit": "short"
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "short",
+          "min": 0
         }
       },
-      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] }, "displayMode": "gradient" },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
-        { "expr": "sum(chord_file_request_hops_bucket{le='1.0'})", "legendFormat": "1 hop",  "refId": "A" },
-        { "expr": "sum(chord_file_request_hops_bucket{le='2.0'}) - sum(chord_file_request_hops_bucket{le='1.0'})", "legendFormat": "2 hops", "refId": "B" },
-        { "expr": "sum(chord_file_request_hops_bucket{le='3.0'}) - sum(chord_file_request_hops_bucket{le='2.0'})", "legendFormat": "3 hops", "refId": "C" },
-        { "expr": "sum(chord_file_request_hops_bucket{le='+Inf'}) - sum(chord_file_request_hops_bucket{le='3.0'})", "legendFormat": "4+ hops", "refId": "D" }
+        {
+          "expr": "sum(chord_tasks_pending)",
+          "legendFormat": "pending",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(chord_tasks_success)",
+          "legendFormat": "success",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(chord_tasks_failure)",
+          "legendFormat": "failure",
+          "refId": "C"
+        }
       ]
     },
     {
       "id": 9,
-      "title": "Queue Depth per Node",
-      "description": "Active jobs in each node's local store. Flat = good load balance (AI placement working).",
+      "title": "DHT Keys per Node",
+      "description": "Keys stored on each individual node. Even distribution proves consistent hashing is working.",
       "type": "timeseries",
-      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2, "fillOpacity": 15 },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          },
           "unit": "short",
           "min": 0
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
-        { "expr": "chord_queue_depth", "legendFormat": "Node {{node_id}}", "refId": "A" }
+        {
+          "expr": "chord_data_keys_total",
+          "legendFormat": "Node {{node_id}}",
+          "refId": "A"
+        }
       ]
     },
     {
       "id": 10,
-      "title": "Task Latency (p50 / p95 / p99)",
-      "description": "End-to-end file request latency percentiles. p95 spike after fault injection shows recovery overhead.",
+      "title": "Stabilizations / sec",
+      "description": "Rate of Chord stabilization protocol runs. ~0.5/s per node is a healthy baseline.",
       "type": "timeseries",
-      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2 },
-          "unit": "s"
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "ops",
+          "min": 0
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p50", "refId": "A" },
-        { "expr": "histogram_quantile(0.95, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p95", "refId": "B" },
-        { "expr": "histogram_quantile(0.99, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))", "legendFormat": "p99", "refId": "C" }
+        {
+          "expr": "rate(chord_stabilize_runs_total[1m])",
+          "legendFormat": "Node {{node_id}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(chord_stabilize_runs_total[1m]))",
+          "legendFormat": "all nodes (sum)",
+          "refId": "B"
+        }
       ]
     },
     {
       "id": 11,
-      "title": "Data Keys per Node",
-      "description": "Number of keys stored locally on each node. Even distribution = consistent hashing working correctly.",
+      "title": "Task Duration \u2014 p50 / p95 / p99",
+      "description": "End-to-end task latency. Populated once workers report completion via /internal/results/<id>/complete.",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 7 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2
+          },
+          "unit": "s",
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(chord_task_duration_seconds_bucket[2m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Predecessor Failures Detected",
+      "description": "Times a node detected its predecessor died. Spikes map to fault injection or node crash events.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#f85149",
+            "mode": "fixed"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15
+          },
           "unit": "short",
           "min": 0
         }
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
-        { "expr": "chord_data_keys_total", "legendFormat": "Node {{node_id}}", "refId": "A" }
+        {
+          "expr": "increase(chord_predecessor_failures_total[1m])",
+          "legendFormat": "Node {{node_id}}",
+          "refId": "A"
+        }
       ]
     },
     {
       "id": 13,
-      "title": "Recent Tasks — Submit / Complete / Duration",
-      "description": "Per-task timeline aggregated ring-wide via /api/dht/contents (HT1 result:* records). Submitted = created_at, Completed = updated_at (== finish time once status is SUCCESS/FAILURE). Duration computed server-side.",
+      "title": "Routing Hop Distribution (O(log N) proof)",
+      "description": "Hop count per key lookup. With N=3 nodes, max expected is log\u2082(3) \u2248 2 hops. Populated by /request calls.",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "displayMode": "gradient"
+      },
+      "targets": [
+        {
+          "expr": "sum(chord_file_request_hops_bucket{le='1.0'})",
+          "legendFormat": "1 hop",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(chord_file_request_hops_bucket{le='2.0'}) - sum(chord_file_request_hops_bucket{le='1.0'})",
+          "legendFormat": "2 hops",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(chord_file_request_hops_bucket{le='3.0'}) - sum(chord_file_request_hops_bucket{le='2.0'})",
+          "legendFormat": "3 hops",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(chord_file_request_hops_bucket{le='+Inf'}) - sum(chord_file_request_hops_bucket{le='3.0'})",
+          "legendFormat": "4+ hops",
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Finger Table Fix Rate",
+      "description": "Rate of finger table refresh operations per node. Each node cycles through M=8 fingers.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 29,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 2
+          },
+          "unit": "ops",
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(chord_finger_fix_runs_total[1m])",
+          "legendFormat": "Node {{node_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Prometheus Scrape Health",
+      "description": "1 = Prometheus can reach that chord node. 0 = unreachable. Verify all 3 are UP before reading other panels.",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 29,
+        "w": 8,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "UP",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"chord-nodes\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Recent Tasks (live DHT view)",
+      "description": "Live HT1 records from /api/dht/contents via the Infinity datasource (chord-node-1:5000 on the internal Docker network).",
       "type": "table",
-      "gridPos": { "x": 0, "y": 23, "w": 24, "h": 10 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "infinity-chord" },
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "infinity-chord"
+      },
       "targets": [
         {
           "refId": "A",
           "type": "json",
           "source": "url",
           "format": "table",
-          "url": "http://host.docker.internal:5005/api/dht/contents",
-          "url_options": { "method": "GET", "data": "" },
+          "url": "http://chord-node-1:5000/api/dht/contents",
+          "url_options": {
+            "method": "GET",
+            "data": ""
+          },
           "root_selector": "ht1",
           "columns": [
-            { "selector": "task_id",    "text": "Task ID",     "type": "string" },
-            { "selector": "task_type",  "text": "Type",        "type": "string" },
-            { "selector": "status",     "text": "Status",      "type": "string" },
-            { "selector": "worker_id",  "text": "Worker",      "type": "string" },
-            { "selector": "created_at", "text": "Submitted",   "type": "number" },
-            { "selector": "updated_at", "text": "Completed",   "type": "number" },
-            { "selector": "duration_s", "text": "Duration (s)","type": "number" }
+            {
+              "selector": "task_id",
+              "text": "Task ID",
+              "type": "string"
+            },
+            {
+              "selector": "task_type",
+              "text": "Type",
+              "type": "string"
+            },
+            {
+              "selector": "status",
+              "text": "Status",
+              "type": "string"
+            },
+            {
+              "selector": "worker_id",
+              "text": "Worker",
+              "type": "string"
+            },
+            {
+              "selector": "created_at",
+              "text": "Submitted",
+              "type": "number"
+            },
+            {
+              "selector": "updated_at",
+              "text": "Last Updated",
+              "type": "number"
+            },
+            {
+              "selector": "duration_s",
+              "text": "Duration (s)",
+              "type": "number"
+            }
           ]
         }
       ],
@@ -185,66 +847,150 @@
               "Status": 2,
               "Worker": 3,
               "Submitted": 4,
-              "Completed": 5,
+              "Last Updated": 5,
               "Duration (s)": 6
             }
           }
         }
       ],
       "fieldConfig": {
-        "defaults": { "custom": { "align": "auto" } },
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Submitted" },
+            "matcher": {
+              "id": "byName",
+              "options": "Submitted"
+            },
             "properties": [
-              { "id": "unit", "value": "dateTimeAsIso" },
-              { "id": "custom.width", "value": 180 }
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              },
+              {
+                "id": "custom.width",
+                "value": 180
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Completed" },
+            "matcher": {
+              "id": "byName",
+              "options": "Last Updated"
+            },
             "properties": [
-              { "id": "unit", "value": "dateTimeAsIso" },
-              { "id": "custom.width", "value": 180 }
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              },
+              {
+                "id": "custom.width",
+                "value": 180
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Duration (s)" },
+            "matcher": {
+              "id": "byName",
+              "options": "Duration (s)"
+            },
             "properties": [
-              { "id": "unit", "value": "s" },
-              { "id": "decimals", "value": 2 },
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
               {
                 "id": "custom.cellOptions",
-                "value": { "type": "color-background", "mode": "gradient" }
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
               },
               {
                 "id": "thresholds",
                 "value": {
                   "mode": "absolute",
                   "steps": [
-                    { "color": "green",  "value": null },
-                    { "color": "yellow", "value": 5 },
-                    { "color": "red",    "value": 15 }
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 5
+                    },
+                    {
+                      "color": "red",
+                      "value": 15
+                    }
                   ]
                 }
               }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Status" },
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
             "properties": [
               {
                 "id": "mappings",
                 "value": [
-                  { "type": "value", "options": { "SUCCESS": { "color": "green",  "index": 0, "text": "SUCCESS" } } },
-                  { "type": "value", "options": { "RUNNING": { "color": "blue",   "index": 1, "text": "RUNNING" } } },
-                  { "type": "value", "options": { "PENDING": { "color": "orange", "index": 2, "text": "PENDING" } } },
-                  { "type": "value", "options": { "FAILURE": { "color": "red",    "index": 3, "text": "FAILURE" } } }
+                  {
+                    "type": "value",
+                    "options": {
+                      "SUCCESS": {
+                        "color": "green",
+                        "index": 0,
+                        "text": "SUCCESS"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "RUNNING": {
+                        "color": "blue",
+                        "index": 1,
+                        "text": "RUNNING"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "PENDING": {
+                        "color": "orange",
+                        "index": 2,
+                        "text": "PENDING"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "FAILURE": {
+                        "color": "red",
+                        "index": 3,
+                        "text": "FAILURE"
+                      }
+                    }
+                  }
                 ]
               },
               {
                 "id": "custom.cellOptions",
-                "value": { "type": "color-text" }
+                "value": {
+                  "type": "color-text"
+                }
               }
             ]
           }
@@ -252,28 +998,16 @@
       },
       "options": {
         "showHeader": true,
-        "footer": { "show": false },
-        "sortBy": [{ "displayName": "Submitted", "desc": true }]
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Submitted",
+            "desc": true
+          }
+        ]
       }
-    },
-    {
-      "id": 12,
-      "title": "Predecessor Failures Detected",
-      "description": "Times a node detected its predecessor died. Spikes correspond to fault injection events.",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 7 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "fixedColor": "#f85149", "mode": "fixed" },
-          "custom": { "lineWidth": 2 },
-          "unit": "short"
-        }
-      },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
-      "targets": [
-        { "expr": "sum(rate(chord_predecessor_failures_total[1m])) by (node_id)", "legendFormat": "Node {{node_id}}", "refId": "A" }
-      ]
     }
   ],
   "templating": {

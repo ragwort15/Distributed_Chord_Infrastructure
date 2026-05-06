@@ -23,6 +23,7 @@ services:
     container_name: chord-node-1
     ports:
       - "5001:5000"
+    env_file: ../../.env
     environment:
       CHORD_PORT: "5000"
       CHORD_ID: "10"
@@ -56,6 +57,7 @@ services:
     container_name: chord-node-2
     ports:
       - "5002:5000"
+    env_file: ../../.env
     environment:
       CHORD_PORT: "5000"
       CHORD_ID: "80"
@@ -92,6 +94,7 @@ services:
     container_name: chord-node-3
     ports:
       - "5003:5000"
+    env_file: ../../.env
     environment:
       CHORD_PORT: "5000"
       CHORD_ID: "150"
