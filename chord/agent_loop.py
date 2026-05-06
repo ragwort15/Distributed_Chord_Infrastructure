@@ -15,7 +15,7 @@ import time
 import logging
 from typing import List, Dict
 
-from chord.agent import OrchestratorAgent, _log_decision
+from chord.agent import OrchestratorAgent
 
 logger = logging.getLogger(__name__)
 
@@ -50,23 +50,6 @@ class AgentLoop(threading.Thread):
         snapshot = self._collect_ring_metrics()
         if not snapshot:
             return
-
-        # Log ring snapshot (used for evaluation / comparison against baseline)
-        _log_decision(
-            agent="AgentLoop",
-            tool="ring_snapshot",
-            inputs={"node_id": self.node.node_id},
-            output={
-                "ring_size": len(snapshot),
-                "nodes": [
-                    {"node_id": m["node_id"], "queue_depth": m["queue_depth"],
-                     "completed": m["jobs_completed"], "failed": m["jobs_failed"]}
-                    for m in snapshot
-                ],
-            },
-            strategy="monitor",
-            latency_ms=0,
-        )
 
         # Check for locally queued PENDING jobs — emit placement advice
         pending = self._local_pending_jobs()

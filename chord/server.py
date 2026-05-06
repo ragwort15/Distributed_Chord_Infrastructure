@@ -18,6 +18,7 @@ from chord.node import ChordNode, sha1_id
 from chord.transport import HttpTransport
 from chord.job import make_job, job_key, ACTIVE_STATUSES, PENDING
 from chord.dummy_client import file_type
+import chord.activity as activity
 from chord.metrics_registry import (
     FILE_REQUESTS, FILE_REQUEST_HOPS, FILE_REQUEST_DURATION,
     QUEUE_DEPTH, RING_SIZE, DATA_KEYS, STABILIZE_RUNS,
@@ -339,6 +340,18 @@ def create_app(node: ChordNode) -> Flask:
             except Exception as e:
                 logger.warning(f"[Server] Replica to node {rid} failed: {e}")
 
+        # Activity log — job submitted
+        jid_short = job["job_id"][:12]
+        strat = placement_reasoning[:60] if placement_reasoning else "—"
+        replica_note = f" + {len(replica_results)} replica(s)" if replica_results else ""
+        activity.log(
+            activity.JOB_SUBMIT,
+            f"Job {jid_short}… ({job_type}) → Node {target_node_id}{replica_note}",
+            {"job_id": job["job_id"], "job_type": job_type,
+             "node_id": target_node_id, "reasoning": strat,
+             "replicas": len(replica_results)},
+        )
+
         return jsonify({
             "ok": True,
             "job_id": job["job_id"],
@@ -534,22 +547,70 @@ def create_app(node: ChordNode) -> Flask:
         return jsonify({"jobs": jobs[:60]})
 
     # ------------------------------------------------------------------
-    # Dashboard API — agent decision log
+    # Dashboard API — real-time ring activity feed
     # ------------------------------------------------------------------
+
+    @app.get("/chord/activity_local")
+    def chord_activity_local():
+        """Return this node's local activity entries (called by /api/activity aggregator)."""
+        return jsonify({"entries": activity.get_entries(100)})
 
     @app.get("/api/logs")
     def api_logs():
-        log_path = pathlib.Path(os.environ.get("AGENT_LOG_PATH", "agent_decisions.jsonl"))
-        if not log_path.exists():
-            return jsonify({"entries": []})
-        lines = log_path.read_text().strip().splitlines()
-        entries = []
-        for line in lines[-40:]:
+        """
+        Returns the merged activity feed from all reachable ring nodes, newest first.
+        Falls back gracefully if peer nodes are unreachable.
+        """
+        # Collect addresses of all ring nodes via finger table
+        ring_addrs = {node.address}
+        for f in node.fingers:
+            if f.node_address:
+                ring_addrs.add(f.node_address)
+
+        all_entries: List[Dict] = []
+
+        # Fetch local entries
+        all_entries.extend(activity.get_entries(100))
+
+        # Fetch from peer nodes
+        for addr in ring_addrs:
+            if addr == node.address:
+                continue
             try:
-                entries.append(json.loads(line))
+                r = _requests.get(f"http://{addr}/chord/activity_local", timeout=1.5)
+                peer_entries = r.json().get("entries", [])
+                all_entries.extend(peer_entries)
             except Exception:
                 pass
-        return jsonify({"entries": entries})
+
+        # Also include the file-based agent decision log (backward compat)
+        log_path = pathlib.Path(os.environ.get("AGENT_LOG_PATH", "agent_decisions.jsonl"))
+        if log_path.exists():
+            try:
+                lines = log_path.read_text().strip().splitlines()
+                for line in lines[-40:]:
+                    try:
+                        e = json.loads(line)
+                        # Convert to activity format for the renderer
+                        e.setdefault("type", "agent")
+                        e.setdefault("msg", f"{e.get('agent','Agent')} · {e.get('tool','')} · {e.get('strategy','')}")
+                        all_entries.append(e)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Deduplicate by (ts, msg), sort newest last, return last 150
+        seen = set()
+        unique = []
+        for e in all_entries:
+            key = (round(e.get("ts", 0), 2), e.get("msg", ""))
+            if key not in seen:
+                seen.add(key)
+                unique.append(e)
+
+        unique.sort(key=lambda e: e.get("ts", 0))
+        return jsonify({"entries": unique[-150:]})
 
     # ------------------------------------------------------------------
     # Dashboard API — remove a ring node (proxy to avoid CORS)
@@ -670,6 +731,9 @@ def create_app(node: ChordNode) -> Flask:
                     "port": next_port,
                 }), 500
 
+            activity.log(activity.NODE_JOIN,
+                         f"New node spawning on port {next_port} (joining via {join_addr})",
+                         {"port": next_port, "join_via": join_addr})
             return jsonify({
                 "ok": True,
                 "port": next_port,
@@ -1829,6 +1893,10 @@ class FailureWatcherThread(threading.Thread):
         if self._last_predecessor_id is not None and current_pred_id is None:
             failed_id = self._last_predecessor_id
             logger.info(f"[FailureWatcher] Predecessor {failed_id} died — starting recovery")
+            activity.log(activity.NODE_FAIL,
+                         f"Node {failed_id} failure detected — recovery starting",
+                         {"failed_node_id": failed_id,
+                          "detected_by": self.node.node_id})
             self._recover(failed_id)
 
         self._last_predecessor_id = current_pred_id
@@ -1925,6 +1993,10 @@ class FailureWatcherThread(threading.Thread):
                     logger.info(
                         f"[FailureWatcher] Recovered job {job['job_id']} → node {target_node_id}"
                     )
+                    activity.log(activity.JOB_RECOVER,
+                                 f"Job {job['job_id'][:12]}… recovered → Node {target_node_id}",
+                                 {"job_id": job["job_id"], "to_node": target_node_id,
+                                  "job_type": job.get("type")})
                 except Exception as e:
                     logger.error(
                         f"[FailureWatcher] Failed to recover job {job['job_id']}: {e}"
@@ -2036,7 +2108,24 @@ def start_node(host: str, port: int, known_address: str = None,
 
     logger.info(f"Starting Chord node {node.node_id} on {address}")
     try:
-        app.run(host=host, port=port, threaded=True)
+        # Use waitress in production — it handles concurrent inter-node RPCs,
+        # health checks, and UI polls without the GIL-related stalls of the
+        # Flask dev server that caused nodes to appear dead under load.
+        try:
+            from waitress import serve as _waitress_serve
+            logger.info("[Server] Using waitress WSGI server (threads=8)")
+            _waitress_serve(
+                app, host=host, port=port,
+                threads=8,
+                connection_limit=200,
+                channel_timeout=30,
+            )
+        except ImportError:
+            logger.warning(
+                "[Server] waitress not installed — falling back to Flask dev server. "
+                "Run: pip install waitress"
+            )
+            app.run(host=host, port=port, threaded=True)
     finally:
         maint.stop()
         if grpc_server is not None:

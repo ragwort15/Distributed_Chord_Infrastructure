@@ -149,48 +149,78 @@ class ChordNode:
     # Stabilization (run periodically)
 
     def stabilize(self):
+        """
+        Chord stabilization protocol.
+
+        CRITICAL FIX: the original implementation held self._lock for the
+        entire method, including all three RPC calls (get_predecessor, notify,
+        and the fallback ping loop).  With RPC_TIMEOUT=3s and RPC_RETRIES=3,
+        each call can block for up to 7 s, meaning the lock could be held for
+        21+ seconds per cycle while maintenance runs every 2 s.
+
+        Any thread that needs self._lock during that window — including Flask
+        request handlers for /chord/state, /api/ring, and /nodes/self — is
+        blocked for the full duration.  /api/ring uses a 1.5 s timeout, so
+        the node appears unreachable to the ring walk, making it look "dead"
+        in the dashboard.
+
+        Fix: snapshot all needed data under the lock, release it, perform all
+        RPCs without holding the lock, then reacquire briefly to apply updates.
+        """
+        # ── Step 1: snapshot state (lock held for microseconds only) ─────────
         with self._lock:
-            try:
-                succ = self.successor
-                if succ["id"] == self.node_id:
-                    # Successor points to self but we have a predecessor —
-                    # bootstrap by using predecessor as successor so stabilize
-                    # can discover the real ring topology on the next cycle.
-                    if self.predecessor and self.predecessor["id"] != self.node_id:
-                        self.successor = self.predecessor
-                    return
+            succ_id   = self.fingers[0].node_id
+            succ_addr = self.fingers[0].node_address
+            my_id     = self.node_id
+            my_addr   = self.address
+            pred      = self.predecessor
 
-                # Ask successor for its predecessor
-                x = self._transport.get_predecessor(succ["address"])
+        # ── Single-node ring: bootstrap via predecessor ───────────────────────
+        if succ_id == my_id:
+            if pred and pred["id"] != my_id:
+                with self._lock:
+                    self.successor = pred
+            return
 
-                if x and in_range(x["id"], self.node_id, succ["id"]):
+        # ── Step 2: all RPCs happen OUTSIDE the lock ──────────────────────────
+        try:
+            x = self._transport.get_predecessor(succ_addr)  # RPC — no lock held
+
+            # ── Step 3: apply successor update under lock ─────────────────────
+            with self._lock:
+                current_succ = self.successor   # re-read in case another thread updated it
+                if x and in_range(x["id"], my_id, current_succ["id"]):
                     self.successor = x
-                    logger.debug(
-                        f"[Node {self.node_id}] Stabilize: updated successor to {x['id']}"
-                    )
+                    logger.debug(f"[Node {my_id}] Stabilize: updated successor to {x['id']}")
+                notify_addr = self.successor["address"]
 
-                # Notify our (possibly new) successor about us
-                self._transport.notify(
-                    self.successor["address"],
-                    {"id": self.node_id, "address": self.address}
-                )
-            except Exception as e:
-                logger.warning(f"[Node {self.node_id}] Stabilize failed: {e}")
-                # Successor may be dead — search fingers for a reachable fallback
-                for i in range(M - 1, 0, -1):
-                    f = self.fingers[i]
-                    if f.node_id is None or f.node_id == self.node_id:
-                        continue
-                    try:
-                        self._transport.ping(f.node_address)
-                        self.successor = {"id": f.node_id, "address": f.node_address}
-                        logger.info(
-                            f"[Node {self.node_id}] Successor dead; fell back to "
-                            f"finger {i} (node {f.node_id})"
-                        )
-                        break
-                    except Exception:
-                        continue
+            # Notify our (possibly new) successor — RPC, no lock held
+            self._transport.notify(notify_addr, {"id": my_id, "address": my_addr})
+
+        except Exception as e:
+            logger.warning(f"[Node {my_id}] Stabilize failed: {e}")
+            # Successor may be dead — build finger candidate list under lock
+            # then ping each candidate WITHOUT holding the lock.
+            with self._lock:
+                candidates = [
+                    {"index": i, "id": self.fingers[i].node_id,
+                     "address": self.fingers[i].node_address}
+                    for i in range(M - 1, 0, -1)
+                    if self.fingers[i].node_id is not None
+                    and self.fingers[i].node_id != my_id
+                ]
+            for c in candidates:
+                try:
+                    self._transport.ping(c["address"])   # RPC — no lock held
+                    with self._lock:
+                        self.successor = {"id": c["id"], "address": c["address"]}
+                    logger.info(
+                        f"[Node {my_id}] Successor dead; fell back to "
+                        f"finger {c['index']} (node {c['id']})"
+                    )
+                    break
+                except Exception:
+                    continue
 
     def notify(self, candidate: dict):
         """
@@ -207,32 +237,68 @@ class ChordNode:
     def fix_fingers(self):
         """
         Refresh one finger table entry per call (rotate through all M fingers).
+
+        Bug fix: the old code set fingers[i].node_id = None before calling
+        find_successor, creating a brief window where the finger was broken.
+        During that window the /api/ring walk could miss the finger's node,
+        making it appear dead in the UI. Fix: compute the new value first,
+        then atomically swap it in.
         """
+        import random
         with self._lock:
-            # Pick a random finger to fix (or cycle through)
-            import random
             i = random.randint(1, M - 1)
-            self.fingers[i].node_id = None 
             target = self.fingers[i].start
+        # find_successor does its own locking; call it outside our lock
+        # to avoid holding the lock during a potentially slow RPC chain.
+        try:
             result = self.find_successor(target)
+        except Exception as e:
+            logger.debug(f"[Node {self.node_id}] fix_fingers({i}) failed: {e}")
+            return
+        with self._lock:
             self.fingers[i].node_id = result["id"]
             self.fingers[i].node_address = result["address"]
 
     def check_predecessor(self):
         """
         If predecessor has failed, clear it so we can accept a new one.
+
+        Bug fix: the old code held self._lock while making the HTTP ping call.
+        If the ping needed retries (up to ~7 s) every other lock-holder was
+        blocked for that entire duration, stalling stabilise() and request
+        handlers.  Fix: snapshot the predecessor under the lock, release it,
+        do the ping, then re-acquire the lock only to clear the pointer.
+
+        We also require TWO consecutive failures before clearing, so a single
+        transient network hiccup doesn't prematurely evict a healthy node.
         """
         with self._lock:
-            if self.predecessor is None:
-                return
-            try:
-                self._transport.ping(self.predecessor["address"])
-            except Exception:
-                logger.info(
-                    f"[Node {self.node_id}] Predecessor {self.predecessor['id']} "
-                    f"is unreachable — clearing"
+            pred = self.predecessor
+
+        if pred is None:
+            return
+
+        try:
+            self._transport.ping(pred["address"])
+            # Successful ping — reset the consecutive-failure counter
+            self._pred_fail_count = 0
+        except Exception:
+            self._pred_fail_count = getattr(self, "_pred_fail_count", 0) + 1
+            if self._pred_fail_count < 2:
+                logger.debug(
+                    f"[Node {self.node_id}] Predecessor {pred['id']} ping failed "
+                    f"(attempt {self._pred_fail_count}/2) — will retry next cycle"
                 )
-                self.predecessor = None
+                return
+            with self._lock:
+                # Only clear if it's still the same predecessor (nothing changed)
+                if self.predecessor and self.predecessor["id"] == pred["id"]:
+                    logger.info(
+                        f"[Node {self.node_id}] Predecessor {pred['id']} "
+                        f"unreachable after 2 consecutive checks — clearing"
+                    )
+                    self.predecessor = None
+            self._pred_fail_count = 0
 
     # Graceful leave
 
