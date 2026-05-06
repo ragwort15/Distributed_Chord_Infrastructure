@@ -11,6 +11,10 @@ services:
       CHORD_PORT: "5000"
       CHORD_ID: "10"
       CHORD_JOIN: ""  # Bootstrap node, no join target
+      # GRAFANA_URL is read from .env — set to http://localhost:3000 locally,
+      # or http://<EC2_PUBLIC_IP>:3000 on cloud. Flask /api/config returns it
+      # to the browser so the Grafana iframe loads from the right host.
+      GRAFANA_URL: "${GRAFANA_URL:-http://localhost:3000}"
     networks:
       - chord-network
     healthcheck:
@@ -35,7 +39,8 @@ services:
     environment:
       CHORD_PORT: "5000"
       CHORD_ID: "80"
-      CHORD_JOIN: "chord-node-1:5000"  # Join via node-1
+      CHORD_JOIN: "chord-node-1:5000"
+      GRAFANA_URL: "${GRAFANA_URL:-http://localhost:3000}"
     networks:
       - chord-network
     depends_on:
@@ -63,7 +68,8 @@ services:
     environment:
       CHORD_PORT: "5000"
       CHORD_ID: "150"
-      CHORD_JOIN: "chord-node-1:5000"  # Join via node-1
+      CHORD_JOIN: "chord-node-1:5000"
+      GRAFANA_URL: "${GRAFANA_URL:-http://localhost:3000}"
     networks:
       - chord-network
     depends_on:
@@ -112,21 +118,25 @@ services:
       - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SECURITY_ADMIN_PASSWORD: chord123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Anonymous access so the dashboard loads without login
       GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_NAME: "Main Org."
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_INSTALL_PLUGINS: grafana-piechart-panel
-      # Allow all origins for embedding in cloud deployments
-      GF_SECURITY_CORS_ENABLED: "true"
-      GF_SECURITY_CORS_ALLOW_CREDENTIALS: "true"
-      GF_SECURITY_CORS_ALLOW_HEADERS: "authorization, content-type"
-      # Set server URL for cloud deployments (can be overridden)
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      # Embedding support (used by the dashboard Observability iframe)
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SECURITY_COOKIE_SAMESITE: disabled
+      # Default home dashboard
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/chord_dht.json
+      # Root URL — override with your cloud host if needed, e.g. http://1.2.3.4:3000
       GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/"
     volumes:
       - grafana-storage:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./observability/grafana/plugins:/var/lib/grafana/plugins:ro
     networks:
       - chord-network
     depends_on:

@@ -874,15 +874,69 @@ def create_app(node: ChordNode) -> Flask:
 
     @app.get("/prom_metrics")
     def prom_metrics():
-        """Prometheus text-format scrape endpoint."""
+        """
+        Prometheus text-format scrape endpoint.
+        Refreshes ALL gauge metrics inline so Grafana always gets fresh values
+        regardless of whether the obs_loop has fired recently.
+        """
         from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from chord import metrics_registry as _M
         nid_str = str(node.node_id)
-        m       = node.metrics()
+
+        # ── Ring / DHT gauges ────────────────────────────────────────────────
+        m = node.metrics()
         QUEUE_DEPTH.labels(node_id=nid_str).set(m["queue_depth"])
         DATA_KEYS.labels(node_id=nid_str).set(len(node.data_store))
-        # Ring size: count unique non-self fingers + self
         unique = {f.node_id for f in node.fingers if f.node_id is not None}
+        unique.add(node.node_id)  # always include self
         RING_SIZE.labels(node_id=nid_str).set(len(unique))
+
+        # ── Worker gauges — recompute from registry ──────────────────────────
+        try:
+            reg = app.config.get("worker_registry")
+            if reg:
+                live_ids = set(reg.live_workers())
+                assign_svc = app.config.get("worker_assignment_service")
+                live = len(live_ids)
+                dead = len([w for w, _t, _a in reg.all_workers() if w not in live_ids])
+                busy = idle = 0
+                if assign_svc:
+                    for wid in live_ids:
+                        pending_tasks = assign_svc.get(wid)
+                        if pending_tasks:
+                            busy += 1
+                        else:
+                            idle += 1
+                else:
+                    idle = live
+                _M.WORKERS_LIVE.labels(node_id=nid_str).set(live)
+                _M.WORKERS_IDLE.labels(node_id=nid_str).set(idle)
+                _M.WORKERS_BUSY.labels(node_id=nid_str).set(busy)
+                _M.WORKERS_DEAD.labels(node_id=nid_str).set(dead)
+        except Exception:
+            pass
+
+        # ── Task lifecycle gauges — scan local data_store ────────────────────
+        try:
+            with node._lock:
+                store_snapshot = dict(node.data_store)
+            pending = success = failure = 0
+            for k, v in store_snapshot.items():
+                if not (isinstance(k, str) and k.startswith("result:") and isinstance(v, dict)):
+                    continue
+                st = v.get("status", "")
+                if st == "PENDING":
+                    pending += 1
+                elif st == "SUCCESS":
+                    success += 1
+                elif st == "FAILURE":
+                    failure += 1
+            _M.TASKS_PENDING.labels(node_id=nid_str).set(pending)
+            _M.TASKS_SUCCESS.labels(node_id=nid_str).set(success)
+            _M.TASKS_FAILURE.labels(node_id=nid_str).set(failure)
+        except Exception:
+            pass
+
         return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
     # ------------------------------------------------------------------
