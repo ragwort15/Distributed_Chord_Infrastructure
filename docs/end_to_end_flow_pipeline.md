@@ -654,35 +654,42 @@ Phase 7 Recovery (if needed):
 
 ---
 
-## Extending Beyond Phase 7
+## Implemented Extensions
 
-### Phase 8a: Observability
-- Metrics: task latency, worker load, failure rates
-- Logging: trace every HT1/HT2 operation
-- Dashboard: visualize cluster health, task flow
+### ✅ Observability (Fully Implemented)
+- **Prometheus** metrics endpoint on every node (`/metrics`)
+- **Grafana** auto-provisioned dashboard: request throughput, hop counts, queue depths, agent strategy mix
+- **Dashboard tabs**: Ring topology, Jobs, Task Registry, DHT Store, Agent Log
+- One command to start: `docker compose up -d` → Prometheus @ `localhost:9090`, Grafana @ `localhost:3000`
 
-### Phase 8b: Data Limits
+### ✅ Fault Lab & Chaos Engineering (Fully Implemented)
+- **Fault Lab** tab in the dashboard for live failure injection
+- Crash individual nodes and observe self-healing recovery in ~10 seconds
+- `RecoveryManager` (`chord/recovery.py`) detects dead workers/nodes and redistributes orphaned tasks
+- `run_fault_tests.py` CLI for automated fault injection test suite
+- Validated: 15 consecutive failures with full ring stability maintained
+
+---
+
+## Future Extensions
+
+### Data Limits
 - Result size cap (e.g., 1MB stdout/stderr)
 - Task queue depth limit per worker
 - Automatic cleanup of old completed tasks
 
-### Phase 8c: Persistence
+### Persistence
 - Move worker registry from in-memory to DHT
 - Move worker stats from in-memory to DHT
 - Enable worker restarts without losing metrics
 
-### Phase 8d: Concurrency
+### Concurrency
 - Multiple tasks executing per worker in parallel
 - Worker thread pool instead of sequential execution
 - Load-balancing within a worker
 
-### Phase 8e: Security
+### Security
 - User isolation: tasks tagged with user_id
 - Sandboxing: containers or seccomp for worker execution
 - Authentication: API keys for agents
-
-### Phase 8f: Testing & Chaos
-- Failure injection: kill nodes, slow network, partition ring
-- Load testing: simulate thousands of concurrent submissions
-- Chaos engineering: validate recovery paths under stress
 
