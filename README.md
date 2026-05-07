@@ -2,7 +2,7 @@
 
 1. Anupama Singh (SJSU ID: 019142305)
 2. Neeraja Abhinav Buch (SJSU ID: 018178238)
-3. Vi Thi Toung Nguyen (SJSU ID: 013832546)
+3. Vi Thi Tuong Nguyen (SJSU ID: 013832546)
 4. Sreya Somisetty (SJSU ID: 019126419)
 
 # Distributed Coordination Layer — Chord DHT
