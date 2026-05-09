@@ -91,11 +91,15 @@ def create_app(node: ChordNode) -> Flask:
     def _spawn_trampoline():
         fn = _spawn_callback_holder.get("fn")
         return fn() if fn else None
+    # Auto-spawn disabled: spawned workers were pointing at the wrong frontend
+    # after node restarts and lingering as ghosts that caused tasks to fail.
+    # Set CHORD_ENABLE_AUTOSPAWN=1 to re-enable.
+    _autospawn_enabled = os.environ.get("CHORD_ENABLE_AUTOSPAWN", "0") == "1"
     recovery_manager = RecoveryManager(
         result_service,
         worker_assignment_service,
         worker_registry,
-        on_no_workers=_spawn_trampoline,
+        on_no_workers=_spawn_trampoline if _autospawn_enabled else None,
     )
     app.config["recovery_manager"] = recovery_manager
     recovery_manager.start()
