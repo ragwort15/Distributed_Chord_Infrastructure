@@ -14,7 +14,7 @@ with an automatic heuristic fallback when the API is unavailable.
 |---|---|---|
 | `AGENT_STRATEGY` | `llm` / `heuristic` | `llm` |
 | `ANTHROPIC_API_KEY` | your key | — |
-| `AGENT_LOG_PATH` | file path | `agent_decisions.jsonl` |
+| `AGENT_LOG_PATH` | file path | `agent_decisions.jsonl` (gitignored, generated at runtime) |
 
 Set `AGENT_STRATEGY=heuristic` to run fully offline (no API calls).
 
@@ -71,9 +71,9 @@ queue depth. The model returns `primary_node_id`, `replica_node_ids[]`, and
 **Goal:** When a node dies, redistribute its orphaned jobs across survivors.
 
 ### Trigger
-`FailureWatcherThread` (in `server.py`) watches the node's predecessor pointer.
-When it drops to `None` (cleared by `check_predecessor()`), recovery runs
-automatically.
+`RecoveryManager` (in `chord/recovery.py`) runs a periodic scan loop.
+When a worker's heartbeat expires or a node's predecessor drops to `None`
+(cleared by `check_predecessor()`), recovery runs automatically.
 
 ### Signals used
 | Signal | Source |
@@ -105,7 +105,7 @@ This provides continuous observability and a baseline for offline evaluation.
 
 ## Decision Log Format (`agent_decisions.jsonl`)
 
-One JSON object per line:
+This file is generated at runtime and is listed in `.gitignore`. One JSON object per line:
 
 ```json
 {

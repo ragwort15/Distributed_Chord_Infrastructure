@@ -102,7 +102,7 @@ The dashboard shows:
 
 ### Step 6 — Open Grafana directly (optional)
 
-Grafana is at **http://localhost:3000** (admin / admin). The Chord DHT dashboard auto-provisions and shows:
+Grafana is at **http://localhost:3000** (admin / chord123). The Chord DHT dashboard auto-provisions and shows:
 - Request throughput, hop counts, node queue depths, agent strategy mix
 
 ---

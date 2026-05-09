@@ -1,6 +1,25 @@
+**Team Members:**
+
+1. Anupama Singh (SJSU ID: 019142305)
+2. Neeraja Abhinav Buch (SJSU ID: 018178238)
+3. Vi Thi Tuong Nguyen (SJSU ID: 013832546)
+4. Sreya Somisetty (SJSU ID: 019126419)
+
 # Distributed Coordination Layer — Chord DHT
 
 A decentralized coordination layer for edge and IoT workloads built on the **Chord Distributed Hash Table**. Nodes self-organize into a consistent-hash ring, expose task and job APIs over **REST + gRPC**, execute jobs via an AI-assisted placement agent, and persist replicated task metadata without a central coordinator.
+
+**🔗 Presentation Webpage:** [View Demo Presentation](http://localhost:5001/static/presentation/index.html) *(requires running the local cluster)*
+
+## The Problem
+The cloud fails, and relying on centralized coordination at the edge is risky and expensive. A single point of failure can bring down an entire edge fleet—drones, sensors, and devices—leading to an average recovery time of 72 minutes and costing up to $50K per hour in downtime for an industrial IoT scheduler.
+
+## The Solution & Real-World Impact
+We built a **Peer-to-Peer Coordination Layer** using Chord DHT to eliminate the central coordinator. This is built for the world where the cloud isn't enough, providing measurably better peer-to-peer coordination for real-world edge deployments across several domains:
+
+* **🚒 Emergency Response:** Drone fleets coordinate search zones and sensor data with zero cloud dependency. The swarm remains resilient even when every cell tower is down.
+* **🏭 Industrial IoT:** Factory floor sensors and actuators route jobs peer-to-peer. The failure of one central sensor no longer halts the entire production line.
+* **🚗 Autonomous Vehicles:** Edge nodes in a vehicle fleet share routing and task data directly. This enables sub-100ms coordination without requiring a roundtrip to a distant cloud server.
 
 **Course:** CMPE 273 — Distributed Systems  
 **Option:** A — Distributed Job Execution Platform
@@ -185,79 +204,37 @@ In-process virtual-node simulator for benchmarking and fault injection — no re
 
 ## Project Structure
 
-```
+```text
 Distributed_Chord_Infrastructure/
 │
 ├── api/                         # gRPC contracts + generated stubs + gRPC server
-│   ├── task_service.proto
-│   ├── task_service_pb2.py
-│   ├── task_service_pb2_grpc.py
-│   └── grpc_server.py
-│
 ├── chord/                       # Chord DHT core + application layer
-│   ├── node.py                  # Ring logic: finger table, join, stabilize, leave
-│   ├── transport.py             # HTTP transport with exponential-backoff retry
-│   ├── server.py                # Flask server: all REST endpoints
-│   ├── agent.py                 # OrchestratorAgent: LLM placement + heuristic fallback
-│   ├── agent_loop.py            # Daemon ring-walk + metrics collection
-│   ├── worker.py                # WorkerThread: job claim + execute + retry
-│   ├── job.py                   # Job schema helpers and status constants
-│   ├── metrics_registry.py      # Prometheus counters/gauges
-│   ├── dummy_client.py          # File-type simulation for request routing demo
-│   └── static/
-│       ├── index.html           # Control Center dashboard (single-file SPA, 8 tabs)
-│       └── chat.html            # AI Task Chat interface (served at /chat)
-│
-├── storage/                     # Task schema, service layer, replication logic
-│   ├── schema.py                # Task record schema, validation, lifecycle transitions
-│   ├── task_service.py          # TaskService: CRUD + primary-write retry + replica fallback
-│   └── replication.py           # ReplicationManager: successor chain, quorum write/delete
-│
-├── simulator/                   # In-process virtual-node simulator (no real HTTP)
-│   ├── virtual_node.py          # Lightweight Chord node stub
-│   ├── benchmark.py             # Strategy comparison benchmarks
-│   ├── fault_injection.py       # Node crash / partition scenarios
-│   ├── metrics.py               # Latency, hop count, throughput collectors
-│   └── results.md               # Captured benchmark results
-│
+├── deploy/                      # Deployment scripts (AWS EC2 demo)
+├── docs/                        # API specifications and documentation
 ├── observability/               # Prometheus + Grafana stack
-│   ├── prometheus.yml           # Scrape config (targets all Chord nodes)
-│   ├── docker-compose.yml       # Spin up Prometheus + Grafana only
-│   └── grafana/
-│       ├── provisioning/        # Auto-provisioned datasource + dashboard config
-│       └── dashboards/
-│           └── chord_dht.json   # Pre-built Chord DHT dashboard
-│
-├── deploy/
-│   └── ec2-demo/                # Budget AWS demo deployment (see DEPLOYMENT_GUIDE.md)
-│       ├── terraform/           # EC2 + security group + Elastic IP (free-tier friendly)
-│       ├── scripts/             # deploy.sh (one command) + teardown.sh + ec2-bootstrap.sh
-│       └── docker-compose.demo.yml  # Resource-limited compose for t3.small/t2.micro
-│
-├── helm/chord/                  # Helm chart for Kubernetes deployment
-├── k8s/                         # Raw Kubernetes manifests
-├── terraform/                   # Full EKS cluster Terraform (production-scale)
-│
-├── docs/
-│   └── api_spec.md              # REST + gRPC API specification
-│
+├── paper/                       # Project paper and related documents
+├── simulator/                   # In-process virtual-node simulator (no real HTTP)
+├── storage/                     # Task schema, service layer, replication logic
 ├── tests/                       # Unit + integration tests (pytest)
-│   ├── test_chord.py
-│   ├── test_task_service.py
-│   ├── test_replication.py
-│   └── test_grpc_service.py
 │
-├── Dockerfile                   # Production image (python:3.14-slim, multi-stage)
-├── Dockerfile.demo              # Demo image (python:3.11-slim, no dev deps)
-├── docker-compose.yml           # Full local stack: 3 nodes + Prometheus + Grafana
-├── run_node.py                  # CLI: start a single Chord node
-├── run_demo.py                  # CLI: end-to-end simulator demo
-├── run_benchmark.py             # CLI: strategy comparison benchmarks
-├── run_fault_tests.py           # CLI: fault injection test suite
-├── submit_job.py                # CLI: submit jobs to a running ring
-├── requirements.txt
+├── AGENT_POLICY.md              # Policy definitions for the AI agent
 ├── DEPLOYMENT_GUIDE.md          # Step-by-step AWS EC2 demo deployment guide
-└── README.md
+├── Dockerfile                   # Production image (python:3.11-slim, multi-stage)
+├── Dockerfile.demo              # Demo image (python:3.11-slim, no dev deps)
+├── QUICKSTART.md                # Quick start guide
+├── README.md                    # Main project documentation
+├── docker-compose.yml           # Full local stack: 3 nodes + Prometheus + Grafana
+├── end_to_end_flow_pipeline.md  # Pipeline documentation
+├── entrypoint.sh                # Docker entrypoint script
+├── requirements.txt             # Python dependencies
+│
+├── run_benchmark.py             # CLI: strategy comparison benchmarks
+├── run_demo.py                  # CLI: end-to-end simulator demo
+├── run_demo_tasks.py            # CLI: automated demo task submissions
+├── run_fault_tests.py           # CLI: fault injection test suite
+├── run_node.py                  # CLI: start a single Chord node
+├── serve_presentation.py        # CLI: serves the presentation locally
+└── submit_job.py                # CLI: submit jobs to a running ring
 ```
 
 ---
