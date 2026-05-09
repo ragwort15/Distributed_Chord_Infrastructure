@@ -1944,18 +1944,21 @@ function updateSidebar(){
   }
   if(prev)rmSel.value=prev;
 
-  // Sync fault selects
+  // Sync fault selects — exclude the node currently serving this dashboard
+  // (crashing it would kill the page itself).
+  const _selfHost = window.location.host;
   ['crash-sel','leave-sel'].forEach(id=>{
     const el=document.getElementById(id);if(!el)return;
     const cur=el.value;
     el.innerHTML='<option value="">Choose a node…</option>';
     for(const nd of ring.nodes){
+      if(nd.address===_selfHost) continue;
       const o=document.createElement('option');
       o.value=nd.address;
       o.textContent=`Node ${nd.node_id} — ${nd.address}`;
       el.appendChild(o);
     }
-    if(cur)el.value=cur;
+    if(cur && cur!==_selfHost)el.value=cur;
   });
 
   // Sync job target
