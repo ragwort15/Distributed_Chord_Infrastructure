@@ -830,8 +830,16 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
               <option value="">Remove node…</option>
             </select>
             <button class="btn btn-danger btn-sm" id="btn-rm" disabled>Remove</button>
+            <div id="rm-self-warn" style="display:none;flex:1;min-width:0;padding:6px 10px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.45);border-radius:6px;font-size:11px;line-height:1.4;color:#fbbf24">
+              <b>⚠️ Dashboard node selected.</b> Removing this node will kill the page — it's served from this process.
+            </div>
           </div>
-          <div class="ring-wrap">
+          <div class="ring-wrap" style="position:relative">
+            <div id="self-node-tip" style="position:absolute;display:none;z-index:50;pointer-events:none;max-width:260px;padding:10px 12px;background:rgba(15,18,28,.97);border:1px solid rgba(245,158,11,.5);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45);font-size:12px;line-height:1.5;color:var(--tx-1)">
+              <div style="display:flex;align-items:center;gap:6px;font-weight:700;color:#fbbf24;margin-bottom:4px">⚠️ This is your dashboard node</div>
+              <div style="color:var(--tx-2)">Removing or crashing this node will <b style="color:#fca5a5">kill the dashboard</b> — the page is served from this very process.</div>
+              <div style="color:var(--tx-3);font-size:10.5px;margin-top:6px">Tip: pick a different node from the Fault Lab dropdown.</div>
+            </div>
             <svg id="ring-svg" viewBox="0 0 700 700" xmlns="http://www.w3.org/2000/svg">
               <defs>
                 <marker id="arr-succ" markerWidth="7" markerHeight="6" refX="6" refY="3" orient="auto">
@@ -1868,6 +1876,26 @@ function renderRing(){
         id:`nc-${n.node_id}`,style:'cursor:pointer'
       });
       circle.addEventListener('click',()=>openNodeDetail(n.node_id));
+      if(isThis){
+        const tip=document.getElementById('self-node-tip');
+        const wrap=document.querySelector('.ring-wrap');
+        const showTip=(ev)=>{
+          if(!tip||!wrap)return;
+          const r=wrap.getBoundingClientRect();
+          let x=ev.clientX-r.left+14, y=ev.clientY-r.top+14;
+          tip.style.display='block';
+          // Keep inside container
+          const tw=tip.offsetWidth, th=tip.offsetHeight;
+          if(x+tw>r.width) x=ev.clientX-r.left-tw-14;
+          if(y+th>r.height) y=ev.clientY-r.top-th-14;
+          tip.style.left=x+'px';
+          tip.style.top=y+'px';
+        };
+        const hideTip=()=>{ if(tip) tip.style.display='none'; };
+        circle.addEventListener('mouseenter',showTip);
+        circle.addEventListener('mousemove',showTip);
+        circle.addEventListener('mouseleave',hideTip);
+      }
       ng.appendChild(circle);
 
       if(showIds)ng.appendChild(st(p.x,p.y,n.node_id,{fill:c,'font-size':11,'font-weight':700,'font-family':'monospace'}));
@@ -1962,7 +1990,9 @@ function updateSidebar(){
   for(const nd of ring.nodes){
     const o=document.createElement('option');
     o.value=nd.address;
-    o.textContent=`Node ${nd.node_id} (${nd.address})${nd.node_id===ring.this_node?' ★':''}`;
+    const isSelf=nd.node_id===ring.this_node;
+    o.textContent=`Node ${nd.node_id} (${nd.address})${isSelf?' ★ (this dashboard)':''}`;
+    if(isSelf) o.title='⚠️ This is your dashboard node — removing it will kill the page.';
     rmSel.appendChild(o);
   }
   if(prev)rmSel.value=prev;
@@ -2965,7 +2995,14 @@ document.getElementById('btn-add-node').addEventListener('click',async()=>{
 
 const rmSel=document.getElementById('rm-sel');
 const rmBtn=document.getElementById('btn-rm');
-rmSel.addEventListener('change',()=>rmBtn.disabled=!rmSel.value);
+rmSel.addEventListener('change',()=>{
+  rmBtn.disabled=!rmSel.value;
+  const warn=document.getElementById('rm-self-warn');
+  if(warn){
+    const sel=ring.nodes.find(n=>n.address===rmSel.value);
+    warn.style.display=(sel && sel.node_id===ring.this_node)?'block':'none';
+  }
+});
 // Helper: optimistically remove a node from the local ring state and
 // schedule a few server polls to stay in sync as stabilization completes.
 function optimisticRemove(addr){
