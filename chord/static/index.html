@@ -1522,6 +1522,29 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 </div>
 
 <!-- ═══════════════════════ ADD NODE MODAL ═══════════════════════ -->
+<div class="overlay hidden" id="rmnode-modal-overlay">
+  <div class="modal" style="width:min(460px,95vw)">
+    <div class="modal-head" style="display:flex;align-items:center;gap:10px">
+      <div style="width:36px;height:36px;border-radius:8px;background:rgba(245,158,11,.15);display:flex;align-items:center;justify-content:center;font-size:18px">⚠️</div>
+      <h3 style="margin:0">Remove Node from Ring?</h3>
+      <button class="btn btn-ghost btn-icon" id="btn-close-rmnode" style="margin-left:auto">✕</button>
+    </div>
+    <div class="modal-body" style="display:flex;flex-direction:column;gap:14px">
+      <div id="rmnode-target" style="padding:10px 12px;background:rgba(255,255,255,.04);border:1px solid var(--b1);border-radius:6px;font-family:var(--mono);font-size:12.5px;color:var(--tx-1)"></div>
+      <div style="font-size:13px;color:var(--tx-2);line-height:1.55">
+        This initiates a <b>graceful leave</b>: the node will hand off its keys to its successor before shutting down. The ring will rebalance automatically — typically within ~6 seconds.
+      </div>
+      <div style="font-size:11.5px;color:var(--tx-3);line-height:1.5;border-left:2px solid var(--warn);padding:6px 10px;background:rgba(245,158,11,.06)">
+        Tasks already running on this node may be retried by the recovery agent. No data is lost as long as at least one replica node remains alive.
+      </div>
+    </div>
+    <div class="modal-foot" style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost" id="btn-rmnode-cancel">Cancel</button>
+      <button class="btn btn-danger" id="btn-rmnode-confirm">Remove Node</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay hidden" id="rmw-modal-overlay">
   <div class="modal" style="width:min(440px,95vw)">
     <div class="modal-head">
@@ -2961,27 +2984,55 @@ function optimisticRemove(addr){
   [1000,3000,7000].forEach(t=>setTimeout(pollRing,t));
 }
 
-rmBtn.addEventListener('click',async()=>{
-  const addr=rmSel.value;if(!addr)return;
-  const nd=ring.nodes.find(n=>n.address===addr);
-  if(!confirm(`Remove Node ${nd?.node_id} (${addr})?\n\nThis will gracefully shut down the node and transfer its data to its successor.`))return;
-  rmBtn.disabled=true;
-  rmBtn.textContent='Removing…';
+// Custom confirmation modal replaces native confirm() for node removal
+const rmNodeOverlay = document.getElementById('rmnode-modal-overlay');
+const rmNodeTarget  = document.getElementById('rmnode-target');
+const rmNodeConfirm = document.getElementById('rmnode-confirm') || document.getElementById('btn-rmnode-confirm');
+const rmNodeCancel  = document.getElementById('btn-rmnode-cancel');
+const rmNodeClose   = document.getElementById('btn-close-rmnode');
+let _pendingRmAddr = null;
+
+function _openRmNodeModal(addr){
+  const nd = ring.nodes.find(n=>n.address===addr);
+  _pendingRmAddr = addr;
+  rmNodeTarget.innerHTML = `<span style="color:var(--tx-3)">Target:</span> Node <b style="color:var(--accent)">${nd?.node_id ?? '?'}</b> <span style="color:var(--tx-3)">·</span> <span>${addr}</span>`;
+  rmNodeOverlay.classList.remove('hidden');
+}
+function _closeRmNodeModal(){
+  rmNodeOverlay.classList.add('hidden');
+  _pendingRmAddr = null;
+}
+rmNodeCancel?.addEventListener('click', _closeRmNodeModal);
+rmNodeClose?.addEventListener('click', _closeRmNodeModal);
+rmNodeOverlay?.addEventListener('click', e => { if(e.target===rmNodeOverlay) _closeRmNodeModal(); });
+document.addEventListener('keydown', e => { if(e.key==='Escape' && !rmNodeOverlay.classList.contains('hidden')) _closeRmNodeModal(); });
+
+document.getElementById('btn-rmnode-confirm').addEventListener('click', async () => {
+  const addr = _pendingRmAddr;
+  if(!addr) return;
+  const nd = ring.nodes.find(n=>n.address===addr);
+  _closeRmNodeModal();
+  rmBtn.disabled = true;
+  rmBtn.textContent = 'Removing…';
   try{
-    const resp=await fetch(`/api/nodes/${encodeURIComponent(addr)}`,{method:'DELETE'});
-    if(!resp.ok)throw new Error(`Server returned ${resp.status}`);
+    const resp = await fetch(`/api/nodes/${encodeURIComponent(addr)}`,{method:'DELETE'});
+    if(!resp.ok) throw new Error(`Server returned ${resp.status}`);
     addFaultEvent(`🗑 Node ${nd?.node_id} (${addr}) removal initiated`);
     optimisticRemove(addr);
   }catch(e){
     intentionallyRemoved.delete(addr);
-    // Node dying before it can reply is EXPECTED — treat as success
     addFaultEvent(`🗑 Node ${nd?.node_id} left ring (connection reset is expected)`);
     optimisticRemove(addr);
+  } finally {
+    rmBtn.disabled = false;
+    rmBtn.textContent = 'Remove';
   }
-  finally{
-    rmBtn.disabled=false;
-    rmBtn.textContent='Remove';
-  }
+});
+
+rmBtn.addEventListener('click', () => {
+  const addr = rmSel.value;
+  if(!addr) return;
+  _openRmNodeModal(addr);
 });
 
 // Toggles
