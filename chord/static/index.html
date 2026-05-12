@@ -1531,6 +1531,20 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
 </div>
 
 <!-- ═══════════════════════ ADD NODE MODAL ═══════════════════════ -->
+<div class="overlay hidden" id="task-lifecycle-overlay">
+  <div class="modal" style="width:min(640px,95vw);max-height:90vh">
+    <div class="modal-head" style="display:flex;align-items:center;gap:10px">
+      <div style="width:36px;height:36px;border-radius:8px;background:rgba(99,102,241,.18);display:flex;align-items:center;justify-content:center;font-size:18px">🛤️</div>
+      <div>
+        <h3 style="margin:0">Task Lifecycle</h3>
+        <div id="tlf-task-id" class="mono" style="font-size:11px;color:var(--tx-3)"></div>
+      </div>
+      <button class="btn btn-ghost btn-icon" id="btn-close-tlf" style="margin-left:auto">✕</button>
+    </div>
+    <div class="modal-body" id="tlf-body" style="display:flex;flex-direction:column;gap:12px;max-height:70vh;overflow-y:auto"></div>
+  </div>
+</div>
+
 <div class="overlay hidden" id="reset-demo-modal-overlay">
   <div class="modal" style="width:min(480px,95vw)">
     <div class="modal-head" style="display:flex;align-items:center;gap:10px">
@@ -3845,12 +3859,15 @@ async function loadTasks(){
       if(typeof s === 'number' && s >= 0)    return `<span class="mono" style="font-size:11px;color:#a5b4fc">${s.toFixed(2)}s</span>`;
       return '<span style="color:var(--tx-3)">—</span>';
     };
+    // Cache rows so the lifecycle modal can read them without a re-fetch.
+    window._taskRowCache = window._taskRowCache || {};
+    for(const t of rows) window._taskRowCache[t.task_id] = t;
     tbody.innerHTML=rows.map(t=>{
       const tid = t.task_id || '?';
       const c = stColor(t.status);
       const completedTs = (t.status === 'SUCCESS' || t.status === 'FAILURE') ? t.updated_at : null;
-      return `<tr>
-        <td class="mono" style="word-break:break-all;font-size:11px"><span>${tid}</span><button class="copy-tid-btn" data-tid="${tid}" title="Copy task ID" style="margin-left:6px;padding:1px 5px;font-size:10px;border:1px solid rgba(255,255,255,0.18);background:transparent;color:inherit;border-radius:3px;cursor:pointer;opacity:0.6">📋</button></td>
+      return `<tr data-tid="${tid}" style="cursor:pointer" onmouseenter="this.style.background='rgba(255,255,255,.03)'" onmouseleave="this.style.background=''" onclick="window._openTaskLifecycle && window._openTaskLifecycle('${tid}')">
+        <td class="mono" style="word-break:break-all;font-size:11px"><span>${tid}</span><button class="copy-tid-btn" data-tid="${tid}" title="Copy task ID" style="margin-left:6px;padding:1px 5px;font-size:10px;border:1px solid rgba(255,255,255,0.18);background:transparent;color:inherit;border-radius:3px;cursor:pointer;opacity:0.6" onclick="event.stopPropagation()">📋</button></td>
         <td class="muted">${t.task_type||'—'}</td>
         <td><span style="display:inline-block;padding:2px 7px;font-size:9.5px;font-weight:700;letter-spacing:.04em;border-radius:4px;background:${c}22;color:${c};border:1px solid ${c}55">${t.status||'—'}</span></td>
         <td class="mono">${t.worker_id||'—'}</td>
@@ -3917,6 +3934,108 @@ async function _clearCompletedTasks() {
   }
 }
 window._clearCompletedTasks = _clearCompletedTasks;
+
+/* ─── Task Lifecycle Modal ─────────────────────────────────────────── */
+const _tlfOverlay = document.getElementById('task-lifecycle-overlay');
+const _tlfBody    = document.getElementById('tlf-body');
+const _tlfTitle   = document.getElementById('tlf-task-id');
+function _closeTaskLifecycle(){ _tlfOverlay?.classList.add('hidden'); }
+document.getElementById('btn-close-tlf')?.addEventListener('click', _closeTaskLifecycle);
+_tlfOverlay?.addEventListener('click', e => { if(e.target===_tlfOverlay) _closeTaskLifecycle(); });
+document.addEventListener('keydown', e => {
+  if(e.key==='Escape' && _tlfOverlay && !_tlfOverlay.classList.contains('hidden')) _closeTaskLifecycle();
+});
+
+function _tlfStep({ icon, color, title, ts, baseTs, detail, future }){
+  const dotBg = future ? 'rgba(255,255,255,.06)' : `${color}22`;
+  const dotBorder = future ? 'rgba(255,255,255,.18)' : `${color}88`;
+  const titleColor = future ? 'var(--tx-3)' : 'var(--tx-1)';
+  let tsText = '';
+  if(ts){
+    const d = new Date(ts);
+    tsText = `<span class="mono" style="font-size:11px;color:var(--tx-3)">${d.toLocaleTimeString()}</span>`;
+    if(baseTs && ts !== baseTs){
+      const delta = ((ts - baseTs)/1000);
+      tsText += ` <span style="font-size:10.5px;color:var(--tx-4)">(+${delta.toFixed(2)}s)</span>`;
+    }
+  }
+  return `<div style="display:flex;gap:14px;align-items:flex-start">
+    <div style="flex-shrink:0;width:34px;height:34px;border-radius:50%;background:${dotBg};border:2px solid ${dotBorder};display:flex;align-items:center;justify-content:center;font-size:15px">${icon}</div>
+    <div style="flex:1;padding-top:4px">
+      <div style="font-weight:600;color:${titleColor};font-size:13px">${title}</div>
+      ${detail ? `<div style="font-size:11.5px;color:var(--tx-3);margin-top:2px;line-height:1.45">${detail}</div>` : ''}
+      ${tsText ? `<div style="margin-top:3px">${tsText}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function _openTaskLifecycle(tid){
+  if(!tid) return;
+  const t = (window._taskRowCache || {})[tid];
+  if(!t){ return; }
+  _tlfTitle.textContent = tid;
+  const stColor = s => ({PENDING:'#f59e0b',RUNNING:'#3b82f6',SUCCESS:'#10b981',FAILURE:'#ef4444'})[s] || '#94a3b8';
+  const c = stColor(t.status);
+  const completed = t.status === 'SUCCESS' || t.status === 'FAILURE';
+  const resObj = (t.result && typeof t.result === 'object') ? t.result : null;
+  const stdout = resObj?.stdout || '';
+  const stderr = resObj?.stderr || '';
+  const exitCode = resObj?.exit_code;
+  const ownerId = t.owner;
+  const replicas = (t.replicas || []).join(', ') || '—';
+  const ringNode = (window.ring?.nodes || []).find(n => n.node_id === ownerId);
+  const ownerAddr = ringNode?.address || '?';
+  const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  // Header card with status + meta
+  const headerCard = `<div style="padding:12px;background:rgba(255,255,255,.03);border:1px solid var(--b1);border-radius:8px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span style="display:inline-block;padding:3px 9px;font-size:10px;font-weight:700;letter-spacing:.04em;border-radius:4px;background:${c}22;color:${c};border:1px solid ${c}55">${t.status||'—'}</span>
+      <span class="mono" style="font-size:11px;color:var(--tx-3)">${t.task_type||'—'}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:11.5px">
+      <span style="color:var(--tx-3)">Owner</span><span class="mono" style="color:var(--tx-1)">Node ${ownerId ?? '?'} <span style="color:var(--tx-3)">(${ownerAddr})</span></span>
+      <span style="color:var(--tx-3)">Replicas</span><span class="mono" style="color:var(--tx-2)">${replicas}</span>
+      <span style="color:var(--tx-3)">Worker</span><span class="mono" style="color:var(--tx-1)">${t.worker_id || '—'}</span>
+      ${typeof exitCode === 'number' ? `<span style="color:var(--tx-3)">Exit code</span><span class="mono" style="color:${exitCode===0?'#86efac':'#fca5a5'}">${exitCode}</span>` : ''}
+    </div>
+  </div>`;
+
+  // Timeline steps
+  const base = t.created_at;
+  const steps = [
+    _tlfStep({ icon:'📝', color:'#94a3b8', title:'Task submitted',
+      ts: t.created_at, baseTs: null,
+      detail: `Client submitted to a Chord node. Key <span class="mono" style="color:var(--tx-2)">result:${esc(tid)}</span> hashed to Node ${ownerId ?? '?'}.` }),
+    _tlfStep({ icon:'🛰', color:'#a78bfa', title:`Routed to Node ${ownerId ?? '?'}`,
+      ts: t.created_at, baseTs: base,
+      detail: `Stored in HT1 on the primary owner and replicated to ${(t.replicas||[]).length} successor(s).` }),
+    _tlfStep({ icon:'👷', color:'#60a5fa', title:`Assigned to <span class="mono">${t.worker_id || '—'}</span>`,
+      ts: t.created_at, baseTs: base,
+      detail: t.worker_id ? `Placement: ${t.assigned_by || 'frontend'} (scored by load + latency + success rate).` : 'No worker yet.',
+      future: !t.worker_id }),
+    completed
+      ? _tlfStep({ icon: t.status==='SUCCESS' ? '✓' : '✕', color:c,
+          title:`${t.status === 'SUCCESS' ? 'Completed' : 'Failed'}${typeof resObj?.duration_ms === 'number' ? ` in ${(resObj.duration_ms/1000).toFixed(2)}s` : ''}`,
+          ts: t.updated_at, baseTs: base,
+          detail: resObj?.timed_out ? 'Worker reported wall-clock timeout.' : '' })
+      : _tlfStep({ icon:'⌛', color:'#f59e0b', title:'Executing…',
+          detail:'Waiting for the worker to report completion.', future:true }),
+  ].join(`<div style="margin-left:16px;width:2px;height:14px;background:rgba(255,255,255,.08)"></div>`);
+
+  // Output blocks
+  const outBlock = stdout || stderr
+    ? `<div style="padding:10px 12px;background:rgba(0,0,0,.25);border:1px solid var(--b1);border-radius:8px">
+        <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--tx-3);margin-bottom:6px">Output</div>
+        ${stdout ? `<pre class="mono" style="margin:0;font-size:11.5px;color:#86efac;white-space:pre-wrap;max-height:160px;overflow:auto">${esc(stdout)}</pre>` : ''}
+        ${stderr ? `<pre class="mono" style="margin:6px 0 0 0;font-size:11.5px;color:#fca5a5;white-space:pre-wrap;max-height:120px;overflow:auto">${esc(stderr)}</pre>` : ''}
+      </div>`
+    : '';
+
+  _tlfBody.innerHTML = headerCard + `<div style="display:flex;flex-direction:column;gap:0;padding:4px 0">${steps}</div>` + outBlock;
+  _tlfOverlay.classList.remove('hidden');
+}
+window._openTaskLifecycle = _openTaskLifecycle;
 
 /* ─── Reset for Demo: wipe ALL tasks ring-wide ─── */
 const resetDemoOverlay = document.getElementById('reset-demo-modal-overlay');
