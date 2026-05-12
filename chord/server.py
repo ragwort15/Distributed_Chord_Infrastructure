@@ -1305,6 +1305,88 @@ def create_app(node: ChordNode) -> Flask:
         except TaskValidationError as e:
             return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
 
+    def _clear_all_local():
+        """Local-only clear: wipe EVERY result:* and worker:* key on this node.
+        Used by the 'Reset for demo' button — destroys all tasks regardless of
+        status (SUCCESS/FAILURE/PENDING/RUNNING) and empties every worker queue."""
+        deleted_ht1 = 0
+        deleted_ht2 = 0
+        with node._lock:
+            keys = list(node.data_store.keys())
+        for k in keys:
+            if k.startswith("result:"):
+                try:
+                    node.delete(k)
+                    deleted_ht1 += 1
+                except Exception:
+                    pass
+            elif k.startswith("worker:"):
+                try:
+                    node.delete(k)
+                    deleted_ht2 += 1
+                except Exception:
+                    pass
+        return deleted_ht1, deleted_ht2
+
+    @app.post("/api/tasks/reset-all")
+    def api_reset_all():
+        """Ring-wide nuke: deletes all HT1 task records and HT2 worker queues.
+        Use case: demo reset before a stakeholder opens the dashboard."""
+        try:
+            local_only = request.args.get("local", "0") == "1"
+            d1, d2 = _clear_all_local()
+            peer_results = []
+            if not local_only:
+                seen = {node.address}
+                to_visit = []
+                succ_addr = (node.successor or {}).get("address")
+                if succ_addr:
+                    to_visit.append(succ_addr)
+                for f in node.fingers:
+                    if f.node_address and f.node_address not in seen:
+                        to_visit.append(f.node_address)
+                while to_visit:
+                    addr = to_visit.pop(0)
+                    if addr in seen:
+                        continue
+                    seen.add(addr)
+                    try:
+                        r = _requests.post(
+                            f"http://{addr}/api/tasks/reset-all?local=1",
+                            timeout=3,
+                        )
+                        if r.ok:
+                            pd = r.json()
+                            d1 += int(pd.get("deleted_ht1", 0))
+                            d2 += int(pd.get("deleted_ht2", 0))
+                            peer_results.append({"address": addr, **pd})
+                            try:
+                                rs = _requests.get(f"http://{addr}/chord/state", timeout=1.5).json()
+                                succ = (rs.get("successor") or {}).get("address")
+                                if succ and succ not in seen:
+                                    to_visit.append(succ)
+                                for fi in rs.get("fingers", []):
+                                    fa = fi.get("node_address")
+                                    if fa and fa not in seen:
+                                        to_visit.append(fa)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        peer_results.append({"address": addr, "error": str(e)})
+            # Invalidate the dht/contents cache so the next dashboard poll
+            # shows the empty state immediately.
+            with _dht_cache_lock:
+                _dht_cache["payload"] = None
+                _dht_cache["expires"] = 0.0
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        try: _obs_event("reset_all",
+                        f"demo reset: wiped {d1} HT1 + {d2} HT2 entries (ring-wide)",
+                        ht1=d1, ht2=d2)
+        except Exception: pass
+        return jsonify({"ok": True, "deleted_ht1": d1, "deleted_ht2": d2,
+                        "peers": peer_results if not local_only else None})
+
     def _clear_completed_local():
         """Local-only clear: SUCCESS/FAILURE HT1 records on this node + HT2 entries."""
         deleted_ht1 = 0
