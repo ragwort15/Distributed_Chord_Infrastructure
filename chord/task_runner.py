@@ -25,6 +25,7 @@ import logging
 import signal
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
 import requests
@@ -49,11 +50,17 @@ class Worker:
         poll_interval: float = POLL_INTERVAL_SECONDS,
         heartbeat_interval: float = HEARTBEAT_INTERVAL_SECONDS,
         execution_timeout: int = EXECUTION_TIMEOUT_SECONDS,
+        concurrency: int = 1,
     ):
         self.worker_id = worker_id
         self.base_url = frontend_url.rstrip("/")
         self.poll_interval = poll_interval
         self.heartbeat_interval = heartbeat_interval
+        self.concurrency = max(1, int(concurrency))
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.concurrency,
+            thread_name_prefix=f"exec-{worker_id}",
+        ) if self.concurrency > 1 else None
         # Unique per process — lets the server detect duplicate workers sharing
         # the same worker_id (e.g. orphan auto-spawned processes).
         import uuid as _uuid
@@ -105,6 +112,8 @@ class Worker:
     def stop(self, *_):
         logger.info("[Worker %s] stop signal received", self.worker_id)
         self._stop_event.set()
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
     # -- recovery + polling --------------------------------------------------
 
@@ -141,6 +150,12 @@ class Worker:
                 for tid in assigned:
                     if self._stop_event.is_set():
                         break
+                    # When running concurrently, only pull new tasks while we
+                    # have spare execution slots.
+                    if self._executor is not None:
+                        with self._inflight_lock:
+                            if len(self._inflight) >= self.concurrency:
+                                break
                     record = self._fetch_record(tid)
                     if record is None:
                         logger.warning(
@@ -148,7 +163,6 @@ class Worker:
                             self.worker_id, tid,
                         )
                         continue
-                    # Skip tasks already completed; re-execute if PENDING (recovery retry).
                     ht1_status = record.get("status")
                     if ht1_status in ("SUCCESS", "FAILURE", "RUNNING"):
                         self.seen_task_ids.add(tid)
@@ -156,7 +170,14 @@ class Worker:
                     if tid in self.seen_task_ids:
                         continue
                     self.seen_task_ids.add(tid)   # claim BEFORE executing
-                    self._execute_and_report(tid, record)
+                    if self._executor is not None:
+                        # Mark inflight here so subsequent loop iterations see
+                        # the slot consumed before the worker thread starts.
+                        with self._inflight_lock:
+                            self._inflight.add(tid)
+                        self._executor.submit(self._execute_and_report, tid, record)
+                    else:
+                        self._execute_and_report(tid, record)
             except Exception:
                 logger.exception("[Worker %s] polling tick failed", self.worker_id)
             self._stop_event.wait(self.poll_interval)
@@ -170,6 +191,8 @@ class Worker:
         logger.info("[Worker %s] executing %s (%s)", self.worker_id, task_id, task_type)
 
         # Phase 6: count this task as in-flight so heartbeats reflect load.
+        # In concurrent mode the polling loop pre-marks this; the add() here
+        # is idempotent (set semantics).
         with self._inflight_lock:
             self._inflight.add(task_id)
         try:
@@ -312,6 +335,8 @@ def main():
                         help="Seconds between heartbeats (default: %(default)s)")
     parser.add_argument("--execution-timeout", type=int, default=EXECUTION_TIMEOUT_SECONDS,
                         help="Per-task wall-clock timeout in seconds (default: %(default)s)")
+    parser.add_argument("--concurrency", type=int, default=1,
+                        help="Max tasks executed in parallel by this worker (default: 1)")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
@@ -327,6 +352,7 @@ def main():
         poll_interval=args.poll_interval,
         heartbeat_interval=args.heartbeat_interval,
         execution_timeout=args.execution_timeout,
+        concurrency=args.concurrency,
     )
 
     signal.signal(signal.SIGINT, w.stop)
