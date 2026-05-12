@@ -2284,7 +2284,13 @@ def create_app(node: ChordNode) -> Flask:
             worker_id = provided_worker
             assigned_by = "user"
         else:
-            worker_id = worker_registry.round_robin_assign()
+            # Score-based placement: pick the worker with the highest score
+            # (factors in pending load, latency, success rate). Round-robin
+            # is kept as a fallback only when scoring returns nothing.
+            scored = worker_registry.score_all_workers()
+            worker_id = scored[0][0] if scored else None
+            if worker_id is None:
+                worker_id = worker_registry.round_robin_assign()
             if worker_id is None and _autospawn_enabled:
                 # No live workers — auto-spawn one and wait briefly for it
                 # to heartbeat in, then retry the assign. Gated by the same
@@ -2301,7 +2307,8 @@ def create_app(node: ChordNode) -> Flask:
                         time.sleep(0.3)
                         if worker_registry.is_live(new_wid):
                             break
-                    worker_id = worker_registry.round_robin_assign()
+                    rescored = worker_registry.score_all_workers()
+                    worker_id = rescored[0][0] if rescored else worker_registry.round_robin_assign()
                 if worker_id is None:
                     return jsonify({
                         "message": "Task rejected",
