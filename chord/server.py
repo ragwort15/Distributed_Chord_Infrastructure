@@ -1305,47 +1305,98 @@ def create_app(node: ChordNode) -> Flask:
         except TaskValidationError as e:
             return jsonify({"ok": False, "error": {"code": "VALIDATION_ERROR", "message": str(e)}}), 422
 
-    @app.post("/api/tasks/clear-completed")
-    def api_clear_completed_tasks():
-        """
-        Wipe all SUCCESS/FAILURE HT1 records owned by this node and remove
-        them from any HT2 worker queues. Leaves PENDING/RUNNING tasks alone.
-        """
+    def _clear_completed_local():
+        """Local-only clear: SUCCESS/FAILURE HT1 records on this node + HT2 entries."""
         deleted_ht1 = 0
         deleted_ht2 = 0
-        try:
-            with node._lock:
-                keys = list(node.data_store.keys())
-            for k in keys:
-                if not k.startswith("result:"):
-                    continue
-                v = node.get(k)
-                if not isinstance(v, dict):
-                    continue
-                if v.get("status") not in ("SUCCESS", "FAILURE"):
+        with node._lock:
+            keys = list(node.data_store.keys())
+        for k in keys:
+            if not k.startswith("result:"):
+                continue
+            v = node.get(k)
+            # Treat both fully-populated rows AND replica stubs (None fields) as
+            # candidates for cleanup. The `local=1` fan-out from a peer is the
+            # only way to evict the stub left behind on this replica.
+            if isinstance(v, dict):
+                if v.get("status") not in ("SUCCESS", "FAILURE", None):
                     continue
                 tid = k[len("result:"):]
                 wid = v.get("worker_id")
-                # Remove from HT2
                 if wid:
                     try:
                         worker_assignment_service.remove(wid, tid)
                         deleted_ht2 += 1
                     except Exception:
                         pass
-                # Delete the HT1 record
-                try:
-                    node.delete(k)
-                    deleted_ht1 += 1
-                except Exception:
-                    logger.exception("[clear-completed] failed to delete %s", k)
+            try:
+                node.delete(k)
+                deleted_ht1 += 1
+            except Exception:
+                logger.exception("[clear-completed] failed to delete %s", k)
+        return deleted_ht1, deleted_ht2
+
+    @app.post("/api/tasks/clear-completed")
+    def api_clear_completed_tasks():
+        """
+        Wipe all SUCCESS/FAILURE HT1 records (and their HT2 worker-queue entries)
+        across the whole ring. Fan-out is required because replicas live on the
+        k-nearest successors; a local-only delete leaves null-field ghost rows.
+
+        Pass ?local=1 to skip fan-out (used internally to avoid recursion).
+        """
+        try:
+            local_only = request.args.get("local", "0") == "1"
+            d1, d2 = _clear_completed_local()
+            peer_results = []
+            if not local_only:
+                # Walk the ring (successor + fingers) to find every other node
+                # and call its local clear. Skip self.
+                seen = set([node.address])
+                to_visit = []
+                succ_addr = (node.successor or {}).get("address")
+                if succ_addr:
+                    to_visit.append(succ_addr)
+                for f in node.fingers:
+                    if f.node_address and f.node_address not in seen:
+                        to_visit.append(f.node_address)
+                while to_visit:
+                    addr = to_visit.pop(0)
+                    if addr in seen:
+                        continue
+                    seen.add(addr)
+                    try:
+                        r = _requests.post(
+                            f"http://{addr}/api/tasks/clear-completed?local=1",
+                            timeout=3,
+                        )
+                        if r.ok:
+                            pd = r.json()
+                            d1 += int(pd.get("deleted_ht1", 0))
+                            d2 += int(pd.get("deleted_ht2", 0))
+                            peer_results.append({"address": addr, **pd})
+                            # Discover further nodes via this peer's ring view
+                            try:
+                                rs = _requests.get(f"http://{addr}/chord/state", timeout=1.5).json()
+                                succ = (rs.get("successor") or {}).get("address")
+                                if succ and succ not in seen:
+                                    to_visit.append(succ)
+                                for fi in rs.get("fingers", []):
+                                    fa = fi.get("node_address")
+                                    if fa and fa not in seen:
+                                        to_visit.append(fa)
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        peer_results.append({"address": addr, "error": str(e)})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
         try: _obs_event("clear_completed",
-                        f"cleared {deleted_ht1} completed tasks (HT1) + {deleted_ht2} HT2 entries",
-                        ht1=deleted_ht1, ht2=deleted_ht2)
+                        f"cleared {d1} completed tasks (HT1) + {d2} HT2 entries (ring-wide)",
+                        ht1=d1, ht2=d2)
         except Exception: pass
-        return jsonify({"ok": True, "deleted_ht1": deleted_ht1, "deleted_ht2": deleted_ht2})
+        return jsonify({"ok": True, "deleted_ht1": d1, "deleted_ht2": d2,
+                        "peers": peer_results if not local_only else None})
 
     @app.delete("/tasks/<task_id>")
     def deregister_task(task_id):
@@ -1585,6 +1636,14 @@ def create_app(node: ChordNode) -> Flask:
                 value = None
             if key.startswith("result:"):
                 v = value if isinstance(value, dict) else {}
+                # Skip "ghost" rows — replicas left behind after the primary
+                # was deleted. They have a key but every meaningful field is
+                # None, so they pollute the dashboard.
+                if (v.get("status") is None
+                        and v.get("worker_id") is None
+                        and v.get("result") is None
+                        and v.get("task_type") is None):
+                    continue
                 def _to_epoch_ms(x):
                     if isinstance(x, (int, float)):
                         return int(x * 1000) if x < 1e12 else int(x)
@@ -1876,7 +1935,11 @@ def create_app(node: ChordNode) -> Flask:
 
     # Auto-respawn watcher: if PENDING tasks exist but zero live workers,
     # spawn a fresh task_runner so orphans resume without operator action.
+    # Gated by CHORD_ENABLE_AUTOSPAWN — without it, every node was spawning
+    # its own auto1/auto2 orphans that pointed at the wrong frontend.
     def _auto_respawn_loop():
+        if not _autospawn_enabled:
+            return
         while True:
             try:
                 time.sleep(5.0)
@@ -2222,11 +2285,10 @@ def create_app(node: ChordNode) -> Flask:
             assigned_by = "user"
         else:
             worker_id = worker_registry.round_robin_assign()
-            if worker_id is None:
+            if worker_id is None and _autospawn_enabled:
                 # No live workers — auto-spawn one and wait briefly for it
-                # to heartbeat in, then retry the assign. This means a chat
-                # user can submit even when the cluster has been wiped, and
-                # the agent self-heals on demand instead of 503ing.
+                # to heartbeat in, then retry the assign. Gated by the same
+                # CHORD_ENABLE_AUTOSPAWN flag as recovery auto-spawn.
                 logger.info("[createTask] no live workers — auto-spawning")
                 spawn_result = _spawn_worker_internal()
                 if spawn_result.get("ok"):
@@ -2235,7 +2297,6 @@ def create_app(node: ChordNode) -> Flask:
                                     f"auto-spawned {new_wid} for task {task_id}",
                                     worker_id=new_wid, task_id=task_id)
                     except Exception: pass
-                    # Wait up to ~6s for the new worker to send its first heartbeat
                     for _ in range(20):
                         time.sleep(0.3)
                         if worker_registry.is_live(new_wid):
