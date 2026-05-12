@@ -72,6 +72,9 @@ class WorkerRegistry:
         # Phase 6: richer per-worker views
         self._metrics: Dict[str, WorkerMetrics] = {}
         self._stats: Dict[str, WorkerStats] = {}
+        # Per-worker process token (UUID generated at task_runner startup).
+        # Distinct tokens for the same worker_id → duplicate worker processes.
+        self._tokens: Dict[str, str] = {}
         self._lock = threading.Lock()
         self._rr_index = -1
         self._timeout = heartbeat_timeout_s
@@ -80,7 +83,8 @@ class WorkerRegistry:
 
     def heartbeat(self, worker_id: str,
                   pending_tasks: int = 0,
-                  timestamp: Optional[float] = None) -> None:
+                  timestamp: Optional[float] = None,
+                  process_token: Optional[str] = None) -> Optional[str]:
         """
         Record a heartbeat.
 
@@ -92,7 +96,13 @@ class WorkerRegistry:
             raise ValueError("worker_id required")
         now = time.time()
         latency_ms = 0.0 if timestamp is None else max(0.0, (now - float(timestamp)) * 1000.0)
+        collision = None
         with self._lock:
+            if process_token:
+                prev = self._tokens.get(worker_id)
+                if prev and prev != process_token:
+                    collision = prev
+                self._tokens[worker_id] = process_token
             self._workers[worker_id] = now
             self._metrics[worker_id] = WorkerMetrics(
                 worker_id=worker_id,
@@ -101,6 +111,7 @@ class WorkerRegistry:
                 last_heartbeat_ts=now,
             )
             self._stats.setdefault(worker_id, WorkerStats(worker_id=worker_id))
+        return collision
 
     def remove(self, worker_id: str) -> bool:
         with self._lock:

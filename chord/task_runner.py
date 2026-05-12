@@ -54,6 +54,10 @@ class Worker:
         self.base_url = frontend_url.rstrip("/")
         self.poll_interval = poll_interval
         self.heartbeat_interval = heartbeat_interval
+        # Unique per process — lets the server detect duplicate workers sharing
+        # the same worker_id (e.g. orphan auto-spawned processes).
+        import uuid as _uuid
+        self.process_token = _uuid.uuid4().hex
         self.execution_timeout = execution_timeout
 
         # In-memory only. Repopulated from HT2 on every restart via
@@ -279,6 +283,7 @@ class Worker:
                     "worker_id": self.worker_id,
                     "pending_tasks": pending,
                     "timestamp": time.time(),
+                    "process_token": self.process_token,
                 },
                 timeout=HTTP_TIMEOUT_SECONDS,
             )

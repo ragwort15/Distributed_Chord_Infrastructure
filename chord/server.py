@@ -1554,9 +1554,25 @@ def create_app(node: ChordNode) -> Flask:
         worker_id = body.get("worker_id")
         if not worker_id:
             return jsonify({"ok": False, "error": "worker_id required"}), 422
+        process_token = body.get("process_token")
         _emit_worker_join(worker_id)
-        worker_registry.heartbeat(worker_id)
-        return jsonify({"ok": True})
+        collision = worker_registry.heartbeat(
+            worker_id,
+            pending_tasks=int(body.get("pending_tasks") or 0),
+            timestamp=body.get("timestamp"),
+            process_token=process_token,
+        )
+        if collision:
+            logger.warning(
+                "[heartbeat] duplicate worker_id %r — token changed from %s to %s "
+                "(another worker process is using the same ID)",
+                worker_id, collision, process_token,
+            )
+            try: _obs_event("worker_duplicate",
+                             f"duplicate worker_id {worker_id} (two processes)",
+                             worker_id=worker_id)
+            except Exception: pass
+        return jsonify({"ok": True, "duplicate_detected": bool(collision)})
 
     @app.get("/workers/live")
     def workers_live():
