@@ -1582,6 +1582,14 @@ def create_app(node: ChordNode) -> Flask:
     def debug_worker_metrics():
         return jsonify(worker_registry.metrics_snapshot())
 
+    # Short-lived response cache: this endpoint walks the whole ring on every
+    # request, which becomes a hotspot when the dashboard polls every 2s while
+    # tasks are flowing. 1s TTL is invisible to operators but cuts load
+    # dramatically when the page is open in multiple tabs or under demo load.
+    _dht_cache: Dict[str, object] = {"payload": None, "expires": 0.0}
+    _dht_cache_lock = threading.Lock()
+    _DHT_CACHE_TTL = 1.0
+
     @app.get("/api/dht/contents")
     def api_dht_contents():
         """
@@ -1589,7 +1597,13 @@ def create_app(node: ChordNode) -> Flask:
           HT1 = result:<task_id> records (task details)
           HT2 = worker:<worker_id> queues (assigned task_ids)
         Returns per-node key counts + per-key primary/replicas.
+
+        Responses are cached for 1s to absorb concurrent polls.
         """
+        # Cheap fast path: hand back a still-fresh cached payload.
+        with _dht_cache_lock:
+            if _dht_cache["payload"] is not None and time.time() < _dht_cache["expires"]:
+                return jsonify(_dht_cache["payload"])
         # Walk ring (mirror of /api/ring's walk) — collect each node's data_keys
         nodes_seen: Dict[int, Dict] = {}
         try:
@@ -1736,12 +1750,16 @@ def create_app(node: ChordNode) -> Flask:
                 "total": len(n.get("data_keys") or []),
             })
 
-        return jsonify({
+        payload = {
             "nodes": per_node,
             "ht1": ht1_rows,
             "ht2": ht2_rows,
             "this_node": node.node_id,
-        })
+        }
+        with _dht_cache_lock:
+            _dht_cache["payload"] = payload
+            _dht_cache["expires"] = time.time() + _DHT_CACHE_TTL
+        return jsonify(payload)
 
     # Workers spawned via the dashboard — pid tracked here so we can kill them.
     _worker_pids: Dict[str, int] = {}
