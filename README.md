@@ -12,6 +12,11 @@ A decentralized coordination layer for edge and IoT workloads built on the **Cho
 
 **🔗 Presentation Webpage:** [View Demo Presentation](http://localhost:5001/static/presentation/index.html) *(requires running the local cluster)*
 
+**📹 Demo Video:** [Watch Demo](https://drive.google.com/file/d/1cJXFB4xjgzt4SEyrVpzH4pbrj-rRCZWq/view?usp=sharing)
+
+**📄 Paper:** [Read Full Paper](./paper/CMPE_273_paper.pdf)
+
+
 ## The Problem
 The cloud fails, and relying on centralized coordination at the edge is risky and expensive. A single point of failure can bring down an entire edge fleet—drones, sensors, and devices—leading to an average recovery time of 72 minutes and costing up to $50K per hour in downtime for an industrial IoT scheduler.
 
@@ -158,6 +163,14 @@ Prometheus-compatible counters and gauges scraped by Grafana.
 - `FILE_REQUESTS`, `FILE_REQUEST_HOPS`, `FILE_REQUEST_DURATION`
 - `QUEUE_DEPTH`, `RING_SIZE`, `DATA_KEYS`
 - `STABILIZE_RUNS`, `FINGER_FIX_RUNS`, `PREDECESSOR_FAILURES`, `JOBS_TOTAL`
+
+### 7.5. Result Service & Worker Management (`storage/result_service.py`, `storage/worker_assignment.py`, `chord/worker_registry.py`)
+Tracks task execution results and manages worker lifecycle across the distributed ring.
+
+- **`ResultService`** — stores task results in DHT with replication; tracks completion status, errors, and timing
+- **`WorkerAssignmentService`** — maintains per-node worker process pools; tracks worker health and assigns pending jobs
+- **`WorkerRegistry`** — global registry of active workers across the ring; detects worker crashes via heartbeat; supports graceful worker shutdown
+- **Worker Heartbeat** — `/workers/heartbeat` endpoint for workers to report liveness; detected via periodic checks at `/workers/live`
 
 ### 8. Control Center Dashboard (`chord/static/index.html`)
 A single-file browser UI with 8 tabs served by each node's Flask server.
@@ -359,6 +372,10 @@ Open **http://127.0.0.1:5001** to see all three nodes on the live ring diagram.
 
 Each node serves the dashboard at its root URL (e.g. `http://127.0.0.1:5001`).
 
+### Control Center Dashboard tabs
+
+Each node serves the dashboard at its root URL (e.g. `http://127.0.0.1:5001`).
+
 | Tab | What it shows |
 |---|---|
 | **Ring Topology** | Live SVG ring with auto-refresh every 2 sec; nodes coloured by position; finger table shortcuts as arcs; controls: **Add Node**, **Remove / Crash / Leave** |
@@ -368,6 +385,7 @@ Each node serves the dashboard at its root URL (e.g. `http://127.0.0.1:5001`).
 | **Tasks (HT1)** | All tasks on this node — queryable by ID/status with live filtering; shows task lifecycle (PENDING/RUNNING/COMPLETED/FAILED) |
 | **DHT Store** | Raw key-value store — GET/PUT/DELETE; local keys browser; ring key-owner lookup |
 | **Agent Log** | Structured decisions log from the AI placement agent (LLM vs heuristic strategy, node selection reasoning) |
+| **Recovery** | Recovery event viewer with detailed timeline and filtering by event type (retry / wait_retry / give_up / worker_crash) |
 
 ---
 
@@ -479,7 +497,25 @@ The `/api/config` endpoint will return the custom URL, and the iframe will use i
 
 ---
 
-## Simulator & Benchmarking
+## Environment Configuration
+
+Configure Chord nodes using the following environment variables:
+
+| Variable | Description | Default |
+|---|---|---|
+| `CHORD_DATA_DIR` | Directory for persisting DHT data and state | `~/.chord-data` |
+| `REQUEST_LOG_PATH` | Path to request log file (JSONL format) | `request_log.jsonl` |
+| `GRAFANA_URL` | Override Grafana URL for observability tab (useful for Docker/K8s) | `http://localhost:3000` |
+| `ANTHROPIC_API_KEY` | API key for Claude LLM (required for AI agent placement) | — |
+| `LOG_LEVEL` | Python logging level: DEBUG / INFO / WARNING / ERROR | `INFO` |
+
+### Example: Start node with custom data directory and log level
+
+```bash
+CHORD_DATA_DIR=/tmp/chord-data LOG_LEVEL=DEBUG python run_node.py --port 5001
+```
+
+---
 
 The `simulator/` package runs an in-process virtual ring — no real HTTP servers, ports, or Docker required.
 
@@ -645,6 +681,11 @@ Job body: `{"type": "echo|sleep|compute", "payload": {...}, "replicas": 1}`
 | `GET` | `/api/recovery/events?since=<timestamp>` | Recovery events since Unix timestamp; returns `{"events": [...], "total_recovery_attempts": N}` |
 | `GET` | `/api/workers/status` | Worker status including latency, pending tasks, and performance scores |
 | `GET` | `/api/metrics/snapshot` | System-wide metrics: throughput, latency, hops, job counts |
+| `GET` | `/api/observability/events` | Real-time observability events stream |
+| `GET` | `/api/observability/trace/<task_id>` | Trace execution path and timeline for a specific task |
+| `GET` | `/api/observability/timeseries` | Time-series data for metrics visualization |
+| `POST` | `/api/tasks/reset-all` | Clear all local tasks and reset counters (debug only) |
+| `POST` | `/api/tasks/clear-completed` | Archive completed tasks (cleanup) |
 
 ### Demo & Failure Injection
 
@@ -652,6 +693,40 @@ Job body: `{"type": "echo|sleep|compute", "payload": {...}, "replicas": 1}`
 |---|---|---|
 | `POST` | `/api/demo/run` | Submit N demo tasks; body: `{"count": N}` (default 10, max 200) |
 | `POST` | `/api/demo/fail-all` | Submit 15 tasks that fail immediately; triggers recovery event logging |
+
+### Admin & Debug Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/admin/leave` | Gracefully remove this node from the ring (data handoff to successor) |
+| `POST` | `/admin/crash` | Force-crash this node (for testing failure scenarios) |
+| `DELETE` | `/api/nodes/<address>` | Remove a node from the ring (remote control) |
+| `POST` | `/api/nodes/<address>/crash` | Crash a remote node (for testing) |
+| `POST` | `/api/nodes/add` | Add a new node to the ring and spawn a subprocess |
+| `POST` | `/api/workers/spawn` | Spawn additional worker threads on this node |
+| `POST` | `/api/workers/rebalance` | Rebalance worker load across the ring |
+| `POST` | `/api/workers/<worker_id>/kill` | Terminate a specific worker (fault injection) |
+| `GET` | `/debug/worker-tasks/<worker_id>` | Inspect tasks assigned to a worker |
+| `GET` | `/debug/result-record/<task_id>` | View raw result record for debugging |
+| `GET` | `/debug/worker-metrics` | Worker performance and latency metrics |
+| `GET` | `/api/dht/contents` | Dump full DHT store contents (all keys and values) |
+| `POST` | `/debug/trigger-recovery` | Manually trigger recovery event emission (testing) |
+| `GET` | `/workers/live` | Check liveness of workers on this node |
+| `GET` | `/workers/status` | Worker status summary |
+
+### Task Execution API (Streaming)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/live` | WebSocket-compatible live task submission UI |
+| `POST` | `/api/live/submit` | Submit and stream task results in real-time; returns `{"result": {...}, "status": "..."}` |
+
+### Public Task Endpoints (Simplified Interface)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/createTask` | Simplified task creation; body: `{"type": "...", "payload": {...}}` |
+| `GET` | `/getStatus/<task_id>` | Poll task status and result; returns `{"status": "...", "result": {...}}` |
 
 ### Internal Task Replication REST Endpoints
 
@@ -992,6 +1067,75 @@ tests/test_grpc_service.py::test_grpc_register_and_get_task        PASSED
 
 ---
 
+---
+
+## Troubleshooting
+
+### Issue: "Address already in use" error
+
+**Cause:** Another Chord node or service is running on the same port.
+
+**Solution:**
+```bash
+# Find and kill the process on port 5001
+lsof -ti:5001 | xargs kill -9
+
+# Or use a different port
+python run_node.py --port 5005
+```
+
+### Issue: Nodes can't find each other / ring won't stabilize
+
+**Cause:** Firewall blocking inter-node communication or incorrect join address.
+
+**Solution:**
+- Verify firewall allows traffic on your chosen ports (5001-5003)
+- Use correct host:port when joining: `python run_node.py --port 5002 --join 127.0.0.1:5001`
+- Check node logs for network errors: `LOG_LEVEL=DEBUG python run_node.py --port 5001`
+
+### Issue: AI agent isn't placing tasks
+
+**Cause:** `ANTHROPIC_API_KEY` environment variable not set, or API key is invalid.
+
+**Solution:**
+```bash
+export ANTHROPIC_API_KEY="sk-..."
+python run_node.py --port 5001
+```
+
+Node will fall back to heuristic (least-loaded) placement if LLM fails.
+
+### Issue: Recovery events not appearing in dashboard
+
+**Cause:** Recovery manager not enabled or events cleared.
+
+**Solution:**
+- Recovery tab should appear in dashboard after first failure injection
+- Use **💥 Inject 15 Failures** button to trigger events
+- Check `/api/recovery/events` endpoint directly: `curl http://127.0.0.1:5001/api/recovery/events`
+
+### Issue: Docker Compose fails to build
+
+**Cause:** Old Docker cache or missing dependencies.
+
+**Solution:**
+```bash
+# Force rebuild without cache
+docker compose down -v
+docker compose up --build --no-cache
+```
+
+### Issue: Prometheus/Grafana not scraping metrics
+
+**Cause:** Node not exposing `/prom_metrics` or scrape config incorrect.
+
+**Solution:**
+- Verify endpoint is reachable: `curl http://127.0.0.1:5001/prom_metrics`
+- Check Prometheus config at `observability/prometheus.yml`
+- Restart Prometheus: `docker compose -f observability/docker-compose.yml restart prometheus`
+
+---
+
 ## How Chord Works
 
 ### The ring
@@ -1023,6 +1167,38 @@ This keeps the ring correct as nodes join and leave without any central coordina
 
 When a task is registered it is written to the primary node (the Chord successor responsible for `hash("task:{task_id}")`), then replicated to `k-1` successor nodes. Replication is declared `COMPLETE` once at least `ceil(k/2)` copies exist (quorum). This means one slow or flaky replica does not block writes, while data still survives `floor(k/2)` simultaneous node failures.
 
+### Replication and quorum
+
+When a task is registered it is written to the primary node (the Chord successor responsible for `hash("task:{task_id}")`), then replicated to `k-1` successor nodes. Replication is declared `COMPLETE` once at least `ceil(k/2)` copies exist (quorum). This means one slow or flaky replica does not block writes, while data still survives `floor(k/2)` simultaneous node failures.
+
 If the primary is later unreachable, `get_task` automatically falls back to the replica chain — no client retry needed.
+
+---
+
+## Key Files Reference
+
+| File | Purpose |
+|---|---|
+| `chord/node.py` | Chord DHT core logic (hashing, ring, finger tables, stabilization) |
+| `chord/server.py` | Flask HTTP server exposing all REST + gRPC endpoints |
+| `chord/agent.py` | AI-powered task placement using Claude LLM |
+| `chord/worker.py` | Local job execution and task runner |
+| `chord/recovery.py` | Failure tracking and recovery event logging |
+| `storage/task_service.py` | Task CRUD and replication logic |
+| `storage/replication.py` | Quorum-based replication manager |
+| `storage/result_service.py` | Task result storage and retrieval |
+| `chord/static/index.html` | Control Center dashboard (8 tabs, single HTML file) |
+| `api/task_service.proto` | gRPC service contract |
+| `tests/` | Comprehensive test suite (71 tests) |
+| `simulator/` | Virtual-node simulator for benchmarking and fault injection |
+| `docs/` | API specs, deployment guides, agent policy |
+
+---
+
+## License
+
+This project is part of CMPE 273 (Distributed Systems) at San Jose State University.
+
+**Team:** Anupama Singh, Neeraja Abhinav Buch, Vi Thi Tuong Nguyen, Sreya Somisetty
 
 ---
