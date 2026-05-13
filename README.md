@@ -11,7 +11,7 @@ TEAM 3
 
 A decentralized coordination layer for edge and IoT workloads built on the **Chord Distributed Hash Table**. Nodes self-organize into a consistent-hash ring, expose task and job APIs over **REST + gRPC**, execute jobs via an AI-assisted placement agent, and persist replicated task metadata without a central coordinator.
 
-**🔗 Presentation Webpage:** [View Demo Presentation](http://localhost:5001/static/presentation/index.html) *(requires running the local cluster)*
+**🔗 Presentation Webpage:** [View Demo Presentation](http://ec2-52-41-200-180.us-west-2.compute.amazonaws.com:5001/presentation)
 
 **📹 Demo Video:** [Watch Demo](https://drive.google.com/file/d/1cJXFB4xjgzt4SEyrVpzH4pbrj-rRCZWq/view?usp=sharing)
 

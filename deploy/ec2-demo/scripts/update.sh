@@ -78,16 +78,18 @@ ssh_run bash << 'REMOTE'
 set -e
 cd /home/ec2-user/chord-app
 
-echo "[remote] Rebuilding image..."
-sudo docker build -f Dockerfile.demo -t chord-dht:demo . 2>&1 | tail -15
+echo "[remote] Rebuilding image (no cache on app layers)..."
+# --no-cache ensures changed Python files are always picked up, not served from stale layers
+sudo docker build --no-cache -f Dockerfile.demo -t chord-dht:demo . 2>&1 | tail -20
 
-echo "[remote] Restarting services (zero-downtime rolling restart)..."
+echo "[remote] Force-recreating all containers with new image..."
+# --force-recreate ensures every container is replaced even if compose thinks config is unchanged
 sudo docker compose \
   -f deploy/ec2-demo/docker-compose.demo.yml \
-  up -d --remove-orphans --build
+  up -d --remove-orphans --force-recreate
 
-echo "[remote] Waiting 20 s for nodes to stabilise..."
-sleep 20
+echo "[remote] Waiting 25 s for nodes to stabilise..."
+sleep 25
 
 echo "[remote] Container status:"
 sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
