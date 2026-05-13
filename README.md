@@ -14,7 +14,7 @@ A decentralized coordination layer for edge and IoT workloads built on the **Cho
 
 **📹 Demo Video:** [Watch Demo](https://drive.google.com/file/d/1cJXFB4xjgzt4SEyrVpzH4pbrj-rRCZWq/view?usp=sharing)
 
-**📄 Paper:** [Read Full Paper](./paper/CMPE_273_paper.pdf)
+**📄 Paper:** [Read Full Paper](https://github.com/ragwort15/Distributed_Chord_Infrastructure/tree/main/paper)
 
 
 ## The Problem
