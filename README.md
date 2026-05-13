@@ -4,6 +4,7 @@
 2. Neeraja Abhinav Buch (SJSU ID: 018178238)
 3. Vi Thi Tuong Nguyen (SJSU ID: 013832546)
 4. Sreya Somisetty (SJSU ID: 019126419)
+   
 **Course:** CMPE 273 — Distributed Systems  
 
 # Distributed Coordination Layer — Chord DHT
