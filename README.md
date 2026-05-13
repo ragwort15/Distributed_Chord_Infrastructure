@@ -1,10 +1,11 @@
-**Team Members:**
+**Course:** CMPE 273 — Distributed Systems  
 
+**Team Members:**
+TEAM 3
 1. Anupama Singh (SJSU ID: 019142305)
 2. Neeraja Abhinav Buch (SJSU ID: 018178238)
 3. Vi Thi Tuong Nguyen (SJSU ID: 013832546)
 4. Sreya Somisetty (SJSU ID: 019126419)
-**Course:** CMPE 273 — Distributed Systems  
 
 # Distributed Coordination Layer — Chord DHT
 
