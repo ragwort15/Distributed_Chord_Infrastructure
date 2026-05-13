@@ -799,15 +799,40 @@ curl -X POST http://127.0.0.1:5001/chord/notify \
 ## Run Tests
 
 ```bash
-# Run all tests
+# Whole suite (71 tests, ~1 s)
 pytest tests -v
 
-# Run only task-layer and grpc tests
-pytest tests/test_task_service.py tests/test_replication.py tests/test_grpc_service.py -v
+# Quiet summary only
+pytest -q
 
-# Run with coverage (if pytest-cov installed)
+# A single test file
+pytest tests/test_task_service.py -v
+
+# A single test by name
+pytest tests/test_session_fixes.py::test_score_all_workers_prefers_lower_load -v
+
+# Stop on the first failure (handy while iterating)
+pytest -x
+
+# Just the new behaviour added in recent fixes
+pytest tests/test_session_fixes.py tests/test_project_coverage.py -v
+
+# Coverage report (requires pytest-cov: `pip install pytest-cov`)
 pytest tests --cov=chord --cov=storage --cov=api --cov-report=term-missing
 ```
+
+### What each test file covers
+
+| File | Focus |
+|---|---|
+| `tests/test_chord.py` | Chord ring internals — hashing, join/leave, find_successor, stabilize, notify, predecessor failure detection |
+| `tests/test_task_service.py` | TaskService CRUD: register / get / soft+hard deregister, duplicate-task conflict, query filters |
+| `tests/test_replication.py` | k-successor replication, replica fallback on read, delete propagation |
+| `tests/test_grpc_service.py` | gRPC bridge — RegisterTask, GetTask, replication RPC, error-code mapping |
+| `tests/test_session_fixes.py` | Worker registry: duplicate-worker detection via process tokens, scored placement, optimistic-pending counter, liveness scoping |
+| `tests/test_project_coverage.py` | Recovery decision matrix (RETRY/WAIT/GIVE_UP paths), task executor (SCRIPT success/timeout/error), data_store persistence snapshot |
+
+> **Tip — clean state between runs:** the project persists each node's data_store to `~/.chord-data/node-<id>.json`. Tests use an isolated tmp dir via the `CHORD_DATA_DIR` env var (set automatically in fixtures), but if you've also run the dashboard locally and want a fresh slate: `rm -rf ~/.chord-data`.
 
 ### Failure Injection Testing
 
@@ -838,7 +863,7 @@ tests/test_task_service.py::test_register_and_get_task_local_store PASSED
 tests/test_replication.py::test_successor_chain_and_replication... PASSED
 tests/test_grpc_service.py::test_grpc_register_and_get_task        PASSED
 ...
-======= 58 passed =======
+======= 71 passed =======
 ```
 
 ### Test coverage by area
