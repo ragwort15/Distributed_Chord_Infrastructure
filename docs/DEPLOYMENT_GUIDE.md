@@ -98,7 +98,10 @@ The dashboard shows:
 - **Task Registry** — register and look up tasks
 - **DHT Store** — browse key-value pairs stored in the ring
 - **Agent Log** — AI placement decisions
-- **Fault Lab** — inject node failures and observe recovery
+- **Fault Lab** — inject node failures and observe self-healing recovery
+- **Chatbot** — AI conversational interface
+
+Presentation slides are at **http://localhost:5001/static/presentation/index.html**.
 
 ### Step 6 — Open Grafana directly (optional)
 
@@ -199,7 +202,8 @@ After the script completes, it prints the EC2 public IP. Open:
 | Service | URL |
 |---------|-----|
 | Dashboard | `http://<EC2_IP>:5001` |
-| Grafana | `http://<EC2_IP>:3000` (admin / admin) |
+| Presentation | `http://<EC2_IP>:5001/static/presentation/index.html` |
+| Grafana | `http://<EC2_IP>:3000` (admin / chord123) |
 | Prometheus | `http://<EC2_IP>:9090` |
 
 ### Step 5 — Manual deploy (if script fails)

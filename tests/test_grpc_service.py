@@ -1,12 +1,23 @@
 import json
+import os
+import tempfile
 from unittest.mock import MagicMock
 
 import grpc
+import pytest
 
 from api import task_service_pb2
 from api.grpc_server import InternalReplicationGrpcServicer, TaskServiceGrpcServicer
 from chord.node import ChordNode
 from storage.task_service import TaskService
+
+
+@pytest.fixture(autouse=True)
+def _isolate_chord_data_dir(tmp_path, monkeypatch):
+    """ChordNode persists data_store to ~/.chord-data by default. Stale state
+    from prior runs breaks tests that reuse task_ids. Point each test at a
+    fresh tmp dir so persistence is hermetic."""
+    monkeypatch.setenv("CHORD_DATA_DIR", str(tmp_path))
 
 
 class FakeContext:

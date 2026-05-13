@@ -10,12 +10,16 @@ datasources:
     uid: infinity-chord
     orgId: 1
     access: proxy
-    # Uses Docker container name — works on chord-network locally and in cloud
-    url: http://chord-node-1:5000
+    # Local dev: nodes run natively on the host at :5005/5006/5007.
+    # host.docker.internal lets the Grafana container reach the host.
+    url: http://host.docker.internal:5005
     isDefault: false
     editable: false
     jsonData:
       allowed_hosts:
+        - http://host.docker.internal:5005
+        - http://host.docker.internal:5006
+        - http://host.docker.internal:5007
         - http://chord-node-1:5000
         - http://chord-node-2:5000
         - http://chord-node-3:5000
