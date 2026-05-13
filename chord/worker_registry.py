@@ -75,6 +75,11 @@ class WorkerRegistry:
         # Per-worker process token (UUID generated at task_runner startup).
         # Distinct tokens for the same worker_id → duplicate worker processes.
         self._tokens: Dict[str, str] = {}
+        # Optimistic pending counter: bumped by note_assignment() at /createTask
+        # time, reset to 0 each time the worker sends a fresh heartbeat. Fills
+        # the gap between heartbeats so a burst of submissions sees the load it
+        # just created instead of piling onto one worker.
+        self._optimistic_pending: Dict[str, int] = {}
         self._lock = threading.Lock()
         self._rr_index = -1
         self._timeout = heartbeat_timeout_s
@@ -111,6 +116,9 @@ class WorkerRegistry:
                 last_heartbeat_ts=now,
             )
             self._stats.setdefault(worker_id, WorkerStats(worker_id=worker_id))
+            # Fresh authoritative pending count just arrived — clear the
+            # optimistic counter so it doesn't double-count.
+            self._optimistic_pending.pop(worker_id, None)
         return collision
 
     def remove(self, worker_id: str) -> bool:
@@ -184,7 +192,12 @@ class WorkerRegistry:
         """Compute placement score for one worker. Caller holds self._lock."""
         m = self._metrics.get(worker_id) or WorkerMetrics(worker_id=worker_id)
         s = self._stats.get(worker_id) or WorkerStats(worker_id=worker_id)
-        load_score    = -float(m.pending_tasks)
+        # Effective load = last-heartbeat pending + assignments made since the
+        # last heartbeat. Without the optimistic counter, a burst of N
+        # createTask calls within one heartbeat window all see pending=0 and
+        # pile onto a single worker.
+        optimistic = self._optimistic_pending.get(worker_id, 0)
+        load_score    = -float(m.pending_tasks + optimistic)
         latency_score = -(m.latency_ms / LATENCY_NORMALIZATION_MS)
         availability  = s.success_rate
         return (
@@ -192,6 +205,15 @@ class WorkerRegistry:
             + PLACEMENT_WEIGHT_LATENCY     * latency_score
             + PLACEMENT_WEIGHT_AVAILABILITY * availability
         )
+
+    def note_assignment(self, worker_id: str) -> None:
+        """Bump the optimistic pending counter. Called by /createTask right
+        after it picks a worker, so subsequent scoring within the same
+        heartbeat window reflects the freshly-created load."""
+        if not worker_id:
+            return
+        with self._lock:
+            self._optimistic_pending[worker_id] = self._optimistic_pending.get(worker_id, 0) + 1
 
     def is_live(self, worker_id: str) -> bool:
         """Return True if worker_id is currently in the live set."""

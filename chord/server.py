@@ -2431,6 +2431,10 @@ def create_app(node: ChordNode) -> Flask:
                         "reason": "no live workers available; auto-spawn failed",
                     }), 503
             assigned_by = "frontend"
+            # Optimistic load bump so a burst of submissions doesn't all pile
+            # onto the same worker before the next heartbeat lands.
+            if worker_id:
+                worker_registry.note_assignment(worker_id)
 
         # ---- Step 2: build the result record ----
         try:
