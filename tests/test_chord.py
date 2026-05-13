@@ -268,8 +268,13 @@ class TestCheckPredecessor:
         node.predecessor = {"id": 30, "address": "127.0.0.1:5002"}
         node._transport.ping.side_effect = Exception("Connection refused")
 
+        # check_predecessor requires TWO consecutive ping failures before
+        # clearing — a deliberate anti-flapping fix so single network blips
+        # don't prematurely evict a healthy predecessor.
         node.check_predecessor()
-        assert node.predecessor is None
+        assert node.predecessor is not None, "first failure must not clear"
+        node.check_predecessor()
+        assert node.predecessor is None, "second failure must clear"
 
     def test_keeps_predecessor_when_alive(self):
         node = make_node("127.0.0.1:5001", node_id=50)
