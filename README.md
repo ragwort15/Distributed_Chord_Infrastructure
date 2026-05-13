@@ -13,6 +13,8 @@ A decentralized coordination layer for edge and IoT workloads built on the **Cho
 
 **🔗 Presentation Webpage:** [View Demo Presentation](http://ec2-52-41-200-180.us-west-2.compute.amazonaws.com:5001/presentation)
 
+**🌐 AWS Hosted URL:** [Live Cloud Dashboard](http://ec2-52-41-200-180.us-west-2.compute.amazonaws.com:5001/)
+
 **📹 Demo Video:** [Watch Demo](https://drive.google.com/file/d/1cJXFB4xjgzt4SEyrVpzH4pbrj-rRCZWq/view?usp=sharing)
 
 **📄 Paper:** [Read Full Paper](https://github.com/ragwort15/Distributed_Chord_Infrastructure/tree/main/paper)
