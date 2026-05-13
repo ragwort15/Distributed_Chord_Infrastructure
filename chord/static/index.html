@@ -1198,8 +1198,8 @@ input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:13px;height
       <!-- Task list — driven by HT1 (result:<task_id>) -->
       <div class="card">
         <div class="card-header">
-          <div class="card-title">Tasks on This Node</div>
-          <div class="card-sub">HT1 — auto-refreshes every 2 s</div>
+          <div class="card-title">Tasks (ring-wide)</div>
+          <div class="card-sub">HT1 across all nodes — auto-refreshes every 2 s</div>
           <div class="card-action btn-row">
             <input class="inp" id="task-filter-jobid" placeholder="Filter by task ID…" style="width:200px">
             <select class="inp" id="task-filter-status" style="width:140px">
@@ -3815,7 +3815,10 @@ async function loadTasks(){
     const r=await fetch('/api/dht/contents',{cache:'no-store'});
     if(!r.ok) throw new Error(`HTTP ${r.status}`);
     const d=await r.json();
-    let rows = (d.ht1||[]).filter(x=>x.owner===d.this_node);
+    // Show ALL ring-wide tasks (not just those whose primary owner is this
+    // node) so the Register Task button always reflects what it just did.
+    // The "Owner" column makes the hash routing visible per row.
+    let rows = (d.ht1||[]).slice();
     if(filter) rows = rows.filter(x=>(x.task_id||'').toLowerCase().includes(filter));
     if(status) rows = rows.filter(x=>x.status===status);
     const cnt=document.getElementById('badge-tasks');
