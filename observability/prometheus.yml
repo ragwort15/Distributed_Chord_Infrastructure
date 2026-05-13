@@ -3,27 +3,24 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
-  # Docker-compose deployment (containerised nodes on chord-network).
-  # Works locally AND on any cloud VM running docker compose up.
-  - job_name: "chord-nodes"
+  # Local dev: chord nodes running natively on the host (not in Docker).
+  - job_name: "chord-nodes-local"
     metrics_path: "/prom_metrics"
     static_configs:
       - targets:
-          - "chord-node-1:5000"
-          - "chord-node-2:5000"
-          - "chord-node-3:5000"
+          - "host.docker.internal:5005"
+          - "host.docker.internal:5006"
+          - "host.docker.internal:5007"
         labels:
-          env: "docker"
+          env: "local"
 
-  # Local dev: chord nodes running natively on the host (not in Docker).
-  # Uncomment this block and comment out chord-nodes above when running with
-  # `python -m chord ...` directly on the host machine.
-  # - job_name: "chord-nodes-local"
+  # Docker-compose deployment — uncomment when nodes run in containers.
+  # - job_name: "chord-nodes"
   #   metrics_path: "/prom_metrics"
   #   static_configs:
   #     - targets:
-  #         - "host.docker.internal:5005"
-  #         - "host.docker.internal:5006"
-  #         - "host.docker.internal:5007"
+  #         - "chord-node-1:5000"
+  #         - "chord-node-2:5000"
+  #         - "chord-node-3:5000"
   #       labels:
-  #         env: "local"
+  #         env: "docker"
