@@ -4,6 +4,7 @@
 2. Neeraja Abhinav Buch (SJSU ID: 018178238)
 3. Vi Thi Tuong Nguyen (SJSU ID: 013832546)
 4. Sreya Somisetty (SJSU ID: 019126419)
+**Course:** CMPE 273 — Distributed Systems  
 
 # Distributed Coordination Layer — Chord DHT
 
@@ -21,10 +22,7 @@ We built a **Peer-to-Peer Coordination Layer** using Chord DHT to eliminate the 
 * **🏭 Industrial IoT:** Factory floor sensors and actuators route jobs peer-to-peer. The failure of one central sensor no longer halts the entire production line.
 * **🚗 Autonomous Vehicles:** Edge nodes in a vehicle fleet share routing and task data directly. This enables sub-100ms coordination without requiring a roundtrip to a distant cloud server.
 
-**Course:** CMPE 273 — Distributed Systems  
-**Option:** A — Distributed Job Execution Platform
 
----
 
 ## Table of Contents
 
